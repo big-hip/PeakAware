@@ -324,3 +324,26 @@ class OptimizedTrainingResult:
     fallback_plan_ids: tuple[str, ...]
     analysis: AnalysisBundle | None = None
     dry_run: DryRunResult | None = None
+
+
+@dataclass(frozen=True)
+class TrainingTaskSpec:
+    name: str
+    build_model: Callable[[], nn.Module]
+    build_batch: Callable[[int], tuple[tuple[Any, ...], dict[str, Any]]]
+    loss_fn: Callable[..., Tensor]
+    build_optimizer: Callable[[nn.Module], torch.optim.Optimizer]
+    dynamic_shapes: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class MicrobatchCandidateResult:
+    microbatch_size: int
+    result: OptimizedTrainingResult
+    useful_samples_per_second: float
+
+
+@dataclass(frozen=True)
+class MicrobatchSearchResult:
+    candidates: tuple[MicrobatchCandidateResult, ...]
+    selected: MicrobatchCandidateResult
