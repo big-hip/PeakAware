@@ -1,0 +1,36 @@
+digraph fn {
+rankdir=TB;
+primals_1 [label="{name=%primals_1|op_code=placeholder\n|target=primals_1\n|num_users=1\n|dtype=torch.float32\n|shape=(20, 10)\n|requires_grad=False\n|stride=(10, 1)\n}", shape=record, fillcolor="AliceBlue", style="filled,rounded", fontcolor="#000000"];
+primals_2 [label="{name=%primals_2|op_code=placeholder\n|target=primals_2\n|num_users=1\n|dtype=torch.float32\n|shape=(20, 10)\n|requires_grad=True\n|stride=(10, 1)\n}", shape=record, fillcolor="AliceBlue", style="filled,rounded", fontcolor="#000000"];
+primals_3 [label="{name=%primals_3|op_code=placeholder\n|target=primals_3\n|num_users=1\n|dtype=torch.float32\n|shape=(20,)\n|requires_grad=False\n|stride=(1,)\n}", shape=record, fillcolor="AliceBlue", style="filled,rounded", fontcolor="#000000"];
+primals_4 [label="{name=%primals_4|op_code=placeholder\n|target=primals_4\n|num_users=1\n|dtype=torch.float32\n|shape=(20,)\n|requires_grad=True\n|stride=(1,)\n}", shape=record, fillcolor="AliceBlue", style="filled,rounded", fontcolor="#000000"];
+primals_5 [label="{name=%primals_5|op_code=placeholder\n|target=primals_5\n|num_users=1\n|dtype=torch.float32\n|shape=(1, 20)\n|requires_grad=False\n|stride=(20, 1)\n}", shape=record, fillcolor="AliceBlue", style="filled,rounded", fontcolor="#000000"];
+primals_6 [label="{name=%primals_6|op_code=placeholder\n|target=primals_6\n|num_users=1\n|dtype=torch.float32\n|shape=(1, 20)\n|requires_grad=True\n|stride=(20, 1)\n}", shape=record, fillcolor="AliceBlue", style="filled,rounded", fontcolor="#000000"];
+primals_7 [label="{name=%primals_7|op_code=placeholder\n|target=primals_7\n|num_users=1\n|dtype=torch.float32\n|shape=(1,)\n|requires_grad=False\n|stride=(1,)\n}", shape=record, fillcolor="AliceBlue", style="filled,rounded", fontcolor="#000000"];
+primals_8 [label="{name=%primals_8|op_code=placeholder\n|target=primals_8\n|num_users=1\n|dtype=torch.float32\n|shape=(1,)\n|requires_grad=True\n|stride=(1,)\n}", shape=record, fillcolor="AliceBlue", style="filled,rounded", fontcolor="#000000"];
+mul [label="{name=%mul|op_code=call_function\n|target=torch.ops.aten.mul.Tensor\n|args=(-0.01,)|num_users=1\n|dtype=torch.float32\n|shape=(20, 10)\n|requires_grad=False\n|stride=(10, 1)\n}", shape=record, fillcolor=Wheat1, style="filled,rounded", fontcolor="#000000"];
+add [label="{name=%add|op_code=call_function\n|target=torch.ops.aten.add.Tensor\n|num_users=1\n|dtype=torch.float32\n|shape=(20, 10)\n|requires_grad=False\n|stride=(10, 1)\n}", shape=record, fillcolor=MistyRose1, style="filled,rounded", fontcolor="#000000"];
+mul_1 [label="{name=%mul_1|op_code=call_function\n|target=torch.ops.aten.mul.Tensor\n|args=(-0.01,)|num_users=1\n|dtype=torch.float32\n|shape=(20,)\n|requires_grad=False\n|stride=(1,)\n}", shape=record, fillcolor=Wheat1, style="filled,rounded", fontcolor="#000000"];
+add_1 [label="{name=%add_1|op_code=call_function\n|target=torch.ops.aten.add.Tensor\n|num_users=1\n|dtype=torch.float32\n|shape=(20,)\n|requires_grad=False\n|stride=(1,)\n}", shape=record, fillcolor=MistyRose1, style="filled,rounded", fontcolor="#000000"];
+mul_2 [label="{name=%mul_2|op_code=call_function\n|target=torch.ops.aten.mul.Tensor\n|args=(-0.01,)|num_users=1\n|dtype=torch.float32\n|shape=(1, 20)\n|requires_grad=False\n|stride=(20, 1)\n}", shape=record, fillcolor=Wheat1, style="filled,rounded", fontcolor="#000000"];
+add_2 [label="{name=%add_2|op_code=call_function\n|target=torch.ops.aten.add.Tensor\n|num_users=1\n|dtype=torch.float32\n|shape=(1, 20)\n|requires_grad=False\n|stride=(20, 1)\n}", shape=record, fillcolor=MistyRose1, style="filled,rounded", fontcolor="#000000"];
+mul_3 [label="{name=%mul_3|op_code=call_function\n|target=torch.ops.aten.mul.Tensor\n|args=(-0.01,)|num_users=1\n|dtype=torch.float32\n|shape=(1,)\n|requires_grad=False\n|stride=(1,)\n}", shape=record, fillcolor=Wheat1, style="filled,rounded", fontcolor="#000000"];
+add_3 [label="{name=%add_3|op_code=call_function\n|target=torch.ops.aten.add.Tensor\n|num_users=1\n|dtype=torch.float32\n|shape=(1,)\n|requires_grad=False\n|stride=(1,)\n}", shape=record, fillcolor=MistyRose1, style="filled,rounded", fontcolor="#000000"];
+output [label="{name=%output|op_code=output\n|target=output\n|num_users=0\n}", shape=record, fillcolor=PowderBlue, style="filled,rounded", fontcolor="#000000"];
+primals_1 -> mul;
+primals_2 -> add;
+primals_3 -> mul_1;
+primals_4 -> add_1;
+primals_5 -> mul_2;
+primals_6 -> add_2;
+primals_7 -> mul_3;
+primals_8 -> add_3;
+mul -> add;
+add -> output;
+mul_1 -> add_1;
+add_1 -> output;
+mul_2 -> add_2;
+add_2 -> output;
+mul_3 -> add_3;
+add_3 -> output;
+}

@@ -1,0 +1,24 @@
+{
+    "utilization": 0.1,
+    "rtt_ratio": 0.5,
+    "all_reduce_type":2,
+    "level1": {
+        "device_num": 8,
+        "bandwidth_per_port": 25,
+        "topo": "fullmesh",
+        "port_num": 8,
+        "latency": 0,
+        "dynamic_latency": 4.275
+    },
+    "level2": {
+        "device_num": 384,
+        "bandwidth_per_port": 28,
+        "topo": "clos",
+        "port_num": 7,
+        "latency": 0,
+        "dynamic_latency": 20
+    },
+    "level3": {
+        "dynamic_latency": 20
+    }
+}

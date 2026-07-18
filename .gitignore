@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments and packaging
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Generated experiment and compiler artifacts
+artifacts/
+profiles.sqlite*
+*.pt
+*.pth
+*.csv
+*.trace
+*.nsys-rep
+torch_compile_debug/
+inductor_cache/
