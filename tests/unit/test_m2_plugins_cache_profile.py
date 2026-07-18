@@ -2,7 +2,10 @@ import math
 
 import pytest
 
+from peakaware.cache.executable import load_executable_cache, select_cached_executable, store_executable_cache
 from peakaware.cache.keys import build_compiled_artifact_key, build_plan_evaluation_key
+from peakaware.cache.store import CacheEntry, invalidate_downstream, load_cache_entry, store_cache_entry
+from peakaware.contracts import MeasuredExecutable
 from peakaware.cost.base import OpSignature
 from peakaware.cost.profile_db import ProfileDB, ProfileRecord
 from peakaware.errors import PluginConflictError
@@ -91,6 +94,42 @@ def test_cache_keys_are_stable_and_separate_layers():
 
     assert plan_key == same_plan_key
     assert plan_key != artifact_key
+
+
+def test_cache_entry_round_trip_validates_provenance(tmp_path):
+    entry = CacheEntry(key="k1", artifact={"value": 3}, provenance={"torch": "2.13", "schema": 1})
+
+    store_cache_entry(tmp_path, "analysis", entry)
+
+    assert load_cache_entry(tmp_path, "analysis", "k1", {"torch": "2.13"}).artifact == {"value": 3}
+    assert load_cache_entry(tmp_path, "analysis", "k1", {"torch": "2.12"}) is None
+
+
+def test_cache_invalidate_downstream_removes_lower_layers(tmp_path):
+    store_cache_entry(tmp_path, "capture", CacheEntry("c", "capture", {}))
+    store_cache_entry(tmp_path, "analysis", CacheEntry("a", "analysis", {}))
+    store_cache_entry(tmp_path, "executable", CacheEntry("e", "executable", {}))
+
+    removed = invalidate_downstream(tmp_path, "capture")
+
+    assert len(removed) == 4
+    assert (tmp_path / "capture" / "c.pkl").exists()
+    assert not (tmp_path / "analysis" / "a.pkl").exists()
+    assert not (tmp_path / "executable" / "e.pkl").exists()
+
+
+def test_executable_cache_round_trip_and_selection(tmp_path):
+    slow = MeasuredExecutable("slow", abs, 100, 20.0, True)
+    fast = MeasuredExecutable("fast", abs, 120, 10.0, True)
+    too_large = MeasuredExecutable("large", abs, 1000, 1.0, True)
+
+    store_executable_cache(tmp_path, "fast-key", fast, {"compiler": "none"})
+    loaded = load_executable_cache(tmp_path, "fast-key", {"compiler": "none"})
+    selected = select_cached_executable((slow, fast, too_large), memory_budget_bytes=200)
+
+    assert loaded is not None
+    assert loaded.plan_id == "fast"
+    assert selected is fast
 
 
 def test_profile_db_exact_lookup_round_trip(tmp_path):
