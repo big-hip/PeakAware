@@ -34,4 +34,6 @@ def test_search_plans_returns_ranked_evaluated_m0_plans():
     assert len(evaluated) == 3
     assert evaluated[0].feasible
     assert evaluated[0].plan.estimated_peak_bytes == evaluated[0].simulation.estimated_peak_bytes
-    assert {plan.plan.plan_id for plan in evaluated} <= {"all_save", "mandatory_only", "manual_alternating"}
+    plan_ids = {plan.plan.plan_id for plan in evaluated}
+    assert "all_save" in plan_ids
+    assert plan_ids <= {"all_save", "mandatory_only", "manual_alternating", "greedy_drop_0", "greedy_drop_1"}

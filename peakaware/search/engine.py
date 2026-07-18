@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import replace
 
 from peakaware.contracts import EvaluatedPlan, FixedTimeline, JointTrainingIR, RecomputePlan
+from peakaware.cost.base import CostProvider
 from peakaware.memory.simulator import simulate_plan
 
+from .candidates import select_save_candidates
 from .closure import derive_recompute_closure, validate_closure
+from .pareto import select_pareto_topk
 from .plan import build_recompute_plan
 
 
@@ -69,6 +72,33 @@ def _manual_default_plans(ir: JointTrainingIR, budget_bytes: int, safety_margin_
     return (all_save, mandatory_only, alternating)
 
 
+def _greedy_seed_plans(
+    ir: JointTrainingIR,
+    budget_bytes: int,
+    safety_margin_bytes: int,
+    cost_provider: CostProvider | None,
+) -> tuple[RecomputePlan, ...]:
+    all_fw = _all_forward_value_ids(ir)
+    mandatory = _mandatory_value_ids(ir)
+    candidates = select_save_candidates(ir, cost_provider=cost_provider)
+    saved = set(all_fw)
+    plans: list[RecomputePlan] = []
+    for index, candidate in enumerate(candidates):
+        saved -= set(candidate.value_ids)
+        plans.append(
+            build_recompute_plan(
+                ir,
+                budget_bytes=budget_bytes,
+                saved_value_ids=frozenset(saved | mandatory),
+                safety_margin_bytes=safety_margin_bytes,
+                label=f"greedy_drop_{index}",
+            )
+        )
+        if len(plans) >= 4:
+            break
+    return tuple(plans)
+
+
 def search_plans(
     ir: JointTrainingIR,
     fixed_timeline: FixedTimeline,
@@ -76,9 +106,11 @@ def search_plans(
     budget_bytes: int,
     safety_margin_bytes: int,
     manual_saved_value_ids: tuple[frozenset[int], ...] = (),
+    cost_provider: CostProvider | None = None,
     top_k: int = 3,
 ) -> tuple[EvaluatedPlan, ...]:
     plans = list(_manual_default_plans(ir, budget_bytes, safety_margin_bytes))
+    plans.extend(_greedy_seed_plans(ir, budget_bytes, safety_margin_bytes, cost_provider))
     for index, saved in enumerate(manual_saved_value_ids):
         plans.append(
             build_recompute_plan(
@@ -90,16 +122,13 @@ def search_plans(
             )
         )
     evaluated = [evaluate_plan(ir, plan, fixed_timeline) for plan in plans]
-    evaluated.sort(
-        key=lambda e: (
-            not e.feasible,
-            e.simulation.estimated_peak_bytes,
-            e.simulation.estimated_step_us,
-            e.plan.risk_score,
-            e.plan.plan_id,
-        )
-    )
-    return tuple(evaluated[:top_k])
+    from .repair import repair_to_budget
+
+    repaired = [repair_to_budget(ir, fixed_timeline, plan) for plan in evaluated if not plan.feasible]
+    unique: dict[str, EvaluatedPlan] = {}
+    for plan in evaluated + repaired:
+        unique.setdefault(plan.plan.plan_id, plan)
+    return select_pareto_topk(tuple(unique.values()), top_k)
 
 
 def improve_feasible_plan(evaluated: EvaluatedPlan) -> EvaluatedPlan:
