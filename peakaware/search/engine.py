@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from peakaware.contracts import EvaluatedPlan, FixedTimeline, JointTrainingIR, RecomputePlan
+from peakaware.contracts import EvaluatedPlan, FixedTimeline, JointTrainingIR, RecomputePlan, RepairHint
 from peakaware.cost.base import CostProvider
+from peakaware.diagnostics import diagnose_plan
 from peakaware.memory.simulator import simulate_plan
 
 from .candidates import select_save_candidates
@@ -77,10 +78,11 @@ def _greedy_seed_plans(
     budget_bytes: int,
     safety_margin_bytes: int,
     cost_provider: CostProvider | None,
+    hints: tuple[RepairHint, ...] = (),
 ) -> tuple[RecomputePlan, ...]:
     all_fw = _all_forward_value_ids(ir)
     mandatory = _mandatory_value_ids(ir)
-    candidates = select_save_candidates(ir, cost_provider=cost_provider)
+    candidates = select_save_candidates(ir, cost_provider=cost_provider, hints=hints)
     saved = set(all_fw)
     plans: list[RecomputePlan] = []
     for index, candidate in enumerate(candidates):
@@ -107,10 +109,10 @@ def search_plans(
     safety_margin_bytes: int,
     manual_saved_value_ids: tuple[frozenset[int], ...] = (),
     cost_provider: CostProvider | None = None,
+    repair_hints: tuple[RepairHint, ...] = (),
     top_k: int = 3,
 ) -> tuple[EvaluatedPlan, ...]:
     plans = list(_manual_default_plans(ir, budget_bytes, safety_margin_bytes))
-    plans.extend(_greedy_seed_plans(ir, budget_bytes, safety_margin_bytes, cost_provider))
     for index, saved in enumerate(manual_saved_value_ids):
         plans.append(
             build_recompute_plan(
@@ -121,10 +123,22 @@ def search_plans(
                 label=f"manual_{index}",
             )
         )
-    evaluated = [evaluate_plan(ir, plan, fixed_timeline) for plan in plans]
+    baseline_evaluated = [evaluate_plan(ir, plan, fixed_timeline) for plan in plans]
+    baseline = next((plan for plan in baseline_evaluated if plan.plan.plan_id == "all_save"), baseline_evaluated[0])
+    diagnostic_hints = tuple(
+        hint
+        for candidate in baseline_evaluated
+        for hint in diagnose_plan(baseline, candidate).repair_hints
+    )
+    hints = repair_hints + diagnostic_hints
+    plans.extend(_greedy_seed_plans(ir, budget_bytes, safety_margin_bytes, cost_provider, hints))
+    evaluated = baseline_evaluated + [
+        evaluate_plan(ir, plan, fixed_timeline)
+        for plan in plans[len(baseline_evaluated) :]
+    ]
     from .repair import repair_to_budget
 
-    repaired = [repair_to_budget(ir, fixed_timeline, plan) for plan in evaluated if not plan.feasible]
+    repaired = [repair_to_budget(ir, fixed_timeline, plan, hints=hints) for plan in evaluated if not plan.feasible]
     unique: dict[str, EvaluatedPlan] = {}
     for plan in evaluated + repaired:
         unique.setdefault(plan.plan.plan_id, plan)

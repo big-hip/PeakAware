@@ -3,7 +3,7 @@ from torch import nn
 
 from peakaware.capture.joint import capture_joint_graph
 from peakaware.config import PeakAwareConfig
-from peakaware.contracts import HardwareSpec, MeasuredExecutable, TrainingRequest
+from peakaware.contracts import HardwareSpec, MeasuredExecutable, RepairHint, TrainingRequest
 from peakaware.cost.base import StaticCostProvider
 from peakaware.diagnostics import RootCause, diagnose_plan, export_diagnostic_json
 from peakaware.ir.builder import build_joint_ir
@@ -47,6 +47,28 @@ def test_select_save_candidates_are_storage_aware_and_costed():
     assert all(0 <= candidate.confidence <= 1 for candidate in candidates)
 
 
+def test_repair_hint_boosts_candidate_score():
+    ir, _ = _ir_and_fixed()
+    candidates = select_save_candidates(ir, cost_provider=StaticCostProvider())
+    hinted = candidates[-1]
+
+    boosted = select_save_candidates(
+        ir,
+        cost_provider=StaticCostProvider(),
+        hints=(
+            RepairHint(
+                kind="SAVE_PEAK_STORAGE",
+                target_ids=(hinted.storage_id,),
+                priority=1.0,
+                reason="test",
+            ),
+        ),
+    )
+    boosted_by_id = {candidate.storage_id: candidate for candidate in boosted}
+
+    assert boosted_by_id[hinted.storage_id].score == hinted.score * 2.0
+
+
 def test_alias_pinned_drop_effect_has_no_released_gain():
     ir, _ = _ir_and_fixed()
     mandatory_storage = next(
@@ -70,6 +92,7 @@ def test_m1_search_returns_pareto_ranked_greedy_candidates():
         budget_bytes=1 << 30,
         safety_margin_bytes=0,
         cost_provider=StaticCostProvider(),
+        repair_hints=(RepairHint("SAVE_PEAK_STORAGE", (), 0.1, "test"),),
         top_k=5,
     )
 

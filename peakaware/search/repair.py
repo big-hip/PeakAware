@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from peakaware.contracts import EvaluatedPlan, FixedTimeline, JointTrainingIR
+from peakaware.contracts import EvaluatedPlan, FixedTimeline, JointTrainingIR, RepairHint
 from peakaware.search.candidates import SaveCandidate, select_save_candidates
 from peakaware.search.engine import evaluate_plan
 from peakaware.search.plan import build_recompute_plan
@@ -25,10 +25,12 @@ def repair_to_budget(
     ir: JointTrainingIR,
     fixed_timeline: FixedTimeline,
     evaluated: EvaluatedPlan,
+    *,
+    hints: tuple[RepairHint, ...] = (),
 ) -> EvaluatedPlan:
     if evaluated.feasible:
         return evaluated
-    candidates = select_save_candidates(ir)
+    candidates = select_save_candidates(ir, hints=hints)
     ranked = rank_peak_live_moves(candidates, evaluated.simulation.peak_snapshot.live_storage_ids)
     saved = set(evaluated.plan.saved_value_ids)
     best = evaluated
