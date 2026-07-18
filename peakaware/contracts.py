@@ -64,6 +64,8 @@ class CapturedJointGraph:
     bw_module: fx.GraphModule | None = None
     backend: str = "fx"
     failures: tuple[FailureRecord, ...] = ()
+    num_fwd_outputs: int = 1
+    static_lifetime_input_indices: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)

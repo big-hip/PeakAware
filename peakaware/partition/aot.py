@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import copy
 from typing import Any, Callable
 
 from torch import fx
+from torch.utils.checkpoint import CheckpointPolicy
 
 from peakaware.contracts import JointTrainingIR, LoweredPartition, PartitionABI, RecomputePlan
 from peakaware.errors import PartitionError
@@ -17,14 +19,77 @@ def _build_bw_inputs(plan: RecomputePlan) -> tuple[int, ...]:
 
 
 def make_partition_fn(plan: RecomputePlan, ir: JointTrainingIR) -> Callable[..., tuple[fx.GraphModule, fx.GraphModule]]:
-    def partition_fn(joint_module: fx.GraphModule, _joint_inputs: Any = None, **_kwargs: Any) -> tuple[fx.GraphModule, fx.GraphModule]:
-        lowered = partition_joint_graph(joint_module, plan, ir)
+    def partition_fn(joint_module: fx.GraphModule, joint_inputs: Any = None, **kwargs: Any) -> tuple[fx.GraphModule, fx.GraphModule]:
+        lowered = partition_joint_graph(joint_module, plan, ir, joint_inputs=joint_inputs, **kwargs)
         return lowered.fw_graph, lowered.bw_graph
 
     return partition_fn
 
 
-def partition_joint_graph(joint_module: fx.GraphModule, plan: RecomputePlan, ir: JointTrainingIR) -> LoweredPartition:
+def _value_name_map(ir: JointTrainingIR) -> dict[int, str]:
+    return {value.id: value.name for value in ir.values}
+
+
+def _apply_saved_value_policy(joint_module: fx.GraphModule, plan: RecomputePlan, ir: JointTrainingIR) -> None:
+    name_by_value_id = _value_name_map(ir)
+    saved_names = {
+        name_by_value_id[value_id]
+        for value_id in plan.saved_value_ids | plan.mandatory_value_ids
+        if value_id in name_by_value_id
+    }
+    value_by_name = {value.name: value for value in ir.values}
+    for node in joint_module.graph.nodes:
+        value = value_by_name.get(node.name)
+        if value is None or value.phase != "fw" or value.producer_id is None:
+            continue
+        if node.name in saved_names or not value.recomputable:
+            node.meta["recompute"] = CheckpointPolicy.MUST_SAVE
+        else:
+            node.meta["recompute"] = CheckpointPolicy.MUST_RECOMPUTE
+
+
+def _partition_with_saved_value_policy(
+    joint_module: fx.GraphModule,
+    plan: RecomputePlan,
+    ir: JointTrainingIR,
+    *,
+    joint_inputs: Any = None,
+    num_fwd_outputs: int = 1,
+    static_lifetime_input_indices: tuple[int, ...] = (),
+) -> tuple[fx.GraphModule, fx.GraphModule]:
+    from torch._functorch.partitioners import default_partition
+
+    working = copy.deepcopy(joint_module)
+    _apply_saved_value_policy(working, plan, ir)
+    return default_partition(
+        working,
+        joint_inputs,
+        num_fwd_outputs=num_fwd_outputs,
+        static_lifetime_input_indices=list(static_lifetime_input_indices),
+    )
+
+
+def partition_joint_graph(
+    joint_module: fx.GraphModule,
+    plan: RecomputePlan,
+    ir: JointTrainingIR,
+    *,
+    joint_inputs: Any = None,
+    num_fwd_outputs: int = 1,
+    static_lifetime_input_indices: tuple[int, ...] = (),
+) -> LoweredPartition:
+    fw_graph, bw_graph = _partition_with_saved_value_policy(
+        joint_module,
+        plan,
+        ir,
+        joint_inputs=joint_inputs,
+        num_fwd_outputs=num_fwd_outputs,
+        static_lifetime_input_indices=static_lifetime_input_indices,
+    )
+    return lower_partition_graphs(joint_module, fw_graph, bw_graph, plan, ir)
+
+
+def partition_default_graph(joint_module: fx.GraphModule, plan: RecomputePlan, ir: JointTrainingIR) -> LoweredPartition:
     return lower_partition_graphs(joint_module, joint_module, joint_module, plan, ir)
 
 

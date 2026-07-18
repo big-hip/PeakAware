@@ -127,7 +127,18 @@ def optimize_training(
         raise InfeasibleBudgetError("no plans were generated")
     selected = next((plan for plan in evaluated if plan.feasible), evaluated[0])
 
-    lowered = lower_partition_graphs(capture.joint_module, capture.fw_module, capture.bw_module, selected.plan, ir)
+    if capture.backend == "aot":
+        from peakaware.partition.aot import partition_joint_graph
+
+        lowered = partition_joint_graph(
+            capture.joint_module,
+            selected.plan,
+            ir,
+            num_fwd_outputs=capture.num_fwd_outputs,
+            static_lifetime_input_indices=capture.static_lifetime_input_indices,
+        )
+    else:
+        lowered = lower_partition_graphs(capture.joint_module, capture.fw_module, capture.bw_module, selected.plan, ir)
     dry_run = run_aot_eager_dry_run(
         lowered,
         model=model,

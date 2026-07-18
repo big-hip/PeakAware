@@ -94,6 +94,7 @@ def _capture_with_aot_autograd(request: TrainingRequest) -> CapturedJointGraph:
     from functorch.compile import make_boxed_func
 
     captured: dict[str, fx.GraphModule] = {}
+    partition_meta: dict[str, Any] = {}
     model_copy = copy.deepcopy(request.model)
     model_copy.train(request.model.training)
     args = tuple(_clone_example(arg) for arg in request.example_args)
@@ -109,6 +110,7 @@ def _capture_with_aot_autograd(request: TrainingRequest) -> CapturedJointGraph:
 
     def partition_fn(joint_module: fx.GraphModule, joint_inputs: Any, **kwargs_for_partition: Any) -> Any:
         captured["joint"] = joint_module
+        partition_meta.update(kwargs_for_partition)
         return default_partition(joint_module, joint_inputs, **kwargs_for_partition)
 
     rng_state = torch.get_rng_state()
@@ -139,6 +141,8 @@ def _capture_with_aot_autograd(request: TrainingRequest) -> CapturedJointGraph:
         fw_module=captured.get("fw"),
         bw_module=captured.get("bw"),
         backend="aot",
+        num_fwd_outputs=int(partition_meta.get("num_fwd_outputs", 1)),
+        static_lifetime_input_indices=tuple(partition_meta.get("static_lifetime_input_indices") or ()),
     )
 
 
