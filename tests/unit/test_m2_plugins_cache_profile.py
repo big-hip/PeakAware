@@ -6,8 +6,9 @@ from peakaware.cache.executable import load_executable_cache, select_cached_exec
 from peakaware.cache.keys import build_compiled_artifact_key, build_plan_evaluation_key
 from peakaware.cache.store import CacheEntry, invalidate_downstream, load_cache_entry, store_cache_entry
 from peakaware.contracts import MeasuredExecutable
-from peakaware.cost.base import OpSignature
-from peakaware.cost.profile_db import ProfileDB, ProfileRecord
+from peakaware.cost.base import OpCost, OpSignature, RooflineFallbackProvider
+from peakaware.cost.composite import CompositeCostProvider, build_composite_provider
+from peakaware.cost.profile_db import ExactProfileProvider, InterpolatedProfileProvider, ProfileDB, ProfileRecord
 from peakaware.errors import PluginConflictError
 from peakaware.plugins.patching import PatchSession, PatchSpec
 from peakaware.plugins.registry import PluginRegistry
@@ -152,3 +153,59 @@ def test_profile_db_exact_lookup_round_trip(tmp_path):
     assert cost.estimated_us == 3.5
     assert cost.memory_bytes == 64
     assert cost.confidence == 1.0
+
+
+def test_profile_db_nearest_interpolates_same_target_and_dtype(tmp_path):
+    db = ProfileDB(tmp_path / "profiles.sqlite")
+    source = OpSignature("add", "aten.add", 100, 100, "float32")
+    target = OpSignature("add", "aten.add", 200, 200, "float32")
+    other_dtype = OpSignature("add", "aten.add", 200, 200, "float16")
+    db.upsert_profile(source, ProfileRecord("ignored", 12, 10.0, 12.0, 11.0, 20))
+
+    interpolated = db.lookup_nearest(target)
+
+    assert interpolated is not None
+    assert interpolated.source == "profile_db_interpolated"
+    assert interpolated.estimated_us == 20.0
+    assert db.lookup_nearest(other_dtype) is None
+
+
+def test_composite_cost_provider_uses_exact_then_interpolation_then_fallback(tmp_path):
+    db = ProfileDB(tmp_path / "profiles.sqlite")
+    exact = OpSignature("mm", "aten.mm", 128, 64, "float32")
+    nearby = OpSignature("mm", "aten.mm", 256, 128, "float32")
+    missing = OpSignature("relu", "aten.relu", 16, 16, "float32")
+    db.upsert_profile(exact, ProfileRecord("ignored", 20, 4.0, 5.0, 4.5, 32))
+    provider = CompositeCostProvider(
+        (
+            ExactProfileProvider(db),
+            InterpolatedProfileProvider(db),
+            RooflineFallbackProvider(bandwidth_bytes_per_us=16, launch_overhead_us=1.0),
+        )
+    )
+
+    exact_cost = provider.estimate_with_provenance(exact)
+    nearby_cost = provider.estimate_with_provenance(nearby)
+    missing_cost = provider.estimate_with_provenance(missing)
+
+    assert exact_cost is not None and exact_cost.cost.source == "profile_db_exact"
+    assert nearby_cost is not None and nearby_cost.cost.source == "profile_db_interpolated"
+    assert missing_cost is not None and missing_cost.cost.source == "roofline_fallback"
+    assert missing_cost.cost.estimated_us > 1.0
+
+
+def test_build_composite_provider_adds_roofline_tail():
+    class EmptyProvider:
+        source = "empty"
+
+        def supports(self, signature):
+            return True
+
+        def estimate(self, signature):
+            return None
+
+    provider = build_composite_provider((EmptyProvider(),))
+    cost = provider.estimate(OpSignature("x", "aten.x", 1, 1))
+
+    assert isinstance(cost, OpCost)
+    assert cost.source == "roofline_fallback"

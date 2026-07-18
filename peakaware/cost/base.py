@@ -51,6 +51,24 @@ class StaticCostProvider:
         )
 
 
+class RooflineFallbackProvider:
+    source = "roofline_fallback"
+
+    def __init__(self, *, bandwidth_bytes_per_us: float = 32 << 20, launch_overhead_us: float = 1.0) -> None:
+        self.bandwidth_bytes_per_us = bandwidth_bytes_per_us
+        self.launch_overhead_us = launch_overhead_us
+
+    def supports(self, signature: OpSignature) -> bool:
+        del signature
+        return True
+
+    def estimate(self, signature: OpSignature) -> OpCost:
+        tensor_bytes = max(signature.input_bytes + signature.output_bytes, 1)
+        latency = self.launch_overhead_us + tensor_bytes / self.bandwidth_bytes_per_us
+        workspace = max(0, signature.output_bytes // 8)
+        return OpCost(latency, workspace, self.source, 0.2)
+
+
 def signature_for_op(ir: JointTrainingIR, op: OpInfo) -> OpSignature:
     value_by_id = {value.id: value for value in ir.values}
     input_bytes = sum(value_by_id[v].logical_nbytes for v in op.input_value_ids if v in value_by_id)
