@@ -3,9 +3,9 @@ from torch import nn
 
 from peakaware.capture.joint import capture_joint_graph
 from peakaware.config import PeakAwareConfig
-from peakaware.contracts import HardwareSpec, TrainingRequest
+from peakaware.contracts import HardwareSpec, MeasuredExecutable, TrainingRequest
 from peakaware.cost.base import StaticCostProvider
-from peakaware.diagnostics import diagnose_plan
+from peakaware.diagnostics import RootCause, diagnose_plan, export_diagnostic_json
 from peakaware.ir.builder import build_joint_ir
 from peakaware.memory.fixed_frontier import analyze_coarse_feasibility, build_optimizer_spec
 from peakaware.search.candidates import compute_storage_effect, reject_alias_pinned_gain, select_save_candidates
@@ -101,5 +101,38 @@ def test_diagnostics_reports_recompute_wave_hint():
 
     assert report.bw_recompute_transient_change >= 0
     if report.bw_recompute_transient_change > 0:
-        assert "rematerialization_wave" in report.root_causes
+        assert RootCause.REMATERIALIZATION_WAVE.name in report.root_causes
         assert report.repair_hints
+    assert len(report.counterfactuals) == 6
+    assert report.counterfactuals[0].level == "D0"
+    assert report.counterfactuals[3].level == "D3"
+    assert report.counterfactuals[4].level == "D4"
+    assert report.counterfactuals[4].status == "unavailable"
+    assert report.counterfactuals[4].peak_gain_bytes is None
+
+
+def test_diagnostics_exports_json_and_marks_runtime_level_available():
+    ir, fixed = _ir_and_fixed()
+    all_save = build_recompute_plan(
+        ir,
+        budget_bytes=1 << 30,
+        saved_value_ids=frozenset(v.id for v in ir.values if v.phase == "fw"),
+        label="all_save",
+    )
+    baseline = evaluate_plan(ir, all_save, fixed)
+    measured = MeasuredExecutable(
+        plan_id="all_save",
+        forward_backward=lambda x: x,
+        measured_peak_bytes=baseline.simulation.estimated_peak_bytes + 128,
+        measured_step_us=99.0,
+        correctness_passed=True,
+    )
+
+    report = diagnose_plan(baseline, baseline, measured=measured)
+    text = export_diagnostic_json(report)
+
+    assert '"primary_cause": "UNKNOWN"' in text
+    assert report.counterfactuals[-1].level == "D5"
+    assert report.counterfactuals[-1].status == "available"
+    assert report.counterfactuals[-1].candidate_peak is not None
+    assert report.counterfactuals[-1].candidate_peak.live_bytes == measured.measured_peak_bytes
