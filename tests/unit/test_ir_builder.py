@@ -6,6 +6,8 @@ from peakaware.config import PeakAwareConfig
 from peakaware.contracts import HardwareSpec, TrainingRequest
 from peakaware.ir.builder import build_joint_ir
 from peakaware.memory.fixed_frontier import build_optimizer_spec
+from peakaware.partition.aot import lower_partition_graphs
+from peakaware.search.plan import build_recompute_plan
 
 
 def _request(model, args, optimizer):
@@ -37,3 +39,41 @@ def test_build_joint_ir_has_values_storages_and_mandatory_boundary():
     assert ir.storages
     assert len({s.id for s in ir.storages}) == len(ir.storages)
     assert any(value.phase == "fw" for value in ir.values)
+
+
+def test_aot_capture_intercepts_joint_fw_and_bw_graphs():
+    model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 1))
+    args = (torch.randn(2, 4),)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    request = TrainingRequest(
+        model=model,
+        example_args=args,
+        example_kwargs={},
+        loss_fn=lambda out: out.sum(),
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 30,
+        config=PeakAwareConfig(capture_backend="aot"),
+        optimizer_spec=build_optimizer_spec(optimizer, model),
+        hardware=HardwareSpec("cpu", False, None),
+        request_key="test",
+    )
+
+    capture = capture_joint_graph(request)
+    ir, report = build_joint_ir(capture)
+
+    assert capture.backend == "aot"
+    assert capture.fw_module is not None
+    assert capture.bw_module is not None
+    assert len(list(capture.joint_module.graph.nodes)) > len(list(capture.fw_module.graph.nodes))
+    assert report.valid
+    assert ir.values
+
+    plan = build_recompute_plan(
+        ir,
+        budget_bytes=1 << 30,
+        saved_value_ids=frozenset(v.id for v in ir.values if v.phase == "fw"),
+        label="all_save",
+    )
+    lowered = lower_partition_graphs(capture.joint_module, capture.fw_module, capture.bw_module, plan, ir)
+    assert lowered.fw_graph is capture.fw_module
+    assert lowered.bw_graph is capture.bw_module

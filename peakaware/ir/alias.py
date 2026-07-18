@@ -35,6 +35,8 @@ def resolve_view_base(value: Any) -> Any:
 def _storage_key(value: Tensor) -> tuple[str, int, int]:
     base = resolve_view_base(value)
     if isinstance(base, Tensor):
+        if base.__class__.__name__ == "FakeTensor":
+            return (f"fake:{base.device}", id(base), int(base.storage_offset()))
         try:
             ptr = int(base.untyped_storage().data_ptr())
         except Exception:

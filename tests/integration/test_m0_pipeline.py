@@ -40,6 +40,7 @@ def test_optimize_training_builds_executor_and_runs_step():
     assert step.loss.ndim == 0
     assert result.dry_run is not None and result.dry_run.gradients_match
     assert result.analysis is not None and result.analysis.ir.values
+    assert result.analysis is not None and result.analysis.ir.graph_key == result.selected_plan.graph_key
     assert any(not torch.equal(left, right) for left, right in zip(before, after))
 
 

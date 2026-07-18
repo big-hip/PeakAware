@@ -16,7 +16,7 @@ from peakaware.memory.fixed_frontier import (
     analyze_refined_feasibility,
     build_optimizer_spec,
 )
-from peakaware.partition.aot import partition_joint_graph
+from peakaware.partition.aot import lower_partition_graphs
 from peakaware.partition.verifier import run_aot_eager_dry_run
 from peakaware.runtime.executor import build_training_step_executor, make_measured_executable
 from peakaware.search.engine import search_plans
@@ -127,7 +127,7 @@ def optimize_training(
         raise InfeasibleBudgetError("no plans were generated")
     selected = next((plan for plan in evaluated if plan.feasible), evaluated[0])
 
-    lowered = partition_joint_graph(capture.joint_module, selected.plan, ir)
+    lowered = lower_partition_graphs(capture.joint_module, capture.fw_module, capture.bw_module, selected.plan, ir)
     dry_run = run_aot_eager_dry_run(
         lowered,
         model=model,

@@ -20,7 +20,9 @@ from .legality import classify_recompute_legality, mark_mandatory_saves
 
 
 def _node_value(node: fx.Node) -> Any:
-    return node.meta.get("val") or node.meta.get("tensor_meta")
+    if "val" in node.meta:
+        return node.meta["val"]
+    return node.meta.get("tensor_meta")
 
 
 def _logical_nbytes(value: Any) -> int:

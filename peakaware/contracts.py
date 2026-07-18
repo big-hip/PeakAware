@@ -60,6 +60,10 @@ class CapturedJointGraph:
     guards: tuple[GuardSpec, ...]
     parameter_mapping: tuple[ParameterBinding, ...]
     capture_key: str
+    fw_module: fx.GraphModule | None = None
+    bw_module: fx.GraphModule | None = None
+    backend: str = "fx"
+    failures: tuple[FailureRecord, ...] = ()
 
 
 @dataclass(frozen=True)
