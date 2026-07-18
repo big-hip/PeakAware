@@ -42,6 +42,8 @@ def test_optimize_training_builds_executor_and_runs_step():
     assert step.loss.ndim == 0
     assert result.executable.phase_metrics["step_us"] > 0
     assert {"fw_us", "bw_us", "optimizer_us", "overall_peak_bytes"}.issubset(result.executable.phase_metrics)
+    assert len(result.measured_candidates) >= 2
+    assert result.executable.plan_id in {candidate.plan_id for candidate in result.measured_candidates}
     assert result.dry_run is not None and result.dry_run.gradients_match
     assert result.analysis is not None and result.analysis.ir.values
     assert result.analysis is not None and result.analysis.ir.graph_key == result.selected_plan.graph_key
@@ -67,6 +69,7 @@ def test_optimize_training_does_not_advance_user_state_before_executor_step():
     after_optimize = tuple(p.detach().clone() for p in model.parameters())
 
     assert result.executable.correctness_passed
+    assert result.measured_candidates
     assert all(torch.equal(left, right) for left, right in zip(before, after_optimize))
     assert optimizer.state_dict()["state"] == optimizer_before["state"]
 

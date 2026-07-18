@@ -8,7 +8,18 @@ from torch import Tensor, nn
 
 from peakaware.capture import capture_joint_graph
 from peakaware.config import PeakAwareConfig
-from peakaware.contracts import AnalysisBundle, HardwareSpec, OptimizedTrainingResult, TrainingRequest
+from peakaware.contracts import (
+    AnalysisBundle,
+    CapturedJointGraph,
+    DryRunResult,
+    EvaluatedPlan,
+    HardwareSpec,
+    JointTrainingIR,
+    LoweredPartition,
+    MeasuredExecutable,
+    OptimizedTrainingResult,
+    TrainingRequest,
+)
 from peakaware.errors import InfeasibleBudgetError
 from peakaware.ir import build_joint_ir
 from peakaware.memory.fixed_frontier import (
@@ -72,6 +83,56 @@ def _validate_request(
     config.validate()
 
 
+def _lower_candidate(capture: CapturedJointGraph, candidate: EvaluatedPlan, ir: JointTrainingIR) -> LoweredPartition:
+    if capture.backend == "aot":
+        from peakaware.partition.aot import partition_joint_graph
+
+        return partition_joint_graph(
+            capture.joint_module,
+            candidate.plan,
+            ir,
+            num_fwd_outputs=capture.num_fwd_outputs,
+            static_lifetime_input_indices=capture.static_lifetime_input_indices,
+        )
+    return lower_partition_graphs(capture.joint_module, capture.fw_module, capture.bw_module, candidate.plan, ir)
+
+
+def _dry_run_candidate(
+    lowered: LoweredPartition,
+    *,
+    model: nn.Module,
+    example_args: tuple[Any, ...],
+    example_kwargs: dict[str, Any],
+    loss_fn: Callable[..., Tensor],
+    config: PeakAwareConfig,
+) -> DryRunResult:
+    return run_aot_eager_dry_run(
+        lowered,
+        model=model,
+        args=example_args,
+        kwargs=example_kwargs,
+        loss_fn=loss_fn,
+        atol=config.atol,
+        rtol=config.rtol,
+    )
+
+
+def _select_measured_candidate(
+    measured: tuple[MeasuredExecutable, ...],
+    *,
+    memory_budget_bytes: int,
+) -> MeasuredExecutable | None:
+    feasible = [
+        item
+        for item in measured
+        if item.correctness_passed and item.measured_peak_bytes <= memory_budget_bytes
+    ]
+    if not feasible:
+        return None
+    feasible.sort(key=lambda item: (item.measured_step_us, item.measured_peak_bytes, item.plan_id))
+    return feasible[0]
+
+
 def optimize_training(
     model: nn.Module,
     example_args: tuple[Any, ...],
@@ -125,41 +186,46 @@ def optimize_training(
     )
     if not evaluated:
         raise InfeasibleBudgetError("no plans were generated")
-    selected = next((plan for plan in evaluated if plan.feasible), evaluated[0])
-
-    if capture.backend == "aot":
-        from peakaware.partition.aot import partition_joint_graph
-
-        lowered = partition_joint_graph(
-            capture.joint_module,
-            selected.plan,
-            ir,
-            num_fwd_outputs=capture.num_fwd_outputs,
-            static_lifetime_input_indices=capture.static_lifetime_input_indices,
-        )
-    else:
-        lowered = lower_partition_graphs(capture.joint_module, capture.fw_module, capture.bw_module, selected.plan, ir)
-    dry_run = run_aot_eager_dry_run(
-        lowered,
-        model=model,
-        args=example_args,
-        kwargs=example_kwargs,
-        loss_fn=loss_fn,
-        atol=config.atol,
-        rtol=config.rtol,
-    )
-    if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
-        raise InfeasibleBudgetError(f"selected plan failed dry-run: {dry_run.failure_reason}")
-
     executor = build_training_step_executor(model, optimizer, loss_fn, config)
-    measured = make_measured_executable(
-        selected.plan.plan_id,
-        executor,
-        example_args,
-        example_kwargs,
-        selected.simulation.estimated_peak_bytes,
-    )
-    fallback_ids = tuple(plan.plan.plan_id for plan in evaluated if plan.plan.plan_id != selected.plan.plan_id)
+    measured_candidates: list[MeasuredExecutable] = []
+    dry_runs: dict[str, DryRunResult] = {}
+    rejected: dict[str, str] = {}
+    for candidate in evaluated:
+        try:
+            lowered = _lower_candidate(capture, candidate, ir)
+            dry_run = _dry_run_candidate(
+                lowered,
+                model=model,
+                example_args=example_args,
+                example_kwargs=example_kwargs,
+                loss_fn=loss_fn,
+                config=config,
+            )
+        except Exception as exc:
+            rejected[candidate.plan.plan_id] = f"{type(exc).__name__}: {exc}"
+            continue
+        dry_runs[candidate.plan.plan_id] = dry_run
+        if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
+            rejected[candidate.plan.plan_id] = dry_run.failure_reason or "candidate failed dry-run"
+            continue
+        measured_candidates.append(
+            make_measured_executable(
+                candidate.plan.plan_id,
+                executor,
+                example_args,
+                example_kwargs,
+                candidate.simulation.estimated_peak_bytes,
+            )
+        )
+    measured_tuple = tuple(measured_candidates)
+    selected_measured = _select_measured_candidate(measured_tuple, memory_budget_bytes=memory_budget_bytes)
+    if selected_measured is None:
+        details = "; ".join(f"{plan_id}: {reason}" for plan_id, reason in sorted(rejected.items()))
+        raise InfeasibleBudgetError(f"no Top-K candidate passed dry-run and measurement: {details}")
+    selected = next(plan for plan in evaluated if plan.plan.plan_id == selected_measured.plan_id)
+    dry_run = dry_runs[selected.plan.plan_id]
+    measured = selected_measured
+    fallback_ids = tuple(item.plan_id for item in measured_tuple if item.plan_id != selected.plan.plan_id)
     analysis = AnalysisBundle(
         ir=ir,
         fixed_timeline=fixed_timeline,
@@ -174,4 +240,5 @@ def optimize_training(
         fallback_plan_ids=fallback_ids,
         analysis=analysis,
         dry_run=dry_run,
+        measured_candidates=measured_tuple,
     )

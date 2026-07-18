@@ -331,6 +331,7 @@ class OptimizedTrainingResult:
     fallback_plan_ids: tuple[str, ...]
     analysis: AnalysisBundle | None = None
     dry_run: DryRunResult | None = None
+    measured_candidates: tuple[MeasuredExecutable, ...] = ()
 
 
 @dataclass(frozen=True)

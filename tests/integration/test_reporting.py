@@ -30,6 +30,7 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
 
     assert summary["selected_plan_id"] == result.selected_plan.plan_id
     assert summary["diagnostic"]["counterfactuals"][-1]["level"] == "D5"
+    assert summary["measured_candidates"]
     assert "Selected plan:" in text
     assert json.loads(exported)["selected_plan_id"] == result.selected_plan.plan_id
     assert json.loads(path.read_text(encoding="utf-8"))["measured"]["correctness_passed"] is True

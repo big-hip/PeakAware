@@ -53,6 +53,15 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "correctness_passed": result.executable.correctness_passed,
             "phase_metrics": result.executable.phase_metrics,
         },
+        "measured_candidates": [
+            {
+                "plan_id": candidate.plan_id,
+                "peak_bytes": candidate.measured_peak_bytes,
+                "step_us": candidate.measured_step_us,
+                "correctness_passed": candidate.correctness_passed,
+            }
+            for candidate in result.measured_candidates
+        ],
         "plans": [_plan_row(plan) for plan in plans],
         "diagnostic": None
         if diagnostic is None
