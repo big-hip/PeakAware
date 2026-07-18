@@ -7,7 +7,7 @@ from torch import Tensor, nn
 
 from peakaware.config import PeakAwareConfig
 from peakaware.contracts import MeasuredExecutable, StepResult
-from peakaware.runtime.measure import measure_training_step
+from peakaware.runtime.measure import measure_training_step_phases
 
 
 class EagerTrainingStepExecutor:
@@ -73,20 +73,26 @@ def make_measured_executable(
     kwargs: dict[str, Any],
     simulated_peak_bytes: int,
 ) -> MeasuredExecutable:
-    def one_forward(*step_args: Any, **step_kwargs: Any) -> Tensor:
-        with torch.no_grad():
-            output = executor.executable(*step_args, **step_kwargs)
-            if isinstance(output, Tensor):
-                return output.detach().sum()
-            return torch.as_tensor(0)
-
-    _, measured_peak, measured_us = measure_training_step(one_forward, *args, **kwargs)
+    phase_metrics = measure_training_step_phases(
+        executor.model,
+        executor.optimizer,
+        executor.executable,
+        executor.loss_fn,
+        args,
+        kwargs,
+        zero_grad_set_to_none=executor.config.zero_grad_set_to_none,
+    )
+    measured_peak = int(phase_metrics["overall_peak_bytes"])
+    measured_us = float(phase_metrics["step_us"])
     if measured_peak == 0:
         measured_peak = simulated_peak_bytes
+        phase_metrics = dict(phase_metrics)
+        phase_metrics["overall_peak_bytes"] = measured_peak
     return MeasuredExecutable(
         plan_id=plan_id,
         forward_backward=executor.executable,
         measured_peak_bytes=measured_peak,
         measured_step_us=measured_us,
         correctness_passed=True,
+        phase_metrics=phase_metrics,
     )

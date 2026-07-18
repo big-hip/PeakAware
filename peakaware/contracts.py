@@ -288,6 +288,7 @@ class MeasuredExecutable:
     measured_peak_bytes: int
     measured_step_us: float
     correctness_passed: bool
+    phase_metrics: dict[str, int | float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
