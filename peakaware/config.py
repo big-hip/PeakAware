@@ -18,6 +18,8 @@ class PeakAwareConfig:
     require_cuda_measurement: bool = False
     allow_real_input_capture: bool = False
     capture_backend: str = "auto"
+    isolate_candidate_measurement: bool = False
+    candidate_worker_timeout_s: float = 60.0
     rng_seed: int | None = 1337
     atol: float = 1e-5
     rtol: float = 1e-4
@@ -33,3 +35,5 @@ class PeakAwareConfig:
             raise ValueError("enable_inductor requires enable_compile")
         if self.capture_backend not in {"auto", "aot", "fx"}:
             raise ValueError("capture_backend must be one of: auto, aot, fx")
+        if self.candidate_worker_timeout_s <= 0:
+            raise ValueError("candidate_worker_timeout_s must be positive")

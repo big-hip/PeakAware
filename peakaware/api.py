@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from typing import Any, Callable
 
 import torch
@@ -30,6 +31,7 @@ from peakaware.memory.fixed_frontier import (
 from peakaware.partition.aot import lower_partition_graphs
 from peakaware.partition.verifier import run_aot_eager_dry_run
 from peakaware.runtime.executor import build_training_step_executor, make_measured_executable
+from peakaware.runtime.isolation import run_in_worker_process
 from peakaware.search.engine import search_plans
 
 
@@ -133,6 +135,106 @@ def _select_measured_candidate(
     return feasible[0]
 
 
+@dataclass(frozen=True)
+class _CandidateMeasurement:
+    plan_id: str
+    measured_peak_bytes: int
+    measured_step_us: float
+    phase_metrics: dict[str, int | float]
+
+
+@dataclass(frozen=True)
+class _CandidateValidation:
+    dry_run: DryRunResult
+    measurement: _CandidateMeasurement | None
+
+
+def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValidation:
+    capture = payload["capture"]
+    candidate = payload["candidate"]
+    ir = payload["ir"]
+    request = payload["request"]
+    model = payload["model"]
+    optimizer = payload["optimizer"]
+    loss_fn = payload["loss_fn"]
+    config = payload["config"]
+    example_args = payload["example_args"]
+    example_kwargs = payload["example_kwargs"]
+
+    if capture is None or ir is None:
+        capture = capture_joint_graph(request)
+        ir, ir_report = build_joint_ir(capture)
+        if not ir_report.valid:
+            raise ValueError(f"invalid worker IR: {ir_report.errors}")
+    lowered = _lower_candidate(capture, candidate, ir)
+    dry_run = _dry_run_candidate(
+        lowered,
+        model=model,
+        example_args=example_args,
+        example_kwargs=example_kwargs,
+        loss_fn=loss_fn,
+        config=config,
+    )
+    if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
+        return _CandidateValidation(dry_run=dry_run, measurement=None)
+    executor = build_training_step_executor(model, optimizer, loss_fn, config)
+    measured = make_measured_executable(
+        candidate.plan.plan_id,
+        executor,
+        example_args,
+        example_kwargs,
+        candidate.simulation.estimated_peak_bytes,
+    )
+    return _CandidateValidation(
+        dry_run=dry_run,
+        measurement=_CandidateMeasurement(
+            plan_id=measured.plan_id,
+            measured_peak_bytes=measured.measured_peak_bytes,
+            measured_step_us=measured.measured_step_us,
+            phase_metrics=measured.phase_metrics,
+        ),
+    )
+
+
+def _candidate_payload(
+    request: TrainingRequest,
+    capture: CapturedJointGraph,
+    candidate: EvaluatedPlan,
+    ir: JointTrainingIR,
+    *,
+    isolate: bool,
+) -> dict[str, Any]:
+    return {
+        "capture": None if isolate else capture,
+        "candidate": candidate,
+        "ir": None if isolate else ir,
+        "request": request,
+        "model": request.model,
+        "optimizer": request.optimizer,
+        "loss_fn": request.loss_fn,
+        "config": request.config,
+        "example_args": request.example_args,
+        "example_kwargs": request.example_kwargs,
+    }
+
+
+def _measure_candidate_for_parent(
+    executor: Any,
+    validation: _CandidateValidation,
+) -> MeasuredExecutable:
+    measurement = validation.measurement
+    if measurement is None:
+        raise ValueError("candidate measurement is unavailable")
+    return MeasuredExecutable(
+        plan_id=measurement.plan_id,
+        forward_backward=executor.executable,
+        measured_peak_bytes=measurement.measured_peak_bytes,
+        measured_step_us=measurement.measured_step_us,
+        correctness_passed=True,
+        phase_metrics=measurement.phase_metrics,
+    )
+
+
 def optimize_training(
     model: nn.Module,
     example_args: tuple[Any, ...],
@@ -191,32 +293,35 @@ def optimize_training(
     dry_runs: dict[str, DryRunResult] = {}
     rejected: dict[str, str] = {}
     for candidate in evaluated:
-        try:
-            lowered = _lower_candidate(capture, candidate, ir)
-            dry_run = _dry_run_candidate(
-                lowered,
-                model=model,
-                example_args=example_args,
-                example_kwargs=example_kwargs,
-                loss_fn=loss_fn,
-                config=config,
+        payload = _candidate_payload(request, capture, candidate, ir, isolate=config.isolate_candidate_measurement)
+        if config.isolate_candidate_measurement:
+            worker = run_in_worker_process(
+                _validate_and_measure_candidate,
+                payload,
+                timeout_s=config.candidate_worker_timeout_s,
             )
-        except Exception as exc:
-            rejected[candidate.plan.plan_id] = f"{type(exc).__name__}: {exc}"
+            if not worker.ok:
+                rejected[candidate.plan.plan_id] = f"{worker.error_type}: {worker.message}"
+                continue
+            validation = worker.value
+        else:
+            try:
+                validation = _validate_and_measure_candidate(payload)
+            except Exception as exc:
+                rejected[candidate.plan.plan_id] = f"{type(exc).__name__}: {exc}"
+                continue
+        dry_runs[candidate.plan.plan_id] = validation.dry_run
+        if not (
+            validation.dry_run.abi_valid
+            and validation.dry_run.outputs_match
+            and validation.dry_run.gradients_match
+        ):
+            rejected[candidate.plan.plan_id] = validation.dry_run.failure_reason or "candidate failed dry-run"
             continue
-        dry_runs[candidate.plan.plan_id] = dry_run
-        if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
-            rejected[candidate.plan.plan_id] = dry_run.failure_reason or "candidate failed dry-run"
+        if validation.measurement is None:
+            rejected[candidate.plan.plan_id] = "candidate measurement is unavailable"
             continue
-        measured_candidates.append(
-            make_measured_executable(
-                candidate.plan.plan_id,
-                executor,
-                example_args,
-                example_kwargs,
-                candidate.simulation.estimated_peak_bytes,
-            )
-        )
+        measured_candidates.append(_measure_candidate_for_parent(executor, validation))
     measured_tuple = tuple(measured_candidates)
     selected_measured = _select_measured_candidate(measured_tuple, memory_budget_bytes=memory_budget_bytes)
     if selected_measured is None:
