@@ -393,6 +393,7 @@ class OptimizedTrainingResult:
     dry_run: DryRunResult | None = None
     measured_candidates: tuple[MeasuredExecutable, ...] = ()
     cache_stats: CacheStats = field(default_factory=CacheStats)
+    optimization_metrics: dict[str, int | float | None] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

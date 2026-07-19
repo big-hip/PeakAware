@@ -181,6 +181,31 @@ def _simulation_accuracy_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _optimization_cost_row(
+    result: OptimizedTrainingResult,
+    measured_candidate_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    metrics = dict(result.optimization_metrics)
+    all_save = next((row for row in measured_candidate_rows if row["plan_id"] == "all_save"), None)
+    baseline_step_us = None if all_save is None else float(all_save["step_us"])
+    selected_step_us = float(result.executable.measured_step_us)
+    saved_step_us = None if baseline_step_us is None else baseline_step_us - selected_step_us
+    total_us = metrics.get("total_optimization_us")
+    amortization_steps = None
+    if total_us is not None and saved_step_us is not None and saved_step_us > 0:
+        amortization_steps = float(total_us) / saved_step_us
+    metrics.update(
+        {
+            "baseline_plan_id": None if all_save is None else all_save["plan_id"],
+            "baseline_step_us": baseline_step_us,
+            "selected_step_us": selected_step_us,
+            "saved_step_us": saved_step_us,
+            "amortization_steps": amortization_steps,
+        }
+    )
+    return metrics
+
+
 def _early_stop_row(result: OptimizedTrainingResult) -> dict[str, Any] | None:
     if result.analysis is None or result.analysis.early_stop is None:
         return None
@@ -412,6 +437,7 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "candidates": correction_rows,
             "simulation_accuracy": _simulation_accuracy_row(correction_rows),
         },
+        "optimization_cost": _optimization_cost_row(result, measured_candidate_rows),
         "cache": {
             "layer_hits": result.cache_stats.layer_hits,
             "layer_misses": result.cache_stats.layer_misses,

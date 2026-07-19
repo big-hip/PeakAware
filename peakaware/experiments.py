@@ -77,6 +77,13 @@ class ExperimentRecord:
     cache_total_hits: int
     cache_total_misses: int
     cache_hit_rate: float | None
+    optimization_total_us: float | None
+    optimization_capture_us: float | None
+    optimization_ir_build_us: float | None
+    optimization_analysis_us: float | None
+    optimization_executor_build_us: float | None
+    optimization_candidate_validation_measurement_us: float | None
+    optimization_amortization_steps: float | None
     candidate_count: int
     fallback_plan_ids: tuple[str, ...]
     diagnostic_hints_enabled: bool | None = None
@@ -119,6 +126,13 @@ class ExperimentSummary:
     aggregate_cache_hit_rate: float | None
     total_cache_hits: int
     total_cache_misses: int
+    mean_optimization_total_us: float | None
+    mean_optimization_capture_us: float | None
+    mean_optimization_ir_build_us: float | None
+    mean_optimization_analysis_us: float | None
+    mean_optimization_executor_build_us: float | None
+    mean_optimization_candidate_validation_measurement_us: float | None
+    mean_optimization_amortization_steps: float | None
     selected_prediction_count: int
     mean_selected_prediction_absolute_error_bytes: float | None
     max_selected_prediction_absolute_error_bytes: int | None
@@ -197,6 +211,7 @@ def _record_success(
     baseline_peak_bytes = None if baseline is None else int(baseline["estimated_peak_bytes"])
     selected_peak_bytes = int(summary["estimated_peak_bytes"])
     cache = summary.get("cache", {})
+    optimization_cost = summary.get("optimization_cost", {})
     step_us = float(measured["step_us"])
     measured_peak_bytes = int(measured["peak_bytes"])
     all_save_peak = None if measured_baseline is None else int(measured_baseline["peak_bytes"])
@@ -265,6 +280,15 @@ def _record_success(
         cache_total_hits=int(cache.get("total_hits", 0)),
         cache_total_misses=int(cache.get("total_misses", 0)),
         cache_hit_rate=cache.get("hit_rate"),
+        optimization_total_us=optimization_cost.get("total_optimization_us"),
+        optimization_capture_us=optimization_cost.get("capture_us"),
+        optimization_ir_build_us=optimization_cost.get("ir_build_us"),
+        optimization_analysis_us=optimization_cost.get("analysis_us"),
+        optimization_executor_build_us=optimization_cost.get("executor_build_us"),
+        optimization_candidate_validation_measurement_us=optimization_cost.get(
+            "candidate_validation_measurement_us"
+        ),
+        optimization_amortization_steps=optimization_cost.get("amortization_steps"),
         candidate_count=len(summary["plans"]),
         fallback_plan_ids=tuple(summary["fallback_plan_ids"]),
         diagnostic_hints_enabled=search_diagnostics.get("diagnostic_hints_enabled"),
@@ -334,6 +358,13 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         cache_total_hits=0,
         cache_total_misses=0,
         cache_hit_rate=None,
+        optimization_total_us=None,
+        optimization_capture_us=None,
+        optimization_ir_build_us=None,
+        optimization_analysis_us=None,
+        optimization_executor_build_us=None,
+        optimization_candidate_validation_measurement_us=None,
+        optimization_amortization_steps=None,
         candidate_count=0,
         fallback_plan_ids=(),
         diagnostic_hints_enabled=None,
@@ -585,6 +616,37 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
     ]
     total_hits = sum(record.cache_total_hits for record in records)
     total_misses = sum(record.cache_total_misses for record in records)
+    optimization_totals = [record.optimization_total_us for record in ok if record.optimization_total_us is not None]
+    optimization_captures = [
+        record.optimization_capture_us
+        for record in ok
+        if record.optimization_capture_us is not None
+    ]
+    optimization_ir_builds = [
+        record.optimization_ir_build_us
+        for record in ok
+        if record.optimization_ir_build_us is not None
+    ]
+    optimization_analyses = [
+        record.optimization_analysis_us
+        for record in ok
+        if record.optimization_analysis_us is not None
+    ]
+    optimization_executor_builds = [
+        record.optimization_executor_build_us
+        for record in ok
+        if record.optimization_executor_build_us is not None
+    ]
+    optimization_candidate_validations = [
+        record.optimization_candidate_validation_measurement_us
+        for record in ok
+        if record.optimization_candidate_validation_measurement_us is not None
+    ]
+    optimization_amortization_steps = [
+        record.optimization_amortization_steps
+        for record in ok
+        if record.optimization_amortization_steps is not None
+    ]
     repaired_candidate_count = sum(record.repaired_candidate_count for record in ok)
     repair_success_count = sum(record.repair_success_count for record in ok)
     exact_success = [record for record in ok if record.exact_plan_key is not None]
@@ -615,6 +677,13 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         aggregate_cache_hit_rate=None if total_hits + total_misses == 0 else total_hits / (total_hits + total_misses),
         total_cache_hits=total_hits,
         total_cache_misses=total_misses,
+        mean_optimization_total_us=_mean(optimization_totals),
+        mean_optimization_capture_us=_mean(optimization_captures),
+        mean_optimization_ir_build_us=_mean(optimization_ir_builds),
+        mean_optimization_analysis_us=_mean(optimization_analyses),
+        mean_optimization_executor_build_us=_mean(optimization_executor_builds),
+        mean_optimization_candidate_validation_measurement_us=_mean(optimization_candidate_validations),
+        mean_optimization_amortization_steps=_mean(optimization_amortization_steps),
         selected_prediction_count=len(selected_abs_errors),
         mean_selected_prediction_absolute_error_bytes=_mean(selected_abs_errors),
         max_selected_prediction_absolute_error_bytes=None if not selected_abs_errors else max(selected_abs_errors),

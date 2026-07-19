@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -488,7 +489,14 @@ def optimize_training(
     config = config or PeakAwareConfig()
     example_kwargs = dict(example_kwargs or {})
     _validate_request(model, example_args, example_kwargs, loss_fn, optimizer, memory_budget_bytes, config)
+    optimization_start = time.perf_counter()
+    optimization_metrics: dict[str, int | float | None] = {}
+
+    def mark_elapsed(name: str, start: float) -> None:
+        optimization_metrics[name] = (time.perf_counter() - start) * 1_000_000.0
+
     model.train()
+    setup_start = time.perf_counter()
     registry = build_default_registry(profile_db_path=config.profile_db_path)
     cache_root = _cache_root(config)
     cache_hits: dict[str, int] = {}
@@ -511,11 +519,15 @@ def optimize_training(
         hardware=_hardware_spec(example_args, example_kwargs),
         request_key=_request_key(model, example_args, example_kwargs, memory_budget_bytes, config),
     )
+    mark_elapsed("request_setup_us", setup_start)
 
+    coarse_start = time.perf_counter()
     fixed_timeline, coarse = analyze_coarse_feasibility(model, optimizer, memory_budget_bytes)
+    mark_elapsed("coarse_feasibility_us", coarse_start)
     if coarse.status == "INFEASIBLE_BY_ACTIVATION_ONLY":
         raise InfeasibleBudgetError(coarse.explanations[0])
 
+    capture_start = time.perf_counter()
     capture_provenance = _capture_cache_provenance(request)
     use_capture_cache = cache_root is not None and _can_cache_capture(config)
     capture = None if not use_capture_cache else load_capture_cache(cache_root, request.request_key, capture_provenance)
@@ -525,14 +537,20 @@ def optimize_training(
         capture = capture_joint_graph(request)
         if use_capture_cache:
             _try_store_capture_cache(cache_root, request.request_key, capture, capture_provenance)
+    mark_elapsed("capture_us", capture_start)
+    ir_start = time.perf_counter()
     ir, ir_report = build_joint_ir(capture)
+    mark_elapsed("ir_build_us", ir_start)
     if not ir_report.valid:
         raise ValueError(f"invalid IR: {ir_report.errors}")
 
+    refined_start = time.perf_counter()
     feasibility = analyze_refined_feasibility(ir, fixed_timeline, memory_budget_bytes)
+    mark_elapsed("refined_feasibility_us", refined_start)
     if feasibility.status == "INFEASIBLE_BY_ACTIVATION_ONLY":
         raise InfeasibleBudgetError(feasibility.explanations[0])
 
+    analysis_start = time.perf_counter()
     analysis_key = _analysis_cache_key(ir.graph_key, optimizer_spec.name, memory_budget_bytes, config)
     analysis_provenance = _analysis_cache_provenance(
         request,
@@ -580,8 +598,10 @@ def optimize_training(
                 ),
                 analysis_provenance,
             )
+    mark_elapsed("analysis_us", analysis_start)
     if not evaluated:
         raise InfeasibleBudgetError("no plans were generated")
+    executor_start = time.perf_counter()
     executor = build_training_step_executor(
         model,
         optimizer,
@@ -590,9 +610,11 @@ def optimize_training(
         capture.guards,
         selection_objective=config.selection_objective,
     )
+    mark_elapsed("executor_build_us", executor_start)
     measured_candidates: list[MeasuredExecutable] = []
     dry_runs: dict[str, DryRunResult] = {}
     rejected: dict[str, str] = {}
+    validation_start = time.perf_counter()
     for candidate in evaluated:
         payload = _candidate_payload(request, capture, candidate, ir, isolate=config.isolate_candidate_measurement)
         if config.isolate_candidate_measurement:
@@ -625,6 +647,7 @@ def optimize_training(
             rejected[candidate.plan.plan_id] = "candidate measurement is unavailable"
             continue
         measured_candidates.append(_measure_candidate_for_parent(executor, validation))
+    mark_elapsed("candidate_validation_measurement_us", validation_start)
     measured_tuple = tuple(measured_candidates)
     selected_measured = _select_measured_candidate(
         measured_tuple,
@@ -658,6 +681,10 @@ def optimize_training(
         capture_failures=capture_failures,
         search_diagnostics=search_diagnostics,
     )
+    optimization_metrics["candidate_count"] = len(evaluated)
+    optimization_metrics["measured_candidate_count"] = len(measured_tuple)
+    optimization_metrics["rejected_candidate_count"] = len(rejected)
+    optimization_metrics["total_optimization_us"] = (time.perf_counter() - optimization_start) * 1_000_000.0
     return OptimizedTrainingResult(
         selected_plan=selected.plan,
         executable=measured,
@@ -668,4 +695,5 @@ def optimize_training(
         dry_run=dry_run,
         measured_candidates=measured_tuple,
         cache_stats=CacheStats(layer_hits=cache_hits, layer_misses=cache_misses),
+        optimization_metrics=optimization_metrics,
     )

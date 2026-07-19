@@ -110,6 +110,8 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert "error_bytes" in summary["measured_candidates"][0]["prediction_error"]
     assert "phase_match" in summary["measured_candidates"][0]["prediction_error"]
     assert "feasibility_match" in summary["measured_candidates"][0]["prediction_error"]
+    assert summary["optimization_cost"]["total_optimization_us"] is not None
+    assert "amortization_steps" in summary["optimization_cost"]
     assert summary["cache"]["total_hits"] == result.cache_stats.total_hits
     assert plan_artifact["plan_id"] == result.selected_plan.plan_id
     assert plan_artifact["plan_key"] == summary["selected_plan_key"]
