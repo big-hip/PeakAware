@@ -10,6 +10,7 @@ from peakaware.contracts import (
     FeasibilityReport,
     MeasuredExecutable,
     OptimizedTrainingResult,
+    PeakSnapshot,
 )
 from peakaware.diagnostics import PlanDiagnosticReport, diagnose_plan, render_diagnostic_text
 from peakaware.search.plan import plan_identity_key
@@ -59,6 +60,23 @@ def _ranking_provenance(plan: EvaluatedPlan | None = None) -> dict[str, Any]:
     }
 
 
+def _peak_snapshot_row(snapshot: PeakSnapshot | None) -> dict[str, Any] | None:
+    if snapshot is None:
+        return None
+    return {
+        "phase": snapshot.phase,
+        "op_id": snapshot.op_id,
+        "live_storage_ids": tuple(sorted(snapshot.live_storage_ids)),
+        "live_bytes": snapshot.live_bytes,
+        "parameter_bytes": snapshot.parameter_bytes,
+        "gradient_bytes": snapshot.gradient_bytes,
+        "optimizer_bytes": snapshot.optimizer_bytes,
+        "saved_activation_bytes": snapshot.saved_activation_bytes,
+        "recomputed_bytes": snapshot.recomputed_bytes,
+        "workspace_bytes": snapshot.workspace_bytes,
+    }
+
+
 def _plan_row(plan: EvaluatedPlan) -> dict[str, Any]:
     return {
         "plan_id": plan.plan.plan_id,
@@ -74,6 +92,7 @@ def _plan_row(plan: EvaluatedPlan) -> dict[str, Any]:
         "risk_score": plan.plan.risk_score,
         "confidence": plan.plan.confidence,
         "ranking_provenance": _ranking_provenance(plan),
+        "peak_snapshot": _peak_snapshot_row(plan.simulation.peak_snapshot),
     }
 
 
@@ -133,6 +152,8 @@ def _counterfactual_rows(report: PlanDiagnosticReport) -> list[dict[str, Any]]:
             "peak_gain_bytes": item.peak_gain_bytes,
             "confidence": item.confidence,
             "unavailable_reason": item.unavailable_reason,
+            "baseline_peak": _peak_snapshot_row(item.baseline_peak),
+            "candidate_peak": _peak_snapshot_row(item.candidate_peak),
         }
         for item in report.counterfactuals
     ]
@@ -322,6 +343,9 @@ def summarize_plan_artifact(result: OptimizedTrainingResult) -> dict[str, Any]:
         "risk_score": result.selected_plan.risk_score,
         "confidence": result.selected_plan.confidence,
         "ranking_provenance": _ranking_provenance(selected_evaluated),
+        "peak_snapshot": None
+        if selected_evaluated is None
+        else _peak_snapshot_row(selected_evaluated.simulation.peak_snapshot),
         "measured_peak_bytes": result.executable.measured_peak_bytes,
         "measured_step_us": result.executable.measured_step_us,
         "correctness": None
