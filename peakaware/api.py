@@ -49,6 +49,10 @@ from peakaware.runtime.isolation import run_in_worker_process
 from peakaware.search.engine import search_plans
 
 
+CAPTURE_SCHEMA_VERSION = "capture-v2-guarded-graph-key"
+ANALYSIS_SCHEMA_VERSION = "analysis-v1"
+
+
 def _hardware_spec(args: tuple[Any, ...], kwargs: dict[str, Any]) -> HardwareSpec:
     devices = [value.device for value in list(args) + list(kwargs.values()) if isinstance(value, Tensor)]
     device = str(devices[0]) if devices else ("cuda" if torch.cuda.is_available() else "cpu")
@@ -79,6 +83,7 @@ def _capture_cache_provenance(request: TrainingRequest) -> dict[str, Any]:
         "torch_version": torch.__version__,
         "request_key": request.request_key,
         "capture_backend": request.config.capture_backend,
+        "capture_schema_version": CAPTURE_SCHEMA_VERSION,
     }
 
 
@@ -87,14 +92,27 @@ def _can_cache_capture(config: PeakAwareConfig) -> bool:
     return config.capture_backend == "fx"
 
 
+def _try_store_capture_cache(
+    root: Path,
+    key: str,
+    capture: CapturedJointGraph,
+    provenance: dict[str, Any],
+) -> bool:
+    try:
+        store_capture_cache(root, key, capture, provenance)
+    except Exception:
+        return False
+    return True
+
+
 def _analysis_cache_key(
-    request: TrainingRequest,
+    graph_key: str,
     optimizer_name: str,
     memory_budget_bytes: int,
     config: PeakAwareConfig,
 ) -> str:
     return build_plan_evaluation_key(
-        analysis_key=request.request_key,
+        analysis_key=graph_key,
         optimizer_mode=optimizer_name,
         cost_database_version=str(config.profile_db_path or "none"),
         search_policy_version=f"peakaware-topk{config.top_k}",
@@ -104,6 +122,7 @@ def _analysis_cache_key(
 
 def _analysis_cache_provenance(
     request: TrainingRequest,
+    graph_key: str,
     optimizer_name: str,
     memory_budget_bytes: int,
     config: PeakAwareConfig,
@@ -111,6 +130,8 @@ def _analysis_cache_provenance(
     return {
         "torch_version": torch.__version__,
         "request_key": request.request_key,
+        "graph_key": graph_key,
+        "analysis_schema_version": ANALYSIS_SCHEMA_VERSION,
         "optimizer": optimizer_name,
         "budget_bytes": memory_budget_bytes,
         "top_k": config.top_k,
@@ -418,7 +439,7 @@ def optimize_training(
     if capture is None:
         capture = capture_joint_graph(request)
         if use_capture_cache:
-            store_capture_cache(cache_root, request.request_key, capture, capture_provenance)
+            _try_store_capture_cache(cache_root, request.request_key, capture, capture_provenance)
     ir, ir_report = build_joint_ir(capture)
     if not ir_report.valid:
         raise ValueError(f"invalid IR: {ir_report.errors}")
@@ -427,8 +448,14 @@ def optimize_training(
     if feasibility.status == "INFEASIBLE_BY_ACTIVATION_ONLY":
         raise InfeasibleBudgetError(feasibility.explanations[0])
 
-    analysis_key = _analysis_cache_key(request, optimizer_spec.name, memory_budget_bytes, config)
-    analysis_provenance = _analysis_cache_provenance(request, optimizer_spec.name, memory_budget_bytes, config)
+    analysis_key = _analysis_cache_key(ir.graph_key, optimizer_spec.name, memory_budget_bytes, config)
+    analysis_provenance = _analysis_cache_provenance(
+        request,
+        ir.graph_key,
+        optimizer_spec.name,
+        memory_budget_bytes,
+        config,
+    )
     cached_analysis = None if cache_root is None else load_analysis_cache(cache_root, analysis_key, analysis_provenance)
     if cache_root is not None:
         record_cache("analysis", cached_analysis is not None)
