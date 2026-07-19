@@ -1,5 +1,6 @@
 from .registry import (
     TinyAttentionBlock,
+    GPT2Like,
     TinyMLP,
     TinyResidual,
     TrainingTaskRegistry,
@@ -14,6 +15,7 @@ from .registry import (
 
 __all__ = [
     "TinyAttentionBlock",
+    "GPT2Like",
     "TinyMLP",
     "TinyResidual",
     "TrainingTaskRegistry",

@@ -56,6 +56,67 @@ class TinyAttentionBlock(nn.Module):
         return self.out(hidden).mean(dim=1)
 
 
+class CausalSelfAttentionBlock(nn.Module):
+    def __init__(self, width: int, num_heads: int, sequence_length: int, mlp_ratio: int = 4) -> None:
+        super().__init__()
+        if width % num_heads != 0:
+            raise ValueError("width must be divisible by num_heads")
+        self.num_heads = num_heads
+        self.head_dim = width // num_heads
+        self.ln_1 = nn.LayerNorm(width)
+        self.qkv = nn.Linear(width, width * 3)
+        self.proj = nn.Linear(width, width)
+        self.ln_2 = nn.LayerNorm(width)
+        self.mlp = nn.Sequential(
+            nn.Linear(width, width * mlp_ratio),
+            nn.GELU(),
+            nn.Linear(width * mlp_ratio, width),
+        )
+        causal_mask = torch.triu(torch.ones(sequence_length, sequence_length, dtype=torch.bool), diagonal=1)
+        self.register_buffer("causal_mask", causal_mask.view(1, 1, sequence_length, sequence_length), persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        normalized = self.ln_1(x)
+        batch_size, sequence_length, width = normalized.shape
+        qkv = self.qkv(normalized).view(batch_size, sequence_length, 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        scores = torch.matmul(q, k.transpose(-1, -2)) * (self.head_dim**-0.5)
+        scores = scores.masked_fill(self.causal_mask, float("-inf"))
+        weights = torch.softmax(scores, dim=-1)
+        attended = torch.matmul(weights, v).transpose(1, 2).contiguous().view(batch_size, sequence_length, width)
+        x = residual + self.proj(attended)
+        return x + self.mlp(self.ln_2(x))
+
+
+class GPT2Like(nn.Module):
+    def __init__(
+        self,
+        vocab_size: int = 50257,
+        sequence_length: int = 32,
+        width: int = 64,
+        num_layers: int = 2,
+        num_heads: int = 4,
+    ) -> None:
+        super().__init__()
+        self.token_embedding = nn.Embedding(vocab_size, width)
+        self.position_embedding = nn.Embedding(sequence_length, width)
+        self.blocks = nn.ModuleList(
+            CausalSelfAttentionBlock(width, num_heads, sequence_length)
+            for _ in range(num_layers)
+        )
+        self.ln_f = nn.LayerNorm(width)
+        self.lm_head = nn.Linear(width, vocab_size, bias=False)
+        self.register_buffer("position_ids", torch.arange(sequence_length), persistent=False)
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        x = self.token_embedding(input_ids) + self.position_embedding(self.position_ids)
+        for block in self.blocks:
+            x = block(x)
+        return self.lm_head(self.ln_f(x))
+
+
 @dataclass(frozen=True)
 class DenseBatchBuilder:
     width: int
@@ -149,17 +210,13 @@ def build_gpt2_model(
     n_layer: int = 2,
     n_head: int = 4,
 ) -> nn.Module:
-    from transformers import GPT2Config, GPT2LMHeadModel
-
-    config = GPT2Config(
+    return GPT2Like(
         vocab_size=vocab_size,
-        n_positions=n_positions,
-        n_ctx=n_positions,
-        n_embd=n_embd,
-        n_layer=n_layer,
-        n_head=n_head,
+        sequence_length=n_positions,
+        width=n_embd,
+        num_layers=n_layer,
+        num_heads=n_head,
     )
-    return GPT2LMHeadModel(config)
 
 
 def build_tiny_residual_task(width: int = 8) -> TrainingTaskSpec:

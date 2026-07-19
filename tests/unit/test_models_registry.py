@@ -109,3 +109,30 @@ def test_registered_mlp_and_attention_build_valid_ir():
 
         assert report.valid
         assert ir.values
+
+
+def test_gpt2_like_task_builds_valid_ir_without_transformers_fx_capture():
+    torch.manual_seed(0)
+    task = build_gpt2_task(sequence_length=8, vocab_size=101, n_embd=16, n_layer=1, n_head=4)
+    model = task.build_model()
+    optimizer = task.build_optimizer(model)
+    args, kwargs = task.build_batch(2)
+    request = TrainingRequest(
+        model=model,
+        example_args=args,
+        example_kwargs=kwargs,
+        loss_fn=task.loss_fn,
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 28,
+        config=PeakAwareConfig(),
+        optimizer_spec=OptimizerSpec("adamw", 1, sum(1 for _ in model.parameters()), 0, 0),
+        hardware=HardwareSpec("cpu", False, None),
+        request_key=task.name,
+    )
+
+    capture = capture_joint_graph(request)
+    ir, report = build_joint_ir(capture)
+
+    assert report.valid
+    assert ir.values
+    assert any(value.phase == "fw" and value.crosses_fw_bw for value in ir.values)
