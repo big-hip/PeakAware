@@ -660,14 +660,20 @@ def experiment_variant_summaries_to_dict(
     return {variant_name: experiment_summary_to_dict(summary) for variant_name, summary in summaries.items()}
 
 
+def _ensure_parent_dir(path: str | Path) -> Path:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    return output_path
+
+
 def write_experiment_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
     text = json.dumps(experiment_records_to_dicts(records), indent=2, sort_keys=True)
-    Path(path).write_text(text + "\n", encoding="utf-8")
+    _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 
 def write_experiment_summary_json(summary: ExperimentSummary, path: str | Path) -> None:
     text = json.dumps(experiment_summary_to_dict(summary), indent=2, sort_keys=True)
-    Path(path).write_text(text + "\n", encoding="utf-8")
+    _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 
 def write_experiment_variant_summary_json(
@@ -675,13 +681,13 @@ def write_experiment_variant_summary_json(
     path: str | Path,
 ) -> None:
     text = json.dumps(experiment_variant_summaries_to_dict(summaries), indent=2, sort_keys=True)
-    Path(path).write_text(text + "\n", encoding="utf-8")
+    _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 
 def write_experiment_csv(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
     rows = experiment_records_to_dicts(records)
     fieldnames = tuple(ExperimentRecord.__dataclass_fields__)
-    with Path(path).open("w", newline="", encoding="utf-8") as handle:
+    with _ensure_parent_dir(path).open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)

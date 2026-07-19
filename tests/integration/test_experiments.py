@@ -257,6 +257,23 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert "repair_success_rate" in summary_payload
 
 
+def test_experiment_writers_create_parent_directories(tmp_path):
+    records = (_minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80),)
+    summary = summarize_experiment_records(records)
+    variant_summaries = summarize_experiment_records_by_variant(records)
+    base = tmp_path / "nested" / "artifacts"
+
+    write_experiment_json(records, base / "records.json")
+    write_experiment_csv(records, base / "records.csv")
+    write_experiment_summary_json(summary, base / "summary.json")
+    write_experiment_variant_summary_json(variant_summaries, base / "variant_summary.json")
+
+    assert (base / "records.json").exists()
+    assert (base / "records.csv").exists()
+    assert (base / "summary.json").exists()
+    assert (base / "variant_summary.json").exists()
+
+
 def test_experiment_matrix_can_include_exact_small_graph_baseline():
     registry = TrainingTaskRegistry()
     registry.register(_build_exact_small_task())
