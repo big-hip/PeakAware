@@ -103,6 +103,7 @@ def _lower_candidate(capture: CapturedJointGraph, candidate: EvaluatedPlan, ir: 
 
 def _dry_run_candidate(
     lowered: LoweredPartition,
+    ir: JointTrainingIR,
     *,
     model: nn.Module,
     example_args: tuple[Any, ...],
@@ -118,6 +119,7 @@ def _dry_run_candidate(
         loss_fn=loss_fn,
         atol=config.atol,
         rtol=config.rtol,
+        ir=ir,
     )
 
 
@@ -171,6 +173,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
     lowered = _lower_candidate(capture, candidate, ir)
     dry_run = _dry_run_candidate(
         lowered,
+        ir,
         model=model,
         example_args=example_args,
         example_kwargs=example_kwargs,

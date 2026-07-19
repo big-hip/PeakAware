@@ -18,18 +18,51 @@ def verify_partition_abi(lowered: LoweredPartition) -> tuple[bool, str | None]:
 
 
 def verify_partition_structure(lowered: LoweredPartition, ir: JointTrainingIR) -> tuple[bool, str | None]:
-    del ir
-    return verify_partition_abi(lowered)
+    abi_valid, abi_reason = verify_partition_abi(lowered)
+    if not abi_valid:
+        return False, abi_reason
+    if len(list(lowered.fw_graph.graph.nodes)) == 0:
+        return False, "FW graph is empty"
+    if len(list(lowered.bw_graph.graph.nodes)) == 0:
+        return False, "BW graph is empty"
+    known_value_ids = {value.id for value in ir.values}
+    abi_value_ids = (
+        tuple(lowered.partition_abi.fw_output_value_ids)
+        + tuple(lowered.partition_abi.bw_placeholder_value_ids)
+        + tuple(lowered.partition_abi.tangent_value_ids)
+        + tuple(lowered.partition_abi.rng_state_value_ids)
+    )
+    unknown = sorted(value_id for value_id in abi_value_ids if value_id not in known_value_ids)
+    if unknown:
+        return False, f"partition ABI references unknown IR value ids: {unknown}"
+    if len(set(lowered.partition_abi.fw_output_value_ids)) != len(lowered.partition_abi.fw_output_value_ids):
+        return False, "FW output value ids contain duplicates"
+    return True, None
 
 
 def verify_recomputed_nodes(lowered: LoweredPartition, ir: JointTrainingIR) -> tuple[bool, str | None]:
-    del lowered, ir
+    saved_value_ids = set(lowered.partition_abi.fw_output_value_ids)
+    illegally_dropped = sorted(
+        value.id
+        for value in ir.values
+        if value.phase == "fw"
+        and value.crosses_fw_bw
+        and value.id not in saved_value_ids
+        and (not value.recomputable or value.mandatory_save_reason is not None)
+    )
+    if illegally_dropped:
+        return False, f"partition dropped non-recomputable or mandatory FW values: {illegally_dropped}"
     return True, None
 
 
 def verify_rng_and_tangents(lowered: LoweredPartition) -> tuple[bool, str | None]:
     if lowered.partition_abi.tangent_value_ids:
         return False, "M0 eager partition does not model tangent ABI"
+    missing_rng_outputs = sorted(
+        set(lowered.partition_abi.rng_state_value_ids) - set(lowered.partition_abi.fw_output_value_ids)
+    )
+    if missing_rng_outputs:
+        return False, f"RNG state value ids must be forwarded to BW placeholders: {missing_rng_outputs}"
     return True, None
 
 
@@ -96,10 +129,19 @@ def run_aot_eager_dry_run(
     loss_fn: Any,
     atol: float,
     rtol: float,
+    ir: JointTrainingIR | None = None,
 ) -> DryRunResult:
-    abi_valid, abi_reason = verify_partition_abi(lowered)
-    if not abi_valid:
-        return DryRunResult(lowered.plan_id, False, False, False, False, abi_reason)
+    if ir is None:
+        structure_valid, structure_reason = verify_partition_abi(lowered)
+    else:
+        structure_valid, structure_reason = verify_partition_structure(lowered, ir)
+        if structure_valid:
+            structure_valid, structure_reason = verify_recomputed_nodes(lowered, ir)
+    if not structure_valid:
+        return DryRunResult(lowered.plan_id, False, False, False, False, structure_reason)
+    rng_valid, rng_reason = verify_rng_and_tangents(lowered)
+    if not rng_valid:
+        return DryRunResult(lowered.plan_id, False, False, False, False, rng_reason)
     rng_state = torch.get_rng_state()
     try:
         ok, reason = compare_dry_run_with_baseline(model, args, kwargs, loss_fn, atol=atol, rtol=rtol)
