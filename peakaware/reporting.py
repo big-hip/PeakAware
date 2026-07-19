@@ -135,13 +135,25 @@ def _prediction_error_row(
     }
 
 
+def _percentile(values: list[float | int], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    index = round((len(ordered) - 1) * percentile)
+    return ordered[index]
+
+
 def _simulation_accuracy_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {
             "candidate_count": 0,
             "mean_absolute_error_bytes": None,
+            "p50_absolute_error_bytes": None,
+            "p90_absolute_error_bytes": None,
             "max_absolute_error_bytes": None,
             "mean_absolute_relative_error": None,
+            "p50_absolute_relative_error": None,
+            "p90_absolute_relative_error": None,
             "within_10_percent_rate": None,
             "phase_classification_count": 0,
             "phase_classification_accuracy": None,
@@ -163,10 +175,14 @@ def _simulation_accuracy_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "candidate_count": len(rows),
         "mean_absolute_error_bytes": sum(absolute_errors) / len(absolute_errors),
+        "p50_absolute_error_bytes": _percentile(absolute_errors, 0.50),
+        "p90_absolute_error_bytes": _percentile(absolute_errors, 0.90),
         "max_absolute_error_bytes": max(absolute_errors),
         "mean_absolute_relative_error": None
         if not relative_errors
         else sum(relative_errors) / len(relative_errors),
+        "p50_absolute_relative_error": _percentile(relative_errors, 0.50),
+        "p90_absolute_relative_error": _percentile(relative_errors, 0.90),
         "within_10_percent_rate": None
         if not relative_errors
         else sum(1 for error in relative_errors if error <= 0.10) / len(relative_errors),

@@ -104,6 +104,10 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
         summary["topk_correction"]["candidates"]
     )
     assert summary["topk_correction"]["simulation_accuracy"]["max_absolute_error_bytes"] >= 0
+    assert summary["topk_correction"]["simulation_accuracy"]["p50_absolute_error_bytes"] is not None
+    assert summary["topk_correction"]["simulation_accuracy"]["p90_absolute_error_bytes"] is not None
+    assert summary["topk_correction"]["simulation_accuracy"]["p50_absolute_relative_error"] is not None
+    assert summary["topk_correction"]["simulation_accuracy"]["p90_absolute_relative_error"] is not None
     assert summary["topk_correction"]["simulation_accuracy"]["within_10_percent_rate"] is not None
     assert "phase_classification_accuracy" in summary["topk_correction"]["simulation_accuracy"]
     assert "feasible_classification_accuracy" in summary["topk_correction"]["simulation_accuracy"]

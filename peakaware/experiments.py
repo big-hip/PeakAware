@@ -139,12 +139,20 @@ class ExperimentSummary:
     total_actual_joint_capture_count: int
     selected_prediction_count: int
     mean_selected_prediction_absolute_error_bytes: float | None
+    p50_selected_prediction_absolute_error_bytes: float | None
+    p90_selected_prediction_absolute_error_bytes: float | None
     max_selected_prediction_absolute_error_bytes: int | None
     mean_selected_prediction_absolute_relative_error: float | None
+    p50_selected_prediction_absolute_relative_error: float | None
+    p90_selected_prediction_absolute_relative_error: float | None
     simulation_accuracy_candidate_count: int
     mean_simulation_accuracy_absolute_error_bytes: float | None
+    p50_simulation_accuracy_absolute_error_bytes: float | None
+    p90_simulation_accuracy_absolute_error_bytes: float | None
     max_simulation_accuracy_absolute_error_bytes: int | None
     mean_simulation_accuracy_absolute_relative_error: float | None
+    p50_simulation_accuracy_absolute_relative_error: float | None
+    p90_simulation_accuracy_absolute_relative_error: float | None
     mean_simulation_accuracy_within_10_percent_rate: float | None
     phase_classification_count: int
     phase_classification_accuracy: float | None
@@ -548,6 +556,14 @@ def _mean(values: list[float | int]) -> float | None:
     return None if not values else sum(values) / len(values)
 
 
+def _percentile(values: list[float | int], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    index = round((len(ordered) - 1) * percentile)
+    return ordered[index]
+
+
 def _counts(values: list[str | None]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for value in values:
@@ -641,6 +657,18 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         abs(record.selected_prediction_relative_error)
         for record in ok
         if record.selected_prediction_relative_error is not None
+    ]
+    simulation_accuracy_abs_errors = [
+        abs(int(row["prediction_error_bytes"]))
+        for record in ok
+        for row in record.measured_plan_results
+        if row.get("prediction_error_bytes") is not None
+    ]
+    simulation_accuracy_abs_relative_errors = [
+        abs(float(row["prediction_error_bytes"]) / float(row["estimated_peak_bytes"]))
+        for record in ok
+        for row in record.measured_plan_results
+        if row.get("prediction_error_bytes") is not None and row.get("estimated_peak_bytes")
     ]
     simulation_accuracy_counts = [
         record.simulation_accuracy_candidate_count
@@ -765,14 +793,26 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         total_actual_joint_capture_count=sum(record.actual_joint_capture_count for record in records),
         selected_prediction_count=len(selected_abs_errors),
         mean_selected_prediction_absolute_error_bytes=_mean(selected_abs_errors),
+        p50_selected_prediction_absolute_error_bytes=_percentile(selected_abs_errors, 0.50),
+        p90_selected_prediction_absolute_error_bytes=_percentile(selected_abs_errors, 0.90),
         max_selected_prediction_absolute_error_bytes=None if not selected_abs_errors else max(selected_abs_errors),
         mean_selected_prediction_absolute_relative_error=_mean(selected_abs_relative_errors),
+        p50_selected_prediction_absolute_relative_error=_percentile(selected_abs_relative_errors, 0.50),
+        p90_selected_prediction_absolute_relative_error=_percentile(selected_abs_relative_errors, 0.90),
         simulation_accuracy_candidate_count=sum(simulation_accuracy_counts),
-        mean_simulation_accuracy_absolute_error_bytes=_mean(simulation_accuracy_mean_abs_errors),
+        mean_simulation_accuracy_absolute_error_bytes=_mean(simulation_accuracy_abs_errors)
+        if simulation_accuracy_abs_errors
+        else _mean(simulation_accuracy_mean_abs_errors),
+        p50_simulation_accuracy_absolute_error_bytes=_percentile(simulation_accuracy_abs_errors, 0.50),
+        p90_simulation_accuracy_absolute_error_bytes=_percentile(simulation_accuracy_abs_errors, 0.90),
         max_simulation_accuracy_absolute_error_bytes=None
-        if not simulation_accuracy_max_abs_errors
-        else max(simulation_accuracy_max_abs_errors),
-        mean_simulation_accuracy_absolute_relative_error=_mean(simulation_accuracy_mean_relative_errors),
+        if not simulation_accuracy_abs_errors and not simulation_accuracy_max_abs_errors
+        else max(simulation_accuracy_abs_errors or simulation_accuracy_max_abs_errors),
+        mean_simulation_accuracy_absolute_relative_error=_mean(simulation_accuracy_abs_relative_errors)
+        if simulation_accuracy_abs_relative_errors
+        else _mean(simulation_accuracy_mean_relative_errors),
+        p50_simulation_accuracy_absolute_relative_error=_percentile(simulation_accuracy_abs_relative_errors, 0.50),
+        p90_simulation_accuracy_absolute_relative_error=_percentile(simulation_accuracy_abs_relative_errors, 0.90),
         mean_simulation_accuracy_within_10_percent_rate=_mean(simulation_accuracy_within_10),
         phase_classification_count=len(phase_matches),
         phase_classification_accuracy=None

@@ -144,23 +144,29 @@ def _minimal_record(
         else (
             {
                 "plan_id": "all_save",
+                "estimated_peak_bytes": 80,
                 "measured_peak_bytes": measured_peak_bytes + 10,
                 "measured_step_us": 12.0,
                 "measured_feasible": measured_peak_bytes + 10 <= budget_bytes,
+                "prediction_error_bytes": 8,
                 "correctness_passed": True,
             },
             {
                 "plan_id": "torch_min_cut",
+                "estimated_peak_bytes": 80,
                 "measured_peak_bytes": measured_peak_bytes,
                 "measured_step_us": 10.0,
                 "measured_feasible": measured_peak_bytes <= budget_bytes,
+                "prediction_error_bytes": 4,
                 "correctness_passed": True,
             },
             {
                 "plan_id": "block_checkpoint",
+                "estimated_peak_bytes": measured_peak_bytes + 5,
                 "measured_peak_bytes": measured_peak_bytes + 5,
                 "measured_step_us": 11.0,
                 "measured_feasible": measured_peak_bytes + 5 <= budget_bytes,
+                "prediction_error_bytes": None,
                 "correctness_passed": True,
             },
         ),
@@ -221,10 +227,19 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.mean_estimated_peak_reduction_bytes == 20.0
     assert summary.selected_prediction_count == 2
     assert summary.mean_selected_prediction_absolute_error_bytes == 4.0
+    assert summary.p50_selected_prediction_absolute_error_bytes == 4.0
+    assert summary.p90_selected_prediction_absolute_error_bytes == 4.0
     assert summary.mean_selected_prediction_absolute_relative_error == 0.05
+    assert summary.p50_selected_prediction_absolute_relative_error == 0.05
+    assert summary.p90_selected_prediction_absolute_relative_error == 0.05
     assert summary.simulation_accuracy_candidate_count == 4
     assert summary.mean_simulation_accuracy_absolute_error_bytes == 6.0
+    assert summary.p50_simulation_accuracy_absolute_error_bytes == 8.0
+    assert summary.p90_simulation_accuracy_absolute_error_bytes == 8.0
     assert summary.max_simulation_accuracy_absolute_error_bytes == 8
+    assert summary.mean_simulation_accuracy_absolute_relative_error == 0.075
+    assert summary.p50_simulation_accuracy_absolute_relative_error == 0.1
+    assert summary.p90_simulation_accuracy_absolute_relative_error == 0.1
     assert summary.mean_simulation_accuracy_within_10_percent_rate == 0.5
     assert summary.phase_classification_count == 2
     assert summary.phase_classification_accuracy == 1.0
@@ -419,6 +434,8 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert "measured_peak_phase_counts" in summary_payload
     assert summary_payload["selected_prediction_count"] == 1
     assert summary_payload["simulation_accuracy_candidate_count"] >= 1
+    assert "p50_simulation_accuracy_absolute_error_bytes" in summary_payload
+    assert "p90_simulation_accuracy_absolute_error_bytes" in summary_payload
     assert summary_payload["root_cause_counts"]
     assert "diagnostic_hint_count" in summary_payload
     assert "repair_success_rate" in summary_payload
@@ -602,6 +619,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert "phase_classification_count" in summary_payload
     assert "feasible_classification_count" in summary_payload
     assert summary_payload["mean_simulation_accuracy_absolute_error_bytes"] is not None
+    assert summary_payload["p50_simulation_accuracy_absolute_error_bytes"] is not None
+    assert summary_payload["p90_simulation_accuracy_absolute_error_bytes"] is not None
     assert "diagnostic_hint_kind_counts" in summary_payload
     assert summary_payload["exact_failure_count"] == 2
     assert "mean_optimization_amortization_steps" in summary_payload
