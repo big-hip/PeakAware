@@ -26,6 +26,7 @@ from .reporting import (
     validate_plan_artifact_identity,
 )
 from .root_cause_benchmark import run_synthetic_root_cause_benchmark
+from .sac_baseline import run_sac_baseline
 
 __all__ = [
     "ExperimentCase",
@@ -51,5 +52,6 @@ __all__ = [
     "optimize_microbatches",
     "optimize_training",
     "run_experiment_matrix",
+    "run_sac_baseline",
     "run_synthetic_root_cause_benchmark",
 ]
