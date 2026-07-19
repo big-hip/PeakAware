@@ -46,6 +46,7 @@ def main() -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--enable-compile", action="store_true")
     parser.add_argument("--enable-inductor", action="store_true")
+    parser.add_argument("--capture-backend", choices=("auto", "aot", "fx"), default="auto")
     parser.add_argument("--isolate", action="store_true")
     parser.add_argument("--diagnostic-hints", choices=("on", "off", "both"), default="on")
     parser.add_argument("--selection-objective", choices=("min_peak_then_time", "min_time_then_peak"), default="min_peak_then_time")
@@ -78,6 +79,7 @@ def main() -> None:
         top_k=args.top_k,
         enable_compile=args.enable_compile or args.enable_inductor,
         enable_inductor=args.enable_inductor,
+        capture_backend=args.capture_backend,
         isolate_candidate_measurement=args.isolate,
         profile_db_path=args.profile_db,
         cache_root=args.cache_root,

@@ -31,9 +31,21 @@ def _provenance_path(root: str | Path, layer: str, key: str) -> Path:
 def store_cache_entry(root: str | Path, layer: str, entry: CacheEntry) -> None:
     artifact_path = _artifact_path(root, layer, entry.key)
     provenance_path = _provenance_path(root, layer, entry.key)
-    with artifact_path.open("wb") as handle:
-        pickle.dump(entry.artifact, handle)
-    provenance_path.write_text(json.dumps(entry.provenance, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    artifact_tmp = artifact_path.with_suffix(f"{artifact_path.suffix}.tmp")
+    provenance_tmp = provenance_path.with_suffix(f"{provenance_path.suffix}.tmp")
+    try:
+        with artifact_tmp.open("wb") as handle:
+            pickle.dump(entry.artifact, handle)
+        provenance_tmp.write_text(
+            json.dumps(entry.provenance, indent=2, sort_keys=True, default=str) + "\n",
+            encoding="utf-8",
+        )
+        artifact_tmp.replace(artifact_path)
+        provenance_tmp.replace(provenance_path)
+    except Exception:
+        artifact_tmp.unlink(missing_ok=True)
+        provenance_tmp.unlink(missing_ok=True)
+        raise
 
 
 def load_cache_entry(root: str | Path, layer: str, key: str, expected_provenance: dict[str, Any] | None = None) -> CacheEntry | None:

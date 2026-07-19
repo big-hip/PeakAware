@@ -226,6 +226,7 @@ def _config_fingerprint(config: PeakAwareConfig, device: str = "cpu") -> dict[st
         "enable_compile": config.enable_compile,
         "enable_inductor": config.enable_inductor,
         "compile_backend": compile_backend,
+        "capture_backend": config.capture_backend,
         "selection_objective": config.selection_objective,
         "enable_diagnostic_hints": config.enable_diagnostic_hints,
         "safety_margin_bytes": config.safety_margin_bytes,

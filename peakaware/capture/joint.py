@@ -70,6 +70,7 @@ def _capture_with_fx(request: TrainingRequest, failures: tuple[FailureRecord, ..
             ShapeProp(gm).propagate(*request.example_args, **request.example_kwargs)
         else:
             ShapeProp(gm).propagate(*request.example_args)
+        _strip_pickle_unsafe_annotations(gm)
     except Exception as exc:  # pragma: no cover - exercised by integration failures
         raise CaptureError(f"failed to capture model with torch.fx: {exc}") from exc
 
@@ -87,6 +88,12 @@ def _capture_with_fx(request: TrainingRequest, failures: tuple[FailureRecord, ..
         backend="fx",
         failures=failures,
     )
+
+
+def _strip_pickle_unsafe_annotations(gm: fx.GraphModule) -> None:
+    for node in gm.graph.nodes:
+        node.type = None
+    gm.recompile()
 
 
 def _capture_with_aot_autograd(request: TrainingRequest) -> CapturedJointGraph:

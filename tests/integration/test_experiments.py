@@ -577,6 +577,7 @@ def test_steady_state_phase_summary_groups_compile_backend():
             "enable_compile": True,
             "enable_inductor": True,
             "compile_backend": "inductor",
+            "capture_backend": "auto",
         },
         measurement_repeats=20,
         measurement_warmup_steps=5,
@@ -629,6 +630,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].config_fingerprint["enable_compile"] is False
     assert records[0].config_fingerprint["enable_inductor"] is False
     assert records[0].config_fingerprint["compile_backend"] == "eager"
+    assert records[0].config_fingerprint["capture_backend"] == "auto"
     assert records[0].config_fingerprint["selection_objective"] == "min_peak_then_time"
     assert records[0].selected_plan_key is not None
     assert records[0].graph_key is not None
@@ -1081,6 +1083,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["status"] == "ok"
     assert stdout_payload[0]["selected_plan_key"]
     assert stdout_payload[0]["config_fingerprint"]["device"] == "cpu"
+    assert stdout_payload[0]["config_fingerprint"]["capture_backend"] == "auto"
     assert stdout_payload[0]["config_fingerprint"]["compile_backend"] == "eager"
     assert stdout_payload[0]["config_fingerprint"]["measurement_repeats"] == 2
     assert stdout_payload[0]["config_fingerprint"]["measurement_warmup_steps"] == 1
@@ -1161,3 +1164,52 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert csv_path.read_text(encoding="utf-8").startswith(
         "variant_name,config_fingerprint,task_name,microbatch_size,budget_bytes"
     )
+
+
+def test_run_experiments_script_supports_fx_capture_cache(tmp_path):
+    json_path = tmp_path / "records.json"
+    cache_reuse_path = tmp_path / "cache_reuse.json"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_experiments.py",
+            "--tasks",
+            "tiny_residual_w8",
+            "--budget-mib",
+            "256",
+            "--microbatches",
+            "1",
+            "--top-k",
+            "1",
+            "--device",
+            "cpu",
+            "--capture-backend",
+            "fx",
+            "--diagnostic-hints",
+            "on",
+            "--measurement-repeats",
+            "1",
+            "--matrix-passes",
+            "2",
+            "--cache-root",
+            str(tmp_path / "cache"),
+            "--output-json",
+            str(json_path),
+            "--output-cache-reuse-json",
+            str(cache_reuse_path),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    stdout_payload = json.loads(completed.stdout)
+    cache_reuse_payload = json.loads(cache_reuse_path.read_text(encoding="utf-8"))
+
+    assert len(stdout_payload) == 2
+    assert all(record["status"] == "ok" for record in stdout_payload)
+    assert stdout_payload[0]["config_fingerprint"]["capture_backend"] == "fx"
+    assert cache_reuse_payload["cold_actual_joint_capture_count"] == 1
+    assert cache_reuse_payload["warm_actual_joint_capture_count"] == 0
+    assert cache_reuse_payload["mean_warm_capture_cache_hit_rate"] == 1.0

@@ -42,7 +42,7 @@ from peakaware.memory.fixed_frontier import (
     analyze_refined_feasibility,
     build_optimizer_spec,
 )
-from peakaware.partition.aot import lower_partition_graphs
+from peakaware.partition.aot import lower_partition_graphs, partition_default_graph
 from peakaware.partition.verifier import run_aot_eager_dry_run
 from peakaware.plugins import ServiceKind, build_default_registry
 from peakaware.runtime.executor import build_training_step_executor, make_measured_executable
@@ -299,6 +299,8 @@ def _lower_candidate(capture: CapturedJointGraph, candidate: EvaluatedPlan, ir: 
             num_fwd_outputs=capture.num_fwd_outputs,
             static_lifetime_input_indices=capture.static_lifetime_input_indices,
         )
+    if capture.fw_module is None and capture.bw_module is None:
+        return partition_default_graph(capture.joint_module, candidate.plan, ir)
     return lower_partition_graphs(capture.joint_module, capture.fw_module, capture.bw_module, candidate.plan, ir)
 
 

@@ -176,6 +176,18 @@ def test_cache_entry_round_trip_validates_provenance(tmp_path):
     assert load_cache_entry(tmp_path, "analysis", "k1", {"torch": "2.12"}) is None
 
 
+def test_cache_entry_store_failure_leaves_no_partial_files(tmp_path):
+    entry = CacheEntry(key="bad", artifact=lambda value: value, provenance={"torch": "2.13"})
+
+    with pytest.raises(Exception):
+        store_cache_entry(tmp_path, "analysis", entry)
+
+    layer_dir = tmp_path / "analysis"
+    assert not (layer_dir / "bad.pkl").exists()
+    assert not (layer_dir / "bad.json").exists()
+    assert not list(layer_dir.glob("*.tmp"))
+
+
 def test_cache_invalidate_downstream_removes_lower_layers(tmp_path):
     store_cache_entry(tmp_path, "capture", CacheEntry("c", "capture", {}))
     store_cache_entry(tmp_path, "analysis", CacheEntry("a", "analysis", {}))

@@ -159,6 +159,38 @@ def test_enabled_capture_cache_skips_repeated_joint_capture(tmp_path, monkeypatc
     assert second.analysis.ir.graph_key == first.analysis.ir.graph_key
 
 
+def test_fx_capture_backend_reuses_persistent_capture_cache(tmp_path):
+    task = TrainingTaskRegistry.with_defaults().get("tiny_residual_w8")
+    config = PeakAwareConfig(
+        cache_root=tmp_path,
+        capture_backend="fx",
+        measurement_repeats=1,
+        safety_margin_bytes=0,
+        safety_margin_ratio=0.0,
+        top_k=1,
+    )
+
+    for _ in range(2):
+        torch.manual_seed(0)
+        model = task.build_model()
+        optimizer = task.build_optimizer(model)
+        args, kwargs = task.build_batch(1)
+        result = optimize_training(
+            model,
+            args,
+            example_kwargs=kwargs,
+            loss_fn=task.loss_fn,
+            optimizer=optimizer,
+            memory_budget_bytes=1 << 28,
+            config=config,
+        )
+
+    assert result.executable.correctness_passed
+    assert result.optimization_metrics["actual_joint_capture_count"] == 0
+    assert result.cache_stats.layer_hits["capture"] == 1
+    assert (tmp_path / "capture").exists()
+
+
 def test_analysis_cache_is_keyed_by_graph_shape_guards(tmp_path):
     task = TrainingTaskRegistry.with_defaults().get("tiny_residual_w8")
     config = PeakAwareConfig(
