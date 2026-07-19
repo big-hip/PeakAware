@@ -84,6 +84,9 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert all(item["evidence"] for item in diagnostic_by_plan.values())
     assert all(item["counterfactuals"] for item in diagnostic_by_plan.values())
     assert all("candidate_peak" in item["counterfactuals"][0] for item in diagnostic_by_plan.values())
+    assert summary["search_diagnostics"]["diagnostic_hints_enabled"] is True
+    assert "diagnostic_hint_count" in summary["search_diagnostics"]
+    assert "feasible_after_repair_count" in summary["search_diagnostics"]
     assert summary["diagnostic"]["counterfactuals"][-1]["level"] == "D5"
     assert "baseline_peak" in summary["diagnostic"]["counterfactuals"][0]
     assert summary["diagnostic"]["expectation"]["strategy_status"] == "unavailable"

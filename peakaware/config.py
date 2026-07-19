@@ -54,6 +54,7 @@ class PeakAwareConfig:
     measurement_warmup_steps: int = 0
     measurement_repeats: int = 1
     runtime_peak_safety_margin_bytes: int = 1 << 20
+    enable_diagnostic_hints: bool = True
     dynamic_shapes: dict[str, Any] | None = None
     gradient_accumulation_steps: int = 1
     fsdp_enabled: bool = False

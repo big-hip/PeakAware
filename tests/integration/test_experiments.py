@@ -91,6 +91,13 @@ def _minimal_record(
         cache_hit_rate=0.5,
         candidate_count=1 if status == "ok" else 0,
         fallback_plan_ids=(),
+        diagnostic_hints_enabled=True if status == "ok" else None,
+        diagnostic_hint_count=2 if status == "ok" else 0,
+        diagnostic_hint_kinds=("SAVE_PEAK_STORAGE",) if status == "ok" else (),
+        repaired_candidate_count=1 if status == "ok" else 0,
+        repair_success_count=1 if status == "ok" else 0,
+        feasible_before_repair_count=0 if status == "ok" else 0,
+        feasible_after_repair_count=1 if status == "ok" else 0,
     )
 
 
@@ -121,6 +128,13 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.mean_simulation_accuracy_within_10_percent_rate == 0.5
     assert summary.root_cause_counts == {"REMATERIALIZATION_WAVE": 2}
     assert summary.selected_peak_phase_counts == {"bw": 2}
+    assert summary.diagnostic_hints_enabled_count == 2
+    assert summary.diagnostic_hint_count == 4
+    assert summary.diagnostic_hint_kind_counts == {"SAVE_PEAK_STORAGE": 2}
+    assert summary.repaired_candidate_count == 2
+    assert summary.repair_success_count == 2
+    assert summary.repair_success_rate == 1.0
+    assert summary.feasible_after_repair_count == 2
     assert summary.mean_diagnostic_normalized_saved_reduction_bytes == 32.0
     assert summary.mean_diagnostic_realization_gap_bytes == 12.0
     assert summary.aggregate_cache_hit_rate == 0.5
@@ -160,6 +174,8 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].measured_budget_headroom_bytes is not None
     assert records[0].selected_peak_phase is not None
     assert records[0].simulation_accuracy_candidate_count >= 1
+    assert records[0].diagnostic_hints_enabled is True
+    assert records[0].diagnostic_hint_count >= 0
     assert records[0].selected_prediction_error_bytes is not None
     assert records[0].candidate_count >= records[0].measured_candidate_count
     assert records[0].cache_total_hits == 0
@@ -181,6 +197,8 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert summary_payload["selected_prediction_count"] == 1
     assert summary_payload["simulation_accuracy_candidate_count"] >= 1
     assert summary_payload["root_cause_counts"]
+    assert "diagnostic_hint_count" in summary_payload
+    assert "repair_success_rate" in summary_payload
 
 
 def test_experiment_matrix_can_include_exact_small_graph_baseline():
@@ -262,6 +280,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["selected_prediction_error_bytes"] is not None
     assert stdout_payload[0]["selected_estimated_peak_reduction_bytes"] is not None
     assert stdout_payload[0]["simulation_accuracy_candidate_count"] >= 1
+    assert stdout_payload[0]["diagnostic_hints_enabled"] is True
     assert stdout_payload[0]["cache_total_hits"] == 0
     assert file_payload[0]["task_name"] == "tiny_mlp_w8_d3"
     assert file_payload[0]["exact_error_type"] == "PlanValidationError"
@@ -269,5 +288,6 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert summary_payload["ok_records"] == 1
     assert summary_payload["selected_prediction_count"] == 1
     assert summary_payload["mean_simulation_accuracy_absolute_error_bytes"] is not None
+    assert "diagnostic_hint_kind_counts" in summary_payload
     assert summary_payload["exact_failure_count"] == 1
     assert csv_path.read_text(encoding="utf-8").startswith("task_name,microbatch_size,budget_bytes")

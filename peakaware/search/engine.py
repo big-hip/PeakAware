@@ -10,6 +10,7 @@ from peakaware.contracts import (
     JointTrainingIR,
     RecomputePlan,
     RepairHint,
+    SearchDiagnostics,
 )
 from peakaware.cost.base import CostProvider
 from peakaware.diagnostics import diagnose_plan
@@ -119,8 +120,35 @@ def search_plans(
     manual_saved_value_ids: tuple[frozenset[int], ...] = (),
     cost_provider: CostProvider | None = None,
     repair_hints: tuple[RepairHint, ...] = (),
+    enable_diagnostic_hints: bool = True,
     top_k: int = 3,
 ) -> tuple[EvaluatedPlan, ...]:
+    evaluated, _ = search_plans_with_diagnostics(
+        ir,
+        fixed_timeline,
+        budget_bytes=budget_bytes,
+        safety_margin_bytes=safety_margin_bytes,
+        manual_saved_value_ids=manual_saved_value_ids,
+        cost_provider=cost_provider,
+        repair_hints=repair_hints,
+        enable_diagnostic_hints=enable_diagnostic_hints,
+        top_k=top_k,
+    )
+    return evaluated
+
+
+def search_plans_with_diagnostics(
+    ir: JointTrainingIR,
+    fixed_timeline: FixedTimeline,
+    *,
+    budget_bytes: int,
+    safety_margin_bytes: int,
+    manual_saved_value_ids: tuple[frozenset[int], ...] = (),
+    cost_provider: CostProvider | None = None,
+    repair_hints: tuple[RepairHint, ...] = (),
+    enable_diagnostic_hints: bool = True,
+    top_k: int = 3,
+) -> tuple[tuple[EvaluatedPlan, ...], SearchDiagnostics]:
     plans = list(_manual_default_plans(ir, budget_bytes, safety_margin_bytes))
     for index, saved in enumerate(manual_saved_value_ids):
         plans.append(
@@ -134,11 +162,13 @@ def search_plans(
         )
     baseline_evaluated = [evaluate_plan(ir, plan, fixed_timeline) for plan in plans]
     baseline = next((plan for plan in baseline_evaluated if plan.plan.plan_id == "all_save"), baseline_evaluated[0])
-    diagnostic_hints = tuple(
-        hint
-        for candidate in baseline_evaluated
-        for hint in diagnose_plan(baseline, candidate).repair_hints
-    )
+    diagnostic_hints = ()
+    if enable_diagnostic_hints:
+        diagnostic_hints = tuple(
+            hint
+            for candidate in baseline_evaluated
+            for hint in diagnose_plan(baseline, candidate).repair_hints
+        )
     hints = repair_hints + diagnostic_hints
     plans.extend(_greedy_seed_plans(ir, budget_bytes, safety_margin_bytes, cost_provider, hints))
     searched = [
@@ -151,7 +181,20 @@ def search_plans(
     unique: dict[str, EvaluatedPlan] = {}
     for plan in select_pareto_topk(tuple(searched + repaired), top_k):
         unique.setdefault(plan.plan.plan_id, plan)
-    return tuple(baseline_evaluated) + tuple(unique.values())
+    evaluated = tuple(baseline_evaluated) + tuple(unique.values())
+    diagnostics = SearchDiagnostics(
+        diagnostic_hints_enabled=enable_diagnostic_hints,
+        manual_hint_count=len(repair_hints),
+        diagnostic_hint_count=len(diagnostic_hints),
+        diagnostic_hint_kinds=tuple(sorted({hint.kind for hint in diagnostic_hints})),
+        greedy_plan_count=len(searched),
+        feasible_before_repair_count=sum(1 for plan in searched if plan.feasible),
+        repaired_candidate_count=len(repaired),
+        repair_success_count=sum(1 for plan in repaired if plan.feasible),
+        feasible_after_repair_count=sum(1 for plan in searched + repaired if plan.feasible),
+        repaired_plan_ids=tuple(plan.plan.plan_id for plan in repaired),
+    )
+    return evaluated, diagnostics
 
 
 def search_plans_with_report(
@@ -163,6 +206,7 @@ def search_plans_with_report(
     manual_saved_value_ids: tuple[frozenset[int], ...] = (),
     cost_provider: CostProvider | None = None,
     repair_hints: tuple[RepairHint, ...] = (),
+    enable_diagnostic_hints: bool = True,
     top_k: int = 3,
 ) -> tuple[tuple[EvaluatedPlan, ...], EarlyStopReport | None]:
     evaluated = search_plans(
@@ -173,6 +217,7 @@ def search_plans_with_report(
         manual_saved_value_ids=manual_saved_value_ids,
         cost_provider=cost_provider,
         repair_hints=repair_hints,
+        enable_diagnostic_hints=enable_diagnostic_hints,
         top_k=top_k,
     )
     return evaluated, apply_early_stop_policy(evaluated, fixed_timeline=fixed_timeline)

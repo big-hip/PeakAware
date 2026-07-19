@@ -46,11 +46,11 @@ from peakaware.partition.verifier import run_aot_eager_dry_run
 from peakaware.plugins import ServiceKind, build_default_registry
 from peakaware.runtime.executor import build_training_step_executor, make_measured_executable
 from peakaware.runtime.isolation import run_in_worker_process
-from peakaware.search.engine import apply_early_stop_policy, search_plans
+from peakaware.search.engine import apply_early_stop_policy, search_plans_with_diagnostics
 
 
 CAPTURE_SCHEMA_VERSION = "capture-v2-guarded-graph-key"
-ANALYSIS_SCHEMA_VERSION = "analysis-v2-capture-failures"
+ANALYSIS_SCHEMA_VERSION = "analysis-v3-search-diagnostics"
 
 
 def _hardware_spec(args: tuple[Any, ...], kwargs: dict[str, Any]) -> HardwareSpec:
@@ -123,7 +123,7 @@ def _analysis_cache_key(
         analysis_key=graph_key,
         optimizer_mode=optimizer_name,
         cost_database_version=str(config.profile_db_path or "none"),
-        search_policy_version=f"peakaware-topk{config.top_k}",
+        search_policy_version=f"peakaware-topk{config.top_k}-dh{int(config.enable_diagnostic_hints)}",
         budget_bucket=memory_budget_bytes,
     )
 
@@ -143,6 +143,7 @@ def _analysis_cache_provenance(
         "optimizer": optimizer_name,
         "budget_bytes": memory_budget_bytes,
         "top_k": config.top_k,
+        "enable_diagnostic_hints": config.enable_diagnostic_hints,
         "safety_margin_bytes": config.safety_margin_bytes,
         "safety_margin_ratio": config.safety_margin_ratio,
         "manual_saved_value_ids": [list(sorted(item)) for item in config.manual_saved_value_ids],
@@ -547,10 +548,11 @@ def optimize_training(
         evaluated = _rebind_evaluated_plans(cached_analysis.baseline_results, ir.graph_key)
         early_stop = getattr(cached_analysis, "early_stop", None)
         capture_failures = getattr(cached_analysis, "capture_failures", capture.failures)
+        search_diagnostics = getattr(cached_analysis, "search_diagnostics", None)
     else:
         capture_failures = capture.failures
         safety_margin = max(config.safety_margin_bytes, int(memory_budget_bytes * config.safety_margin_ratio))
-        evaluated = search_plans(
+        evaluated, search_diagnostics = search_plans_with_diagnostics(
             ir,
             fixed_timeline,
             budget_bytes=memory_budget_bytes,
@@ -559,6 +561,7 @@ def optimize_training(
             cost_provider=build_composite_provider(
                 tuple(record.service for record in registry.services_for(ServiceKind.COST_PROVIDER))
             ),
+            enable_diagnostic_hints=config.enable_diagnostic_hints,
             top_k=config.top_k,
         )
         early_stop = apply_early_stop_policy(evaluated, fixed_timeline=fixed_timeline)
@@ -573,6 +576,7 @@ def optimize_training(
                     analysis_key=analysis_key,
                     early_stop=early_stop,
                     capture_failures=capture_failures,
+                    search_diagnostics=search_diagnostics,
                 ),
                 analysis_provenance,
             )
@@ -652,6 +656,7 @@ def optimize_training(
         analysis_key=analysis_key,
         early_stop=early_stop,
         capture_failures=capture_failures,
+        search_diagnostics=search_diagnostics,
     )
     return OptimizedTrainingResult(
         selected_plan=selected.plan,

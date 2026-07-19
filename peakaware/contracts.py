@@ -262,6 +262,20 @@ class EarlyStopReport:
 
 
 @dataclass(frozen=True)
+class SearchDiagnostics:
+    diagnostic_hints_enabled: bool
+    manual_hint_count: int
+    diagnostic_hint_count: int
+    diagnostic_hint_kinds: tuple[str, ...]
+    greedy_plan_count: int
+    feasible_before_repair_count: int
+    repaired_candidate_count: int
+    repair_success_count: int
+    feasible_after_repair_count: int
+    repaired_plan_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AnalysisBundle:
     ir: JointTrainingIR
     fixed_timeline: FixedTimeline
@@ -269,6 +283,7 @@ class AnalysisBundle:
     analysis_key: str
     early_stop: EarlyStopReport | None = None
     capture_failures: tuple[FailureRecord, ...] = ()
+    search_diagnostics: SearchDiagnostics | None = None
 
 
 @dataclass(frozen=True)

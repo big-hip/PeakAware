@@ -160,6 +160,24 @@ def _early_stop_row(result: OptimizedTrainingResult) -> dict[str, Any] | None:
     }
 
 
+def _search_diagnostics_row(result: OptimizedTrainingResult) -> dict[str, Any] | None:
+    if result.analysis is None or result.analysis.search_diagnostics is None:
+        return None
+    diagnostics = result.analysis.search_diagnostics
+    return {
+        "diagnostic_hints_enabled": diagnostics.diagnostic_hints_enabled,
+        "manual_hint_count": diagnostics.manual_hint_count,
+        "diagnostic_hint_count": diagnostics.diagnostic_hint_count,
+        "diagnostic_hint_kinds": diagnostics.diagnostic_hint_kinds,
+        "greedy_plan_count": diagnostics.greedy_plan_count,
+        "feasible_before_repair_count": diagnostics.feasible_before_repair_count,
+        "repaired_candidate_count": diagnostics.repaired_candidate_count,
+        "repair_success_count": diagnostics.repair_success_count,
+        "feasible_after_repair_count": diagnostics.feasible_after_repair_count,
+        "repaired_plan_ids": diagnostics.repaired_plan_ids,
+    }
+
+
 def _failure_row(record: FailureRecord) -> dict[str, Any]:
     return {
         "stage": record.stage,
@@ -352,6 +370,7 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
         if result.analysis is None
         else [_failure_row(record) for record in result.analysis.capture_failures],
         "plan_diagnostics": _plan_diagnostic_rows(plans, baseline, result.executable, result.feasibility),
+        "search_diagnostics": _search_diagnostics_row(result),
         "early_stop": _early_stop_row(result),
         "diagnostic": None
         if diagnostic is None

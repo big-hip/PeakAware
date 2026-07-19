@@ -6,7 +6,7 @@ from peakaware.config import PeakAwareConfig
 from peakaware.contracts import HardwareSpec, TrainingRequest
 from peakaware.ir.builder import build_joint_ir
 from peakaware.memory.fixed_frontier import analyze_coarse_feasibility, build_optimizer_spec
-from peakaware.search.engine import search_plans
+from peakaware.search.engine import search_plans, search_plans_with_diagnostics
 from peakaware.search.plan import build_recompute_plan, plan_identity_key
 
 
@@ -73,6 +73,52 @@ def test_search_keeps_baselines_when_extra_candidates_are_topk_limited():
 
     assert plan_ids[:3] == ("all_save", "torch_min_cut", "block_checkpoint")
     assert len(evaluated) == 4
+
+
+def test_search_reports_diagnostic_hint_trace():
+    model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 1))
+    args = (torch.randn(2, 4),)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    request = TrainingRequest(
+        model=model,
+        example_args=args,
+        example_kwargs={},
+        loss_fn=lambda out: out.sum(),
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 30,
+        config=PeakAwareConfig(),
+        optimizer_spec=build_optimizer_spec(optimizer, model),
+        hardware=HardwareSpec("cpu", False, None),
+        request_key="test",
+    )
+    fixed, _ = analyze_coarse_feasibility(model, optimizer, 1 << 30)
+    capture = capture_joint_graph(request)
+    ir, _ = build_joint_ir(capture)
+
+    evaluated, diagnostics = search_plans_with_diagnostics(
+        ir,
+        fixed,
+        budget_bytes=1 << 30,
+        safety_margin_bytes=0,
+        repair_hints=(),
+        top_k=3,
+    )
+    _, disabled = search_plans_with_diagnostics(
+        ir,
+        fixed,
+        budget_bytes=1 << 30,
+        safety_margin_bytes=0,
+        enable_diagnostic_hints=False,
+        top_k=3,
+    )
+
+    assert evaluated
+    assert diagnostics.diagnostic_hints_enabled is True
+    assert diagnostics.greedy_plan_count >= 1
+    assert diagnostics.feasible_after_repair_count >= diagnostics.feasible_before_repair_count
+    assert disabled.diagnostic_hints_enabled is False
+    assert disabled.diagnostic_hint_count == 0
+    assert disabled.diagnostic_hint_kinds == ()
 
 
 def test_plan_identity_key_is_determined_by_save_set_not_label():

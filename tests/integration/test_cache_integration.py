@@ -38,7 +38,7 @@ def test_optimize_training_reuses_analysis_and_executable_cache(tmp_path, monkey
         del args, kwargs
         raise AssertionError("measurement should be served by executable cache")
 
-    monkeypatch.setattr(api_module, "search_plans", fail_search)
+    monkeypatch.setattr(api_module, "search_plans_with_diagnostics", fail_search)
     monkeypatch.setattr(api_module, "make_measured_executable", fail_measure)
 
     torch.manual_seed(0)

@@ -61,6 +61,13 @@ class ExperimentRecord:
     cache_hit_rate: float | None
     candidate_count: int
     fallback_plan_ids: tuple[str, ...]
+    diagnostic_hints_enabled: bool | None = None
+    diagnostic_hint_count: int = 0
+    diagnostic_hint_kinds: tuple[str, ...] = ()
+    repaired_candidate_count: int = 0
+    repair_success_count: int = 0
+    feasible_before_repair_count: int = 0
+    feasible_after_repair_count: int = 0
     exact_plan_id: str | None = None
     exact_plan_key: str | None = None
     exact_estimated_peak_bytes: int | None = None
@@ -100,6 +107,14 @@ class ExperimentSummary:
     mean_simulation_accuracy_within_10_percent_rate: float | None
     root_cause_counts: dict[str, int]
     selected_peak_phase_counts: dict[str, int]
+    diagnostic_hints_enabled_count: int
+    diagnostic_hint_count: int
+    diagnostic_hint_kind_counts: dict[str, int]
+    repaired_candidate_count: int
+    repair_success_count: int
+    repair_success_rate: float | None
+    feasible_before_repair_count: int
+    feasible_after_repair_count: int
     mean_diagnostic_normalized_saved_reduction_bytes: float | None
     mean_diagnostic_realization_gap_bytes: float | None
     mean_diagnostic_total_expectation_gap_bytes: float | None
@@ -122,6 +137,7 @@ def _record_success(
     expectation = {} if diagnostic is None else diagnostic.get("expectation", {})
     selected_correction = summary.get("topk_correction", {}).get("selected")
     simulation_accuracy = summary.get("topk_correction", {}).get("simulation_accuracy", {})
+    search_diagnostics = summary.get("search_diagnostics") or {}
     baseline = _plan_by_id(summary, "all_save")
     selected_plan = _plan_by_id(summary, summary["selected_plan_id"])
     baseline_peak = None if baseline is None else baseline.get("peak_snapshot")
@@ -172,6 +188,13 @@ def _record_success(
         cache_hit_rate=cache.get("hit_rate"),
         candidate_count=len(summary["plans"]),
         fallback_plan_ids=tuple(summary["fallback_plan_ids"]),
+        diagnostic_hints_enabled=search_diagnostics.get("diagnostic_hints_enabled"),
+        diagnostic_hint_count=int(search_diagnostics.get("diagnostic_hint_count", 0)),
+        diagnostic_hint_kinds=tuple(search_diagnostics.get("diagnostic_hint_kinds", ())),
+        repaired_candidate_count=int(search_diagnostics.get("repaired_candidate_count", 0)),
+        repair_success_count=int(search_diagnostics.get("repair_success_count", 0)),
+        feasible_before_repair_count=int(search_diagnostics.get("feasible_before_repair_count", 0)),
+        feasible_after_repair_count=int(search_diagnostics.get("feasible_after_repair_count", 0)),
         exact_plan_id=exact.get("plan_id"),
         exact_plan_key=exact.get("plan_key"),
         exact_estimated_peak_bytes=exact.get("estimated_peak_bytes"),
@@ -222,6 +245,13 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         cache_hit_rate=None,
         candidate_count=0,
         fallback_plan_ids=(),
+        diagnostic_hints_enabled=None,
+        diagnostic_hint_count=0,
+        diagnostic_hint_kinds=(),
+        repaired_candidate_count=0,
+        repair_success_count=0,
+        feasible_before_repair_count=0,
+        feasible_after_repair_count=0,
         error_type=type(exc).__name__,
         error_message=str(exc),
     )
@@ -325,6 +355,14 @@ def _counts(values: list[str | None]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def _tuple_counts(values: list[tuple[str, ...]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for items in values:
+        for item in items:
+            counts[item] = counts.get(item, 0) + 1
+    return dict(sorted(counts.items()))
+
+
 def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> ExperimentSummary:
     total = len(records)
     ok = [record for record in records if record.status == "ok"]
@@ -404,6 +442,8 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
     ]
     total_hits = sum(record.cache_total_hits for record in records)
     total_misses = sum(record.cache_total_misses for record in records)
+    repaired_candidate_count = sum(record.repaired_candidate_count for record in ok)
+    repair_success_count = sum(record.repair_success_count for record in ok)
     exact_success = [record for record in ok if record.exact_plan_key is not None]
     exact_failures = [record for record in ok if record.exact_error_type is not None]
     exact_gaps = [
@@ -440,6 +480,16 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         mean_simulation_accuracy_within_10_percent_rate=_mean(simulation_accuracy_within_10),
         root_cause_counts=_counts([record.diagnostic_primary_cause for record in ok]),
         selected_peak_phase_counts=_counts([record.selected_peak_phase for record in ok]),
+        diagnostic_hints_enabled_count=sum(1 for record in ok if record.diagnostic_hints_enabled),
+        diagnostic_hint_count=sum(record.diagnostic_hint_count for record in ok),
+        diagnostic_hint_kind_counts=_tuple_counts([record.diagnostic_hint_kinds for record in ok]),
+        repaired_candidate_count=repaired_candidate_count,
+        repair_success_count=repair_success_count,
+        repair_success_rate=None
+        if repaired_candidate_count == 0
+        else repair_success_count / repaired_candidate_count,
+        feasible_before_repair_count=sum(record.feasible_before_repair_count for record in ok),
+        feasible_after_repair_count=sum(record.feasible_after_repair_count for record in ok),
         mean_diagnostic_normalized_saved_reduction_bytes=_mean(normalized_saved),
         mean_diagnostic_realization_gap_bytes=_mean(realization_gaps),
         mean_diagnostic_total_expectation_gap_bytes=_mean(total_expectation_gaps),
