@@ -26,7 +26,11 @@ class ExperimentRecord:
     budget_bytes: int
     status: str
     selected_plan_id: str | None
+    graph_key: str | None
+    selected_saved_value_ids: tuple[int, ...]
+    selected_estimated_peak_bytes: int | None
     measured_peak_bytes: int | None
+    measured_peak_reserved_bytes: int | None
     measured_step_us: float | None
     samples_per_second: float | None
     feasibility_status: str | None
@@ -37,6 +41,8 @@ class ExperimentRecord:
     cache_total_hits: int
     cache_total_misses: int
     cache_hit_rate: float | None
+    candidate_count: int
+    fallback_plan_ids: tuple[str, ...]
     error_type: str | None = None
     error_message: str | None = None
 
@@ -53,7 +59,11 @@ def _record_success(case: ExperimentCase, summary: dict[str, Any]) -> Experiment
         budget_bytes=case.budget_bytes,
         status="ok",
         selected_plan_id=summary["selected_plan_id"],
+        graph_key=summary["graph_key"],
+        selected_saved_value_ids=tuple(summary["selected_saved_value_ids"]),
+        selected_estimated_peak_bytes=int(summary["estimated_peak_bytes"]),
         measured_peak_bytes=int(measured["peak_bytes"]),
+        measured_peak_reserved_bytes=int(measured.get("reserved_peak_bytes", 0)),
         measured_step_us=step_us,
         samples_per_second=case.microbatch_size * 1_000_000.0 / max(step_us, 1.0),
         feasibility_status=summary["feasibility"]["status"],
@@ -64,6 +74,8 @@ def _record_success(case: ExperimentCase, summary: dict[str, Any]) -> Experiment
         cache_total_hits=int(cache.get("total_hits", 0)),
         cache_total_misses=int(cache.get("total_misses", 0)),
         cache_hit_rate=cache.get("hit_rate"),
+        candidate_count=len(summary["plans"]),
+        fallback_plan_ids=tuple(summary["fallback_plan_ids"]),
     )
 
 
@@ -74,7 +86,11 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         budget_bytes=case.budget_bytes,
         status="failed",
         selected_plan_id=None,
+        graph_key=None,
+        selected_saved_value_ids=(),
+        selected_estimated_peak_bytes=None,
         measured_peak_bytes=None,
+        measured_peak_reserved_bytes=None,
         measured_step_us=None,
         samples_per_second=None,
         feasibility_status=None,
@@ -85,6 +101,8 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         cache_total_hits=0,
         cache_total_misses=0,
         cache_hit_rate=None,
+        candidate_count=0,
+        fallback_plan_ids=(),
         error_type=type(exc).__name__,
         error_message=str(exc),
     )

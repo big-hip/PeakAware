@@ -29,6 +29,10 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     exported = export_result_json(result, path)
 
     assert summary["selected_plan_id"] == result.selected_plan.plan_id
+    assert summary["graph_key"] == result.selected_plan.graph_key
+    assert summary["selected_saved_value_ids"] == tuple(sorted(result.selected_plan.saved_value_ids))
+    assert summary["estimated_peak_bytes"] == result.selected_plan.estimated_peak_bytes
+    assert "reserved_peak_bytes" in summary["measured"]
     assert summary["diagnostic"]["counterfactuals"][-1]["level"] == "D5"
     assert summary["measured_candidates"]
     assert summary["topk_correction"]["selected"]["plan_id"] == result.selected_plan.plan_id

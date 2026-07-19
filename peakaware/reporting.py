@@ -76,6 +76,10 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
     ]
     return {
         "selected_plan_id": result.selected_plan.plan_id,
+        "graph_key": result.selected_plan.graph_key,
+        "selected_saved_value_ids": tuple(sorted(result.selected_plan.saved_value_ids)),
+        "estimated_peak_bytes": result.selected_plan.estimated_peak_bytes,
+        "estimated_step_us": result.selected_plan.estimated_step_us,
         "fallback_plan_ids": result.fallback_plan_ids,
         "feasibility": {
             "status": result.feasibility.status,
@@ -86,6 +90,7 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
         },
         "measured": {
             "peak_bytes": result.executable.measured_peak_bytes,
+            "reserved_peak_bytes": int(result.executable.phase_metrics.get("overall_reserved_peak_bytes", 0)),
             "step_us": result.executable.measured_step_us,
             "correctness_passed": result.executable.correctness_passed,
             "phase_metrics": result.executable.phase_metrics,
