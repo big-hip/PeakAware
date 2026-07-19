@@ -46,7 +46,7 @@ from peakaware.partition.verifier import run_aot_eager_dry_run
 from peakaware.plugins import ServiceKind, build_default_registry
 from peakaware.runtime.executor import build_training_step_executor, make_measured_executable
 from peakaware.runtime.isolation import run_in_worker_process
-from peakaware.search.engine import search_plans
+from peakaware.search.engine import apply_early_stop_policy, search_plans
 
 
 CAPTURE_SCHEMA_VERSION = "capture-v2-guarded-graph-key"
@@ -461,6 +461,7 @@ def optimize_training(
         record_cache("analysis", cached_analysis is not None)
     if cached_analysis is not None:
         evaluated = _rebind_evaluated_plans(cached_analysis.baseline_results, ir.graph_key)
+        early_stop = getattr(cached_analysis, "early_stop", None)
     else:
         safety_margin = max(config.safety_margin_bytes, int(memory_budget_bytes * config.safety_margin_ratio))
         evaluated = search_plans(
@@ -474,6 +475,7 @@ def optimize_training(
             ),
             top_k=config.top_k,
         )
+        early_stop = apply_early_stop_policy(evaluated, fixed_timeline=fixed_timeline)
         if cache_root is not None:
             store_analysis_cache(
                 cache_root,
@@ -483,6 +485,7 @@ def optimize_training(
                     fixed_timeline=fixed_timeline,
                     baseline_results=evaluated,
                     analysis_key=analysis_key,
+                    early_stop=early_stop,
                 ),
                 analysis_provenance,
             )
@@ -538,6 +541,7 @@ def optimize_training(
         fixed_timeline=fixed_timeline,
         baseline_results=evaluated,
         analysis_key=analysis_key,
+        early_stop=early_stop,
     )
     return OptimizedTrainingResult(
         selected_plan=selected.plan,

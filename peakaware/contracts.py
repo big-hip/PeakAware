@@ -242,11 +242,32 @@ class SimulationResult:
 
 
 @dataclass(frozen=True)
+class EarlyStopEvidence:
+    evaluated_plan_count: int
+    feasible_plan_count: int
+    best_plan_id: str | None
+    best_estimated_peak_bytes: int | None
+    best_estimated_step_us: float | None
+    best_risk_score: float | None
+    best_confidence: float | None
+    fixed_peak_lower_bound_bytes: int | None = None
+    budget_bytes: int | None = None
+
+
+@dataclass(frozen=True)
+class EarlyStopReport:
+    reason: str
+    evidence: EarlyStopEvidence
+    best_plan_id: str | None
+
+
+@dataclass(frozen=True)
 class AnalysisBundle:
     ir: JointTrainingIR
     fixed_timeline: FixedTimeline
     baseline_results: tuple["EvaluatedPlan", ...]
     analysis_key: str
+    early_stop: EarlyStopReport | None = None
 
 
 @dataclass(frozen=True)

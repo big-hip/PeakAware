@@ -9,7 +9,7 @@ from peakaware.diagnostics import RootCause, diagnose_plan, export_diagnostic_js
 from peakaware.ir.builder import build_joint_ir
 from peakaware.memory.fixed_frontier import analyze_coarse_feasibility, build_optimizer_spec
 from peakaware.search.candidates import compute_storage_effect, reject_alias_pinned_gain, select_save_candidates
-from peakaware.search.engine import evaluate_plan, search_plans
+from peakaware.search.engine import apply_early_stop_policy, evaluate_plan, search_plans
 from peakaware.search.plan import build_recompute_plan
 
 
@@ -102,6 +102,43 @@ def test_m1_search_returns_pareto_ranked_greedy_candidates():
     assert any(plan.plan.plan_id.startswith("greedy_drop_") for plan in evaluated)
     assert all(0 <= plan.plan.risk_score <= 1 for plan in evaluated)
     assert all(0 <= plan.plan.confidence <= 1 for plan in evaluated)
+
+
+def test_early_stop_reports_empty_search_evidence():
+    report = apply_early_stop_policy(())
+
+    assert report is not None
+    assert report.reason == "no candidate plans were generated"
+    assert report.best_plan_id is None
+    assert report.evidence.evaluated_plan_count == 0
+    assert report.evidence.feasible_plan_count == 0
+
+
+def test_early_stop_reports_no_feasible_best_so_far():
+    ir, fixed = _ir_and_fixed()
+    all_save = build_recompute_plan(
+        ir,
+        budget_bytes=1,
+        saved_value_ids=frozenset(v.id for v in ir.values if v.phase == "fw"),
+        label="all_save",
+    )
+    mandatory = build_recompute_plan(
+        ir,
+        budget_bytes=1,
+        saved_value_ids=frozenset(v.id for v in ir.values if v.mandatory_save_reason),
+        label="torch_min_cut",
+    )
+
+    evaluated = (evaluate_plan(ir, all_save, fixed), evaluate_plan(ir, mandatory, fixed))
+    report = apply_early_stop_policy(evaluated, fixed_timeline=fixed)
+
+    assert report is not None
+    assert report.reason == "no feasible plan under search budget"
+    assert report.best_plan_id in {"all_save", "torch_min_cut"}
+    assert report.evidence.evaluated_plan_count == 2
+    assert report.evidence.feasible_plan_count == 0
+    assert report.evidence.best_estimated_peak_bytes is not None
+    assert report.evidence.fixed_peak_lower_bound_bytes == fixed.peak_lower_bound_bytes
 
 
 def test_diagnostics_reports_recompute_wave_hint():

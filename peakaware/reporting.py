@@ -38,6 +38,27 @@ def _prediction_error_row(plan: EvaluatedPlan | None, peak_bytes: int) -> dict[s
     }
 
 
+def _early_stop_row(result: OptimizedTrainingResult) -> dict[str, Any] | None:
+    if result.analysis is None or result.analysis.early_stop is None:
+        return None
+    report = result.analysis.early_stop
+    return {
+        "reason": report.reason,
+        "best_plan_id": report.best_plan_id,
+        "evidence": {
+            "evaluated_plan_count": report.evidence.evaluated_plan_count,
+            "feasible_plan_count": report.evidence.feasible_plan_count,
+            "best_plan_id": report.evidence.best_plan_id,
+            "best_estimated_peak_bytes": report.evidence.best_estimated_peak_bytes,
+            "best_estimated_step_us": report.evidence.best_estimated_step_us,
+            "best_risk_score": report.evidence.best_risk_score,
+            "best_confidence": report.evidence.best_confidence,
+            "fixed_peak_lower_bound_bytes": report.evidence.fixed_peak_lower_bound_bytes,
+            "budget_bytes": report.evidence.budget_bytes,
+        },
+    }
+
+
 def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
     plans = result.analysis.baseline_results if result.analysis is not None else ()
     plans_by_id = {plan.plan.plan_id: plan for plan in plans}
@@ -108,6 +129,7 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "hit_rate": result.cache_stats.hit_rate,
         },
         "plans": [_plan_row(plan) for plan in plans],
+        "early_stop": _early_stop_row(result),
         "diagnostic": None
         if diagnostic is None
         else {
