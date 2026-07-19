@@ -18,9 +18,11 @@ from .microbatch import optimize_microbatches
 from .reporting import (
     export_plan_artifact_json,
     export_result_json,
+    load_plan_artifact_json,
     render_text_report,
     summarize_plan_artifact,
     summarize_result,
+    validate_plan_artifact_identity,
 )
 from .root_cause_benchmark import run_synthetic_root_cause_benchmark
 
@@ -32,6 +34,7 @@ __all__ = [
     "PeakAwareConfig",
     "export_plan_artifact_json",
     "export_result_json",
+    "load_plan_artifact_json",
     "OptimizedTrainingResult",
     "render_text_report",
     "StepResult",
@@ -42,6 +45,7 @@ __all__ = [
     "summarize_experiment_records",
     "summarize_experiment_records_by_variant",
     "summarize_result",
+    "validate_plan_artifact_identity",
     "optimize_microbatches",
     "optimize_training",
     "run_experiment_matrix",

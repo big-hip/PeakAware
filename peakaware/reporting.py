@@ -524,6 +524,50 @@ def summarize_plan_artifact(result: OptimizedTrainingResult) -> dict[str, Any]:
     }
 
 
+def load_plan_artifact_json(path: str | Path) -> dict[str, Any]:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def validate_plan_artifact_identity(artifact: dict[str, Any]) -> dict[str, Any]:
+    errors: list[str] = []
+    required = ("plan_key", "graph_key", "effective_saved_value_ids", "budget_bytes")
+    missing = [field for field in required if field not in artifact]
+    if missing:
+        return {
+            "valid": False,
+            "expected_plan_key": None,
+            "actual_plan_key": artifact.get("plan_key"),
+            "errors": tuple(f"missing field: {field}" for field in missing),
+        }
+    try:
+        saved = frozenset(int(value) for value in artifact.get("saved_value_ids", ()))
+        effective_saved = frozenset(int(value) for value in artifact["effective_saved_value_ids"])
+        budget_bytes = int(artifact["budget_bytes"])
+    except (TypeError, ValueError):
+        return {
+            "valid": False,
+            "expected_plan_key": None,
+            "actual_plan_key": artifact.get("plan_key"),
+            "errors": ("artifact fields have invalid types",),
+        }
+    if not saved.issubset(effective_saved):
+        errors.append("saved_value_ids must be a subset of effective_saved_value_ids")
+    expected_key = plan_identity_key(
+        str(artifact["graph_key"]),
+        effective_saved,
+        budget_bytes,
+    )
+    actual_key = str(artifact["plan_key"])
+    if expected_key != actual_key:
+        errors.append("plan_key does not match graph_key/effective_saved_value_ids/budget_bytes")
+    return {
+        "valid": not errors,
+        "expected_plan_key": expected_key,
+        "actual_plan_key": actual_key,
+        "errors": tuple(errors),
+    }
+
+
 def render_text_report(result: OptimizedTrainingResult) -> str:
     summary = summarize_result(result)
     lines = [

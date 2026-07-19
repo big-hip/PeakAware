@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from dataclasses import replace
 
 import torch
@@ -9,9 +11,11 @@ from peakaware.models import TrainingTaskRegistry
 from peakaware.reporting import (
     export_plan_artifact_json,
     export_result_json,
+    load_plan_artifact_json,
     render_text_report,
     summarize_plan_artifact,
     summarize_result,
+    validate_plan_artifact_identity,
 )
 
 
@@ -129,6 +133,14 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert plan_artifact["peak_snapshot"]["live_bytes"] == summary["estimated_peak_bytes"]
     assert "recomputed_bytes" in plan_artifact["peak_snapshot"]
     assert plan_artifact["correctness"]["gradients_match"] is True
+    loaded_plan = load_plan_artifact_json(plan_path)
+    validation = validate_plan_artifact_identity(loaded_plan)
+    assert validation["valid"] is True
+    assert validation["expected_plan_key"] == summary["selected_plan_key"]
+    loaded_plan["plan_key"] = "bad-key"
+    assert validate_plan_artifact_identity(loaded_plan)["valid"] is False
+    loaded_plan["effective_saved_value_ids"] = ["not-an-int"]
+    assert validate_plan_artifact_identity(loaded_plan)["errors"] == ("artifact fields have invalid types",)
     assert "Selected plan:" in text
     assert json.loads(exported)["selected_plan_id"] == result.selected_plan.plan_id
     assert json.loads(exported)["selected_plan_key"] == summary["selected_plan_key"]
@@ -142,3 +154,44 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert failure["next_fallback"] == "fx"
     assert failure["applied_adapters"] == ("aot_autograd", "default_partition")
     assert failure["applied_plugins"] == ()
+
+
+def test_validate_plan_artifacts_script_reports_identity_results(tmp_path):
+    torch.manual_seed(0)
+    task = TrainingTaskRegistry.with_defaults().get("tiny_residual_w8")
+    model = task.build_model()
+    optimizer = task.build_optimizer(model)
+    args, kwargs = task.build_batch(2)
+    result = optimize_training(
+        model,
+        args,
+        example_kwargs=kwargs,
+        loss_fn=task.loss_fn,
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 28,
+        config=PeakAwareConfig(safety_margin_bytes=0, safety_margin_ratio=0.0, top_k=1),
+    )
+    plan_path = tmp_path / "plan.json"
+    output_path = tmp_path / "validation.json"
+    export_plan_artifact_json(result, plan_path)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/validate_plan_artifacts.py",
+            str(plan_path),
+            "--output-json",
+            str(output_path),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    stdout_payload = json.loads(completed.stdout)
+    file_payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert stdout_payload == file_payload
+    assert stdout_payload["artifact_count"] == 1
+    assert stdout_payload["valid_count"] == 1
+    assert stdout_payload["invalid_count"] == 0
