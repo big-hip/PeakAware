@@ -11,10 +11,12 @@ from peakaware.contracts import TrainingTaskSpec
 from peakaware.experiments import (
     ExperimentRecord,
     run_experiment_matrix,
+    summarize_baseline_comparisons,
     summarize_hint_ablation,
     summarize_experiment_records,
     summarize_experiment_records_by_variant,
     write_experiment_csv,
+    write_experiment_baseline_comparison_json,
     write_experiment_hint_ablation_json,
     write_experiment_json,
     write_experiment_summary_json,
@@ -102,7 +104,32 @@ def _minimal_record(
         diagnostic_normalized_saved_reduction_bytes=32 if status == "ok" else None,
         diagnostic_realization_gap_bytes=12 if status == "ok" else None,
         diagnostic_total_expectation_gap_bytes=None,
-        measured_candidate_count=1 if status == "ok" else 0,
+        measured_candidate_count=3 if status == "ok" else 0,
+        measured_plan_results=()
+        if status != "ok" or measured_peak_bytes is None
+        else (
+            {
+                "plan_id": "all_save",
+                "measured_peak_bytes": measured_peak_bytes + 10,
+                "measured_step_us": 12.0,
+                "measured_feasible": measured_peak_bytes + 10 <= budget_bytes,
+                "correctness_passed": True,
+            },
+            {
+                "plan_id": "torch_min_cut",
+                "measured_peak_bytes": measured_peak_bytes,
+                "measured_step_us": 10.0,
+                "measured_feasible": measured_peak_bytes <= budget_bytes,
+                "correctness_passed": True,
+            },
+            {
+                "plan_id": "block_checkpoint",
+                "measured_peak_bytes": measured_peak_bytes + 5,
+                "measured_step_us": 11.0,
+                "measured_feasible": measured_peak_bytes + 5 <= budget_bytes,
+                "correctness_passed": True,
+            },
+        ),
         selected_prediction_error_bytes=4 if status == "ok" else None,
         selected_prediction_relative_error=0.05 if status == "ok" else None,
         selected_feasibility_prediction_match=True if status == "ok" else None,
@@ -239,6 +266,23 @@ def test_hint_ablation_summary_pairs_on_off_variants():
     assert summary["conclusion_counts"] == {"improved_budget": 1}
 
 
+def test_baseline_comparison_summary_reports_selected_deltas():
+    records = (
+        _minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80, samples_per_second=10.0),
+        _minimal_record(status="failed", budget_bytes=100, measured_peak_bytes=None),
+    )
+
+    summary = summarize_baseline_comparisons(records)
+
+    assert summary["row_count"] == 3
+    assert set(summary["baseline_groups"]) == {"all_save", "block_checkpoint", "torch_min_cut"}
+    assert summary["baseline_groups"]["all_save"]["measured_count"] == 1
+    assert summary["baseline_groups"]["all_save"]["mean_peak_reduction_vs_plan_bytes"] == 10.0
+    assert summary["baseline_groups"]["all_save"]["mean_step_time_delta_vs_plan_us"] == 2.0
+    assert summary["baseline_groups"]["all_save"]["selected_peak_win_count"] == 1
+    assert summary["baseline_groups"]["torch_min_cut"]["mean_samples_per_second_speedup_vs_plan"] == 1.0
+
+
 def test_experiment_matrix_writes_json_and_csv(tmp_path):
     records = run_experiment_matrix(
         task_names=("tiny_residual_w8",),
@@ -286,6 +330,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].measurement_repeats == 1
     assert records[0].measurement_warmup_steps == 0
     assert records[0].simulation_accuracy_candidate_count >= 1
+    assert records[0].measured_plan_results
     assert records[0].diagnostic_hints_enabled is True
     assert records[0].diagnostic_hint_count >= 0
     assert records[0].selected_prediction_error_bytes is not None
@@ -339,12 +384,14 @@ def test_experiment_writers_create_parent_directories(tmp_path):
     write_experiment_summary_json(summary, base / "summary.json")
     write_experiment_variant_summary_json(variant_summaries, base / "variant_summary.json")
     write_experiment_hint_ablation_json(records, base / "hint_ablation.json")
+    write_experiment_baseline_comparison_json(records, base / "baseline_comparison.json")
 
     assert (base / "records.json").exists()
     assert (base / "records.csv").exists()
     assert (base / "summary.json").exists()
     assert (base / "variant_summary.json").exists()
     assert (base / "hint_ablation.json").exists()
+    assert (base / "baseline_comparison.json").exists()
 
 
 def test_experiment_matrix_can_include_exact_small_graph_baseline():
@@ -389,6 +436,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     summary_path = tmp_path / "summary.json"
     variant_summary_path = tmp_path / "variant_summary.json"
     hint_ablation_path = tmp_path / "hint_ablation.json"
+    baseline_comparison_path = tmp_path / "baseline_comparison.json"
     completed = subprocess.run(
         [
             sys.executable,
@@ -422,6 +470,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             str(variant_summary_path),
             "--output-hint-ablation-json",
             str(hint_ablation_path),
+            "--output-baseline-comparison-json",
+            str(baseline_comparison_path),
         ],
         check=True,
         text=True,
@@ -433,6 +483,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
     variant_summary_payload = json.loads(variant_summary_path.read_text(encoding="utf-8"))
     hint_ablation_payload = json.loads(hint_ablation_path.read_text(encoding="utf-8"))
+    baseline_comparison_payload = json.loads(baseline_comparison_path.read_text(encoding="utf-8"))
 
     assert len(stdout_payload) == 2
     assert {record["variant_name"] for record in stdout_payload} == {
@@ -449,6 +500,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["graph_key"]
     assert stdout_payload[0]["selected_saved_value_ids"]
     assert stdout_payload[0]["selected_effective_saved_value_ids"]
+    assert stdout_payload[0]["measured_plan_results"]
     assert stdout_payload[0]["selected_prediction_error_bytes"] is not None
     assert stdout_payload[0]["selected_feasibility_prediction_match"] is not None
     assert stdout_payload[0]["selected_estimated_peak_reduction_bytes"] is not None
@@ -470,6 +522,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert variant_summary_payload["diagnostic_hints_on"]["ok_records"] == 1
     assert variant_summary_payload["diagnostic_hints_off"]["ok_records"] == 1
     assert hint_ablation_payload["pair_count"] == 1
+    assert "all_save" in baseline_comparison_payload["baseline_groups"]
+    assert baseline_comparison_payload["row_count"] >= 2
     assert hint_ablation_payload["rows"][0]["conclusion"] in {
         "improved_budget",
         "improved_search",

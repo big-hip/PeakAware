@@ -66,6 +66,7 @@ class ExperimentRecord:
     diagnostic_realization_gap_bytes: int | None
     diagnostic_total_expectation_gap_bytes: int | None
     measured_candidate_count: int
+    measured_plan_results: tuple[dict[str, Any], ...]
     selected_prediction_error_bytes: int | None
     selected_prediction_relative_error: float | None
     selected_feasibility_prediction_match: bool | None
@@ -194,6 +195,29 @@ def _measured_candidate_by_id(summary: dict[str, Any], plan_id: str) -> dict[str
     return next((item for item in summary.get("measured_candidates", ()) if item.get("plan_id") == plan_id), None)
 
 
+def _measured_plan_results(summary: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    plans_by_id = {plan["plan_id"]: plan for plan in summary.get("plans", ())}
+    rows: list[dict[str, Any]] = []
+    for measured in summary.get("measured_candidates", ()):
+        plan = plans_by_id.get(measured["plan_id"], {})
+        prediction = measured.get("prediction_error") or {}
+        rows.append(
+            {
+                "plan_id": measured["plan_id"],
+                "estimated_peak_bytes": plan.get("estimated_peak_bytes"),
+                "estimated_step_us": plan.get("estimated_step_us"),
+                "estimated_feasible": prediction.get("estimated_feasible"),
+                "measured_peak_bytes": measured.get("peak_bytes"),
+                "measured_step_us": measured.get("step_us"),
+                "measured_peak_phase": measured.get("peak_phase"),
+                "measured_feasible": prediction.get("measured_feasible"),
+                "prediction_error_bytes": prediction.get("error_bytes"),
+                "correctness_passed": measured.get("correctness_passed"),
+            }
+        )
+    return tuple(rows)
+
+
 def _resolve_experiment_device(device: str) -> torch.device:
     if device == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -291,6 +315,7 @@ def _record_success(
         diagnostic_realization_gap_bytes=expectation.get("realization_gap"),
         diagnostic_total_expectation_gap_bytes=expectation.get("total_expectation_gap"),
         measured_candidate_count=len(summary["measured_candidates"]),
+        measured_plan_results=_measured_plan_results(summary),
         selected_prediction_error_bytes=None if selected_correction is None else selected_correction["error_bytes"],
         selected_prediction_relative_error=None if selected_correction is None else selected_correction["relative_error"],
         selected_feasibility_prediction_match=None
@@ -372,6 +397,7 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         diagnostic_realization_gap_bytes=None,
         diagnostic_total_expectation_gap_bytes=None,
         measured_candidate_count=0,
+        measured_plan_results=(),
         selected_prediction_error_bytes=None,
         selected_prediction_relative_error=None,
         selected_feasibility_prediction_match=None,
@@ -892,6 +918,68 @@ def summarize_hint_ablation(records: tuple[ExperimentRecord, ...]) -> dict[str, 
     }
 
 
+def _baseline_group(plan_id: str) -> str:
+    if plan_id.startswith("greedy_drop_"):
+        return "greedy"
+    return plan_id
+
+
+def summarize_baseline_comparisons(records: tuple[ExperimentRecord, ...]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if record.status != "ok" or record.measured_peak_bytes is None or record.measured_step_us is None:
+            continue
+        selected_peak = float(record.measured_peak_bytes)
+        selected_step = float(record.measured_step_us)
+        for measured in record.measured_plan_results:
+            plan_id = str(measured["plan_id"])
+            peak = measured.get("measured_peak_bytes")
+            step = measured.get("measured_step_us")
+            if peak is None or step is None:
+                continue
+            peak = float(peak)
+            step = float(step)
+            row = {
+                "variant_name": record.variant_name,
+                "task_name": record.task_name,
+                "microbatch_size": record.microbatch_size,
+                "budget_bytes": record.budget_bytes,
+                "plan_id": plan_id,
+                "baseline_group": _baseline_group(plan_id),
+                "selected_plan_id": record.selected_plan_id,
+                "measured_peak_bytes": int(peak),
+                "measured_step_us": step,
+                "measured_feasible": bool(peak <= record.budget_bytes),
+                "selected_measured_peak_bytes": int(selected_peak),
+                "selected_measured_step_us": selected_step,
+                "peak_reduction_vs_plan_bytes": int(peak - selected_peak),
+                "step_time_delta_vs_plan_us": step - selected_step,
+                "samples_per_second_speedup_vs_plan": step / max(selected_step, 1.0),
+            }
+            rows.append(row)
+    summaries: dict[str, dict[str, Any]] = {}
+    for group in sorted({row["baseline_group"] for row in rows}):
+        group_rows = [row for row in rows if row["baseline_group"] == group]
+        peak_reductions = [row["peak_reduction_vs_plan_bytes"] for row in group_rows]
+        step_deltas = [row["step_time_delta_vs_plan_us"] for row in group_rows]
+        speedups = [row["samples_per_second_speedup_vs_plan"] for row in group_rows]
+        summaries[group] = {
+            "measured_count": len(group_rows),
+            "budget_violation_count": sum(1 for row in group_rows if not row["measured_feasible"]),
+            "budget_violation_rate": sum(1 for row in group_rows if not row["measured_feasible"]) / len(group_rows),
+            "selected_peak_win_count": sum(1 for value in peak_reductions if value > 0),
+            "selected_step_win_count": sum(1 for value in step_deltas if value > 0),
+            "mean_peak_reduction_vs_plan_bytes": _mean(peak_reductions),
+            "mean_step_time_delta_vs_plan_us": _mean(step_deltas),
+            "mean_samples_per_second_speedup_vs_plan": _mean(speedups),
+        }
+    return {
+        "baseline_groups": summaries,
+        "row_count": len(rows),
+        "rows": rows,
+    }
+
+
 def _ensure_parent_dir(path: str | Path) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -918,6 +1006,11 @@ def write_experiment_variant_summary_json(
 
 def write_experiment_hint_ablation_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
     text = json.dumps(summarize_hint_ablation(records), indent=2, sort_keys=True)
+    _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
+
+
+def write_experiment_baseline_comparison_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
+    text = json.dumps(summarize_baseline_comparisons(records), indent=2, sort_keys=True)
     _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 

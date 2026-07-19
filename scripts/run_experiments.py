@@ -17,6 +17,7 @@ from peakaware.experiments import (
     summarize_experiment_records,
     summarize_experiment_records_by_variant,
     write_experiment_csv,
+    write_experiment_baseline_comparison_json,
     write_experiment_hint_ablation_json,
     write_experiment_json,
     write_experiment_summary_json,
@@ -53,6 +54,7 @@ def main() -> None:
     parser.add_argument("--output-summary-json", type=Path, default=None)
     parser.add_argument("--output-variant-summary-json", type=Path, default=None)
     parser.add_argument("--output-hint-ablation-json", type=Path, default=None)
+    parser.add_argument("--output-baseline-comparison-json", type=Path, default=None)
     args = parser.parse_args()
 
     base_config = PeakAwareConfig(
@@ -99,6 +101,8 @@ def main() -> None:
         )
     if args.output_hint_ablation_json is not None:
         write_experiment_hint_ablation_json(records, args.output_hint_ablation_json)
+    if args.output_baseline_comparison_json is not None:
+        write_experiment_baseline_comparison_json(records, args.output_baseline_comparison_json)
     print(json.dumps(experiment_records_to_dicts(records), indent=2, sort_keys=True))
 
 
