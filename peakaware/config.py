@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 _FLOAT_DTYPE_ALIASES = {
@@ -53,6 +54,10 @@ class PeakAwareConfig:
     measurement_warmup_steps: int = 0
     measurement_repeats: int = 1
     runtime_peak_safety_margin_bytes: int = 1 << 20
+    dynamic_shapes: dict[str, Any] | None = None
+    gradient_accumulation_steps: int = 1
+    fsdp_enabled: bool = False
+    offload_enabled: bool = False
     rng_seed: int | None = 1337
     atol: float = 1e-5
     rtol: float = 1e-4
@@ -89,6 +94,14 @@ class PeakAwareConfig:
             raise ValueError("measurement_repeats must be positive")
         if self.runtime_peak_safety_margin_bytes < 0:
             raise ValueError("runtime_peak_safety_margin_bytes must be non-negative")
+        if self.dynamic_shapes is not None:
+            raise ValueError("M0 does not support dynamic shape requests; set dynamic_shapes=None")
+        if self.gradient_accumulation_steps != 1:
+            raise ValueError("M0 does not support gradient accumulation; set gradient_accumulation_steps=1")
+        if self.fsdp_enabled:
+            raise ValueError("M0 does not support FSDP; set fsdp_enabled=False")
+        if self.offload_enabled:
+            raise ValueError("M0 does not support offload; set offload_enabled=False")
         normalize_float_dtype_name(self.precision_dtype)
         if self.autocast_dtype is not None:
             normalize_float_dtype_name(self.autocast_dtype)

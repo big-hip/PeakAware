@@ -190,6 +190,31 @@ def test_optimize_training_rejects_autocast_and_grad_scaler_modes():
         )
 
 
+@pytest.mark.parametrize(
+    ("config", "message"),
+    (
+        (PeakAwareConfig(enable_compile=False, dynamic_shapes={"arg0": "batch"}), "dynamic shape"),
+        (PeakAwareConfig(enable_compile=False, gradient_accumulation_steps=2), "gradient accumulation"),
+        (PeakAwareConfig(enable_compile=False, fsdp_enabled=True), "FSDP"),
+        (PeakAwareConfig(enable_compile=False, offload_enabled=True), "offload"),
+    ),
+)
+def test_optimize_training_rejects_unsupported_execution_modes(config, message):
+    model = TinyResidual()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    x = torch.randn(4, 8)
+
+    with pytest.raises(ValueError, match=message):
+        optimize_training(
+            model,
+            (x,),
+            loss_fn=squared_mean_loss,
+            optimizer=optimizer,
+            memory_budget_bytes=1 << 28,
+            config=config,
+        )
+
+
 def test_request_key_includes_precision_configuration():
     model = TinyResidual()
     x = torch.randn(4, 8)
