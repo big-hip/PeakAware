@@ -65,6 +65,100 @@ def test_optimize_training_reuses_analysis_and_executable_cache(tmp_path, monkey
     assert (tmp_path / "executable").exists()
 
 
+def test_default_aot_backend_does_not_persist_capture_cache(tmp_path):
+    task = TrainingTaskRegistry.with_defaults().get("tiny_residual_w8")
+    config = PeakAwareConfig(
+        cache_root=tmp_path,
+        safety_margin_bytes=0,
+        safety_margin_ratio=0.0,
+        top_k=1,
+    )
+
+    for _ in range(2):
+        torch.manual_seed(0)
+        model = task.build_model()
+        optimizer = task.build_optimizer(model)
+        args, kwargs = task.build_batch(1)
+        result = optimize_training(
+            model,
+            args,
+            example_kwargs=kwargs,
+            loss_fn=task.loss_fn,
+            optimizer=optimizer,
+            memory_budget_bytes=1 << 28,
+            config=config,
+        )
+
+    assert result.optimization_metrics["actual_joint_capture_count"] == 1
+    assert result.cache_stats.layer_hits["analysis"] == 1
+    assert result.cache_stats.layer_hits["executable"] >= 1
+    assert result.cache_stats.layer_hits.get("capture", 0) == 0
+    assert result.cache_stats.layer_misses.get("capture", 0) == 0
+    assert not (tmp_path / "capture").exists()
+
+
+def test_enabled_capture_cache_skips_repeated_joint_capture(tmp_path, monkeypatch):
+    task = TrainingTaskRegistry.with_defaults().get("tiny_residual_w8")
+    config = PeakAwareConfig(
+        cache_root=tmp_path,
+        safety_margin_bytes=0,
+        safety_margin_ratio=0.0,
+        top_k=1,
+    )
+    monkeypatch.setattr(api_module, "_can_cache_capture", lambda config: True)
+
+    def fake_validate_and_measure(payload):
+        plan_id = payload["candidate"].plan.plan_id
+        return api_module._CandidateValidation(
+            dry_run=api_module.DryRunResult(plan_id, True, True, True, True, None),
+            measurement=api_module._CandidateMeasurement(plan_id, 1024, 1.0, {}),
+            cache_hit=False,
+        )
+
+    monkeypatch.setattr(api_module, "_validate_and_measure_candidate", fake_validate_and_measure)
+
+    torch.manual_seed(0)
+    model = task.build_model()
+    optimizer = task.build_optimizer(model)
+    args, kwargs = task.build_batch(1)
+    first = optimize_training(
+        model,
+        args,
+        example_kwargs=kwargs,
+        loss_fn=task.loss_fn,
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 28,
+        config=config,
+    )
+
+    def fail_capture(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("capture should be served by capture cache")
+
+    monkeypatch.setattr(api_module, "capture_joint_graph", fail_capture)
+
+    torch.manual_seed(0)
+    cached_model = task.build_model()
+    cached_optimizer = task.build_optimizer(cached_model)
+    cached_args, cached_kwargs = task.build_batch(1)
+    second = optimize_training(
+        cached_model,
+        cached_args,
+        example_kwargs=cached_kwargs,
+        loss_fn=task.loss_fn,
+        optimizer=cached_optimizer,
+        memory_budget_bytes=1 << 28,
+        config=config,
+    )
+
+    assert first.optimization_metrics["actual_joint_capture_count"] == 1
+    assert first.cache_stats.layer_misses["capture"] == 1
+    assert second.optimization_metrics["actual_joint_capture_count"] == 0
+    assert second.cache_stats.layer_hits["capture"] == 1
+    assert second.analysis is not None and first.analysis is not None
+    assert second.analysis.ir.graph_key == first.analysis.ir.graph_key
+
+
 def test_analysis_cache_is_keyed_by_graph_shape_guards(tmp_path):
     task = TrainingTaskRegistry.with_defaults().get("tiny_residual_w8")
     config = PeakAwareConfig(

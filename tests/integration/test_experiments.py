@@ -67,6 +67,8 @@ def _minimal_record(
     diagnostic_hints_enabled: bool | None = None,
     cache_total_hits: int = 1,
     cache_total_misses: int = 1,
+    cache_layer_hits: dict[str, int] | None = None,
+    cache_layer_misses: dict[str, int] | None = None,
     matrix_pass_index: int = 0,
     matrix_pass_count: int = 1,
 ) -> ExperimentRecord:
@@ -202,8 +204,12 @@ def _minimal_record(
         cache_hit_rate=cache_total_hits / (cache_total_hits + cache_total_misses)
         if cache_total_hits + cache_total_misses
         else None,
-        cache_layer_hits={"analysis": cache_total_hits} if status == "ok" and cache_total_hits else {},
-        cache_layer_misses={"capture": cache_total_misses} if status == "ok" and cache_total_misses else {},
+        cache_layer_hits=cache_layer_hits
+        if cache_layer_hits is not None
+        else ({"analysis": cache_total_hits} if status == "ok" and cache_total_hits else {}),
+        cache_layer_misses=cache_layer_misses
+        if cache_layer_misses is not None
+        else ({"capture": cache_total_misses} if status == "ok" and cache_total_misses else {}),
         optimization_total_us=100.0 if status == "ok" else None,
         optimization_capture_us=10.0 if status == "ok" else None,
         optimization_ir_build_us=20.0 if status == "ok" else None,
@@ -375,6 +381,8 @@ def test_cache_reuse_summary_groups_matrix_passes(tmp_path):
             measured_peak_bytes=80,
             cache_total_hits=0,
             cache_total_misses=2,
+            cache_layer_hits={},
+            cache_layer_misses={"capture": 1, "analysis": 1},
             matrix_pass_index=0,
             matrix_pass_count=2,
         ),
@@ -384,6 +392,8 @@ def test_cache_reuse_summary_groups_matrix_passes(tmp_path):
             measured_peak_bytes=80,
             cache_total_hits=3,
             cache_total_misses=1,
+            cache_layer_hits={"capture": 1, "analysis": 1, "executable": 1},
+            cache_layer_misses={"executable": 1},
             matrix_pass_index=1,
             matrix_pass_count=2,
         ),
@@ -397,7 +407,11 @@ def test_cache_reuse_summary_groups_matrix_passes(tmp_path):
     assert summary["matrix_pass_count"] == 2
     assert summary["cold_cache_hit_rate"] == 0.0
     assert summary["mean_warm_cache_hit_rate"] == 0.75
+    assert summary["cold_capture_cache_hit_rate"] == 0.0
+    assert summary["mean_warm_capture_cache_hit_rate"] == 1.0
     assert summary["pass_rows"][1]["total_cache_hits"] == 3
+    assert summary["pass_rows"][1]["capture_cache_attempt_count"] == 1
+    assert summary["pass_rows"][1]["capture_cache_hit_rate"] == 1.0
     assert payload == summary
 
 

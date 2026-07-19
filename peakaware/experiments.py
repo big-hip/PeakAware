@@ -1266,6 +1266,7 @@ def summarize_cache_reuse(records: tuple[ExperimentRecord, ...]) -> dict[str, An
         total = hits + misses
         layer_hits = _sum_layer_counts(subset, "cache_layer_hits")
         layer_misses = _sum_layer_counts(subset, "cache_layer_misses")
+        capture_attempts = layer_hits.get("capture", 0) + layer_misses.get("capture", 0)
         pass_rows.append(
             {
                 "matrix_pass_index": pass_index,
@@ -1278,6 +1279,10 @@ def summarize_cache_reuse(records: tuple[ExperimentRecord, ...]) -> dict[str, An
                 "cache_layer_hits": layer_hits,
                 "cache_layer_misses": layer_misses,
                 "cache_layer_hit_rates": _layer_hit_rates(layer_hits, layer_misses),
+                "capture_cache_attempt_count": capture_attempts,
+                "capture_cache_hit_rate": None
+                if capture_attempts == 0
+                else layer_hits.get("capture", 0) / capture_attempts,
                 "actual_joint_capture_count": sum(record.actual_joint_capture_count for record in subset),
             }
         )
@@ -1288,6 +1293,8 @@ def summarize_cache_reuse(records: tuple[ExperimentRecord, ...]) -> dict[str, An
         "warm_pass_count": len(warm_rows),
         "cold_cache_hit_rate": None if not pass_rows else pass_rows[0]["cache_hit_rate"],
         "mean_warm_cache_hit_rate": _mean_optional([row["cache_hit_rate"] for row in warm_rows]),
+        "cold_capture_cache_hit_rate": None if not pass_rows else pass_rows[0]["capture_cache_hit_rate"],
+        "mean_warm_capture_cache_hit_rate": _mean_optional([row["capture_cache_hit_rate"] for row in warm_rows]),
         "cold_actual_joint_capture_count": None if not pass_rows else pass_rows[0]["actual_joint_capture_count"],
         "warm_actual_joint_capture_count": sum(int(row["actual_joint_capture_count"]) for row in warm_rows),
         "pass_rows": pass_rows,
