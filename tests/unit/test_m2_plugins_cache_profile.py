@@ -180,10 +180,16 @@ def test_executable_cache_round_trip_and_selection(tmp_path):
     store_executable_cache(tmp_path, "fast-key", fast, {"compiler": "none"})
     loaded = load_executable_cache(tmp_path, "fast-key", {"compiler": "none"})
     selected = select_cached_executable((slow, fast, too_large), memory_budget_bytes=200)
+    time_selected = select_cached_executable(
+        (slow, fast, too_large),
+        memory_budget_bytes=200,
+        selection_objective="min_time_then_peak",
+    )
 
     assert loaded is not None
     assert loaded.plan_id == "fast"
-    assert selected is fast
+    assert selected is slow
+    assert time_selected is fast
 
 
 def test_executable_measurement_cache_rebinds_callable(tmp_path):

@@ -52,6 +52,7 @@ def select_cached_executable(
     executables: tuple[MeasuredExecutable, ...],
     *,
     memory_budget_bytes: int,
+    selection_objective: str = "min_peak_then_time",
 ) -> MeasuredExecutable | None:
     feasible = [
         executable
@@ -60,5 +61,8 @@ def select_cached_executable(
     ]
     if not feasible:
         return None
-    feasible.sort(key=lambda executable: (executable.measured_step_us, executable.measured_peak_bytes, executable.plan_id))
+    if selection_objective == "min_time_then_peak":
+        feasible.sort(key=lambda executable: (executable.measured_step_us, executable.measured_peak_bytes, executable.plan_id))
+    else:
+        feasible.sort(key=lambda executable: (executable.measured_peak_bytes, executable.measured_step_us, executable.plan_id))
     return feasible[0]
