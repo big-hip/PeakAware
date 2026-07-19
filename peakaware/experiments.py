@@ -65,6 +65,7 @@ class ExperimentRecord:
     diagnostic_normalized_saved_reduction_bytes: int | None
     diagnostic_realization_gap_bytes: int | None
     diagnostic_total_expectation_gap_bytes: int | None
+    diagnostic_counterfactuals: tuple[dict[str, Any], ...]
     measured_candidate_count: int
     measured_plan_results: tuple[dict[str, Any], ...]
     selected_prediction_error_bytes: int | None
@@ -218,6 +219,25 @@ def _measured_plan_results(summary: dict[str, Any]) -> tuple[dict[str, Any], ...
     return tuple(rows)
 
 
+def _diagnostic_counterfactuals(summary: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    diagnostic = summary.get("diagnostic") or {}
+    rows: list[dict[str, Any]] = []
+    for item in diagnostic.get("counterfactuals", ()):
+        candidate_peak = item.get("candidate_peak") or {}
+        rows.append(
+            {
+                "level": item.get("level"),
+                "status": item.get("status"),
+                "candidate_peak_bytes": candidate_peak.get("live_bytes"),
+                "candidate_peak_phase": candidate_peak.get("phase"),
+                "peak_gain_bytes": item.get("peak_gain_bytes"),
+                "confidence": item.get("confidence"),
+                "unavailable_reason": item.get("unavailable_reason"),
+            }
+        )
+    return tuple(rows)
+
+
 def _resolve_experiment_device(device: str) -> torch.device:
     if device == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -314,6 +334,7 @@ def _record_success(
         diagnostic_normalized_saved_reduction_bytes=expectation.get("normalized_saved_reduction"),
         diagnostic_realization_gap_bytes=expectation.get("realization_gap"),
         diagnostic_total_expectation_gap_bytes=expectation.get("total_expectation_gap"),
+        diagnostic_counterfactuals=_diagnostic_counterfactuals(summary),
         measured_candidate_count=len(summary["measured_candidates"]),
         measured_plan_results=_measured_plan_results(summary),
         selected_prediction_error_bytes=None if selected_correction is None else selected_correction["error_bytes"],
@@ -396,6 +417,7 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         diagnostic_normalized_saved_reduction_bytes=None,
         diagnostic_realization_gap_bytes=None,
         diagnostic_total_expectation_gap_bytes=None,
+        diagnostic_counterfactuals=(),
         measured_candidate_count=0,
         measured_plan_results=(),
         selected_prediction_error_bytes=None,
@@ -980,6 +1002,83 @@ def summarize_baseline_comparisons(records: tuple[ExperimentRecord, ...]) -> dic
     }
 
 
+def summarize_layered_simulation_accuracy(records: tuple[ExperimentRecord, ...]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if record.status != "ok" or record.measured_peak_bytes is None:
+            continue
+        measured_peak = int(record.measured_peak_bytes)
+        measured_phase = record.measured_peak_phase
+        for item in record.diagnostic_counterfactuals:
+            peak_bytes = item.get("candidate_peak_bytes")
+            if peak_bytes is None:
+                rows.append(
+                    {
+                        "variant_name": record.variant_name,
+                        "task_name": record.task_name,
+                        "microbatch_size": record.microbatch_size,
+                        "budget_bytes": record.budget_bytes,
+                        "level": item.get("level"),
+                        "status": item.get("status"),
+                        "unavailable_reason": item.get("unavailable_reason"),
+                        "candidate_peak_bytes": None,
+                        "measured_peak_bytes": measured_peak,
+                        "error_bytes": None,
+                        "relative_error": None,
+                        "candidate_peak_phase": item.get("candidate_peak_phase"),
+                        "measured_peak_phase": measured_phase,
+                        "phase_match": None,
+                    }
+                )
+                continue
+            error = measured_peak - int(peak_bytes)
+            candidate_phase = item.get("candidate_peak_phase")
+            rows.append(
+                {
+                    "variant_name": record.variant_name,
+                    "task_name": record.task_name,
+                    "microbatch_size": record.microbatch_size,
+                    "budget_bytes": record.budget_bytes,
+                    "level": item.get("level"),
+                    "status": item.get("status"),
+                    "unavailable_reason": item.get("unavailable_reason"),
+                    "candidate_peak_bytes": int(peak_bytes),
+                    "measured_peak_bytes": measured_peak,
+                    "error_bytes": error,
+                    "relative_error": None if int(peak_bytes) == 0 else error / int(peak_bytes),
+                    "candidate_peak_phase": candidate_phase,
+                    "measured_peak_phase": measured_phase,
+                    "phase_match": None if measured_phase is None else candidate_phase == measured_phase,
+                }
+            )
+    level_summaries: dict[str, dict[str, Any]] = {}
+    for level in sorted({str(row["level"]) for row in rows if row.get("level") is not None}):
+        level_rows = [row for row in rows if row.get("level") == level]
+        available = [row for row in level_rows if row.get("error_bytes") is not None]
+        abs_errors = [abs(int(row["error_bytes"])) for row in available]
+        rel_errors = [abs(float(row["relative_error"])) for row in available if row.get("relative_error") is not None]
+        phase_matches = [bool(row["phase_match"]) for row in available if row.get("phase_match") is not None]
+        level_summaries[level] = {
+            "row_count": len(level_rows),
+            "available_count": len(available),
+            "mean_absolute_error_bytes": _mean(abs_errors),
+            "max_absolute_error_bytes": None if not abs_errors else max(abs_errors),
+            "mean_absolute_relative_error": _mean(rel_errors),
+            "within_10_percent_rate": None
+            if not rel_errors
+            else sum(1 for error in rel_errors if error <= 0.10) / len(rel_errors),
+            "phase_classification_count": len(phase_matches),
+            "phase_classification_accuracy": None
+            if not phase_matches
+            else sum(1 for matched in phase_matches if matched) / len(phase_matches),
+        }
+    return {
+        "level_summaries": level_summaries,
+        "row_count": len(rows),
+        "rows": rows,
+    }
+
+
 def _ensure_parent_dir(path: str | Path) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1011,6 +1110,11 @@ def write_experiment_hint_ablation_json(records: tuple[ExperimentRecord, ...], p
 
 def write_experiment_baseline_comparison_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
     text = json.dumps(summarize_baseline_comparisons(records), indent=2, sort_keys=True)
+    _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
+
+
+def write_experiment_layered_accuracy_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
+    text = json.dumps(summarize_layered_simulation_accuracy(records), indent=2, sort_keys=True)
     _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 

@@ -10,6 +10,7 @@ from .experiments import (
     run_experiment_matrix,
     summarize_baseline_comparisons,
     summarize_hint_ablation,
+    summarize_layered_simulation_accuracy,
     summarize_experiment_records,
     summarize_experiment_records_by_variant,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "summarize_plan_artifact",
     "summarize_baseline_comparisons",
     "summarize_hint_ablation",
+    "summarize_layered_simulation_accuracy",
     "summarize_experiment_records",
     "summarize_experiment_records_by_variant",
     "summarize_result",

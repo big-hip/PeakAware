@@ -13,12 +13,14 @@ from peakaware.experiments import (
     run_experiment_matrix,
     summarize_baseline_comparisons,
     summarize_hint_ablation,
+    summarize_layered_simulation_accuracy,
     summarize_experiment_records,
     summarize_experiment_records_by_variant,
     write_experiment_csv,
     write_experiment_baseline_comparison_json,
     write_experiment_hint_ablation_json,
     write_experiment_json,
+    write_experiment_layered_accuracy_json,
     write_experiment_summary_json,
     write_experiment_variant_summary_json,
 )
@@ -62,6 +64,37 @@ def _minimal_record(
 ) -> ExperimentRecord:
     variant_name = variant_name or ("diagnostic_hints_on" if status == "ok" else "failed")
     diagnostic_hints_enabled = status == "ok" if diagnostic_hints_enabled is None else diagnostic_hints_enabled
+    diagnostic_counterfactuals = ()
+    if status == "ok" and measured_peak_bytes is not None:
+        diagnostic_counterfactuals = (
+            {
+                "level": "D0",
+                "status": "available",
+                "candidate_peak_bytes": measured_peak_bytes + 20,
+                "candidate_peak_phase": "fw",
+                "peak_gain_bytes": 0,
+                "confidence": 0.7,
+                "unavailable_reason": None,
+            },
+            {
+                "level": "D3",
+                "status": "available",
+                "candidate_peak_bytes": measured_peak_bytes + 4,
+                "candidate_peak_phase": "bw",
+                "peak_gain_bytes": 0,
+                "confidence": 0.8,
+                "unavailable_reason": None,
+            },
+            {
+                "level": "D5",
+                "status": "available",
+                "candidate_peak_bytes": measured_peak_bytes,
+                "candidate_peak_phase": "bw",
+                "peak_gain_bytes": 0,
+                "confidence": 0.9,
+                "unavailable_reason": None,
+            },
+        )
     return ExperimentRecord(
         variant_name=variant_name,
         config_fingerprint={
@@ -104,6 +137,7 @@ def _minimal_record(
         diagnostic_normalized_saved_reduction_bytes=32 if status == "ok" else None,
         diagnostic_realization_gap_bytes=12 if status == "ok" else None,
         diagnostic_total_expectation_gap_bytes=None,
+        diagnostic_counterfactuals=diagnostic_counterfactuals,
         measured_candidate_count=3 if status == "ok" else 0,
         measured_plan_results=()
         if status != "ok" or measured_peak_bytes is None
@@ -283,6 +317,23 @@ def test_baseline_comparison_summary_reports_selected_deltas():
     assert summary["baseline_groups"]["torch_min_cut"]["mean_samples_per_second_speedup_vs_plan"] == 1.0
 
 
+def test_layered_simulation_accuracy_summarizes_diagnostic_counterfactuals():
+    records = (
+        _minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80),
+        _minimal_record(status="failed", budget_bytes=100, measured_peak_bytes=None),
+    )
+
+    summary = summarize_layered_simulation_accuracy(records)
+
+    assert summary["row_count"] == 3
+    assert set(summary["level_summaries"]) == {"D0", "D3", "D5"}
+    assert summary["level_summaries"]["D0"]["row_count"] == 1
+    assert summary["level_summaries"]["D5"]["mean_absolute_error_bytes"] == 0.0
+    assert summary["level_summaries"]["D5"]["max_absolute_error_bytes"] == 0
+    assert summary["level_summaries"]["D5"]["within_10_percent_rate"] == 1.0
+    assert summary["level_summaries"]["D5"]["phase_classification_accuracy"] == 1.0
+
+
 def test_experiment_matrix_writes_json_and_csv(tmp_path):
     records = run_experiment_matrix(
         task_names=("tiny_residual_w8",),
@@ -331,6 +382,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].measurement_warmup_steps == 0
     assert records[0].simulation_accuracy_candidate_count >= 1
     assert records[0].measured_plan_results
+    assert records[0].diagnostic_counterfactuals
     assert records[0].diagnostic_hints_enabled is True
     assert records[0].diagnostic_hint_count >= 0
     assert records[0].selected_prediction_error_bytes is not None
@@ -343,6 +395,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert payload[0]["graph_key"] == records[0].graph_key
     assert payload[0]["selected_saved_value_ids"] == list(records[0].selected_saved_value_ids)
     assert payload[0]["selected_effective_saved_value_ids"] == list(records[0].selected_effective_saved_value_ids)
+    assert payload[0]["diagnostic_counterfactuals"]
     assert rows[0]["task_name"] == "tiny_residual_w8"
     assert rows[0]["graph_key"] == records[0].graph_key
     assert rows[0]["selected_estimated_peak_bytes"]
@@ -385,6 +438,7 @@ def test_experiment_writers_create_parent_directories(tmp_path):
     write_experiment_variant_summary_json(variant_summaries, base / "variant_summary.json")
     write_experiment_hint_ablation_json(records, base / "hint_ablation.json")
     write_experiment_baseline_comparison_json(records, base / "baseline_comparison.json")
+    write_experiment_layered_accuracy_json(records, base / "layered_accuracy.json")
 
     assert (base / "records.json").exists()
     assert (base / "records.csv").exists()
@@ -392,6 +446,7 @@ def test_experiment_writers_create_parent_directories(tmp_path):
     assert (base / "variant_summary.json").exists()
     assert (base / "hint_ablation.json").exists()
     assert (base / "baseline_comparison.json").exists()
+    assert (base / "layered_accuracy.json").exists()
 
 
 def test_experiment_matrix_can_include_exact_small_graph_baseline():
@@ -437,6 +492,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     variant_summary_path = tmp_path / "variant_summary.json"
     hint_ablation_path = tmp_path / "hint_ablation.json"
     baseline_comparison_path = tmp_path / "baseline_comparison.json"
+    layered_accuracy_path = tmp_path / "layered_accuracy.json"
     completed = subprocess.run(
         [
             sys.executable,
@@ -472,6 +528,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             str(hint_ablation_path),
             "--output-baseline-comparison-json",
             str(baseline_comparison_path),
+            "--output-layered-accuracy-json",
+            str(layered_accuracy_path),
         ],
         check=True,
         text=True,
@@ -484,6 +542,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     variant_summary_payload = json.loads(variant_summary_path.read_text(encoding="utf-8"))
     hint_ablation_payload = json.loads(hint_ablation_path.read_text(encoding="utf-8"))
     baseline_comparison_payload = json.loads(baseline_comparison_path.read_text(encoding="utf-8"))
+    layered_accuracy_payload = json.loads(layered_accuracy_path.read_text(encoding="utf-8"))
 
     assert len(stdout_payload) == 2
     assert {record["variant_name"] for record in stdout_payload} == {
@@ -501,6 +560,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["selected_saved_value_ids"]
     assert stdout_payload[0]["selected_effective_saved_value_ids"]
     assert stdout_payload[0]["measured_plan_results"]
+    assert stdout_payload[0]["diagnostic_counterfactuals"]
     assert stdout_payload[0]["selected_prediction_error_bytes"] is not None
     assert stdout_payload[0]["selected_feasibility_prediction_match"] is not None
     assert stdout_payload[0]["selected_estimated_peak_reduction_bytes"] is not None
@@ -524,6 +584,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert hint_ablation_payload["pair_count"] == 1
     assert "all_save" in baseline_comparison_payload["baseline_groups"]
     assert baseline_comparison_payload["row_count"] >= 2
+    assert "D5" in layered_accuracy_payload["level_summaries"]
+    assert layered_accuracy_payload["row_count"] >= 1
     assert hint_ablation_payload["rows"][0]["conclusion"] in {
         "improved_budget",
         "improved_search",
