@@ -72,10 +72,24 @@ def build_recompute_plan(
     saved_value_ids: frozenset[int],
     safety_margin_bytes: int = 0,
     label: str | None = None,
+    strategy_expectation_source: str | None = None,
 ) -> RecomputePlan:
     validate_plan_identity(ir, saved_value_ids)
     mandatory = frozenset(v.id for v in ir.values if v.mandatory_save_reason)
-    plan_id = label or plan_identity_key(ir.graph_key, saved_value_ids | mandatory, budget_bytes)
+    effective_saved_value_ids = saved_value_ids | mandatory
+    plan_id = label or plan_identity_key(ir.graph_key, effective_saved_value_ids, budget_bytes)
+    strategy_saved_bytes = None
+    strategy_provenance = {}
+    if strategy_expectation_source is not None:
+        strategy_saved_bytes = sum(
+            v.logical_nbytes for v in ir.values if v.phase == "fw" and v.id in effective_saved_value_ids
+        )
+        strategy_provenance = {
+            "source": strategy_expectation_source,
+            "metric": "logical_fw_saved_value_bytes",
+            "saved_value_count": len(effective_saved_value_ids),
+            "mandatory_value_count": len(mandatory),
+        }
     return RecomputePlan(
         graph_key=ir.graph_key,
         budget_bytes=budget_bytes,
@@ -92,4 +106,6 @@ def build_recompute_plan(
         safety_margin_bytes=safety_margin_bytes,
         cost_sources=("m0_static",),
         plan_id=plan_id,
+        strategy_saved_bytes=strategy_saved_bytes,
+        strategy_expectation_provenance=strategy_provenance,
     )

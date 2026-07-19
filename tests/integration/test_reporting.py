@@ -78,8 +78,11 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     diagnostic_by_plan = {item["plan_id"]: item for item in summary["plan_diagnostics"]}
     assert {"all_save", "torch_min_cut", "block_checkpoint"}.issubset(diagnostic_by_plan)
     assert all("expected_saved_reduction" in item for item in diagnostic_by_plan.values())
-    assert all(item["expectation"]["strategy_status"] == "unavailable" for item in diagnostic_by_plan.values())
+    assert all(item["expectation"]["strategy_status"] == "available" for item in diagnostic_by_plan.values())
+    assert all("candidate" in item["expectation"]["strategy_provenance"] for item in diagnostic_by_plan.values())
+    assert diagnostic_by_plan["torch_min_cut"]["expectation"]["strategy_expected_saved_reduction"] is not None
     assert all("normalized_saved_reduction" in item["expectation"] for item in diagnostic_by_plan.values())
+    assert all("strategy_estimation_gap" in item["expectation"] for item in diagnostic_by_plan.values())
     assert all("realization_gap" in item["expectation"] for item in diagnostic_by_plan.values())
     assert all("repair_hints" in item for item in diagnostic_by_plan.values())
     assert all(0 <= item["confidence"] <= 1 for item in diagnostic_by_plan.values())
@@ -91,7 +94,7 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert "feasible_after_repair_count" in summary["search_diagnostics"]
     assert summary["diagnostic"]["counterfactuals"][-1]["level"] == "D5"
     assert "baseline_peak" in summary["diagnostic"]["counterfactuals"][0]
-    assert summary["diagnostic"]["expectation"]["strategy_status"] == "unavailable"
+    assert summary["diagnostic"]["expectation"]["strategy_status"] == "available"
     assert 0 <= summary["diagnostic"]["confidence"] <= 1
     assert "repair_hints" in summary["diagnostic"]
     assert summary["diagnostic"]["evidence"]

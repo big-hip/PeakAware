@@ -292,6 +292,24 @@ def diagnose_plan(
     )
     transient = candidate.simulation.max_recompute_live_bytes - baseline.simulation.max_recompute_live_bytes
     peak_reduction = baseline.simulation.estimated_peak_bytes - candidate.simulation.estimated_peak_bytes
+    strategy_expected_saved = None
+    strategy_estimation_gap = None
+    total_expectation_gap = None
+    strategy_expectation_status = "unavailable"
+    strategy_expectation_provenance: dict[str, Any] = {
+        "source": "none",
+        "reason": "strategy did not provide a public saved-bytes expectation model",
+    }
+    if baseline.plan.strategy_saved_bytes is not None and candidate.plan.strategy_saved_bytes is not None:
+        strategy_expected_saved = baseline.plan.strategy_saved_bytes - candidate.plan.strategy_saved_bytes
+        strategy_estimation_gap = strategy_expected_saved - expected_saved
+        total_expectation_gap = strategy_expected_saved - peak_reduction
+        strategy_expectation_status = "available"
+        strategy_expectation_provenance = {
+            "baseline": baseline.plan.strategy_expectation_provenance,
+            "candidate": candidate.plan.strategy_expectation_provenance,
+            "gain_formula": "baseline_strategy_saved_bytes - candidate_strategy_saved_bytes",
+        }
     hints: list[RepairHint] = []
     evidence: list[DiagnosticEvidence] = [
         DiagnosticEvidence(
@@ -313,6 +331,18 @@ def diagnose_plan(
             description="Estimated end-to-end peak reduction compared with normalized saved reduction.",
         ),
     ]
+    if strategy_estimation_gap is not None and strategy_estimation_gap != 0:
+        evidence.append(
+            DiagnosticEvidence(
+                evidence_id=f"{candidate.plan.plan_id}:strategy_estimation_gap",
+                root_cause=RootCause.SAVED_ESTIMATE_MISMATCH.name,
+                metric="strategy_estimation_gap_bytes",
+                value=strategy_estimation_gap,
+                threshold=0,
+                direction="not_equal",
+                description="Strategy-reported saved bytes differ from PeakAware storage-normalized saved bytes.",
+            )
+        )
     if any(effect.pinning_value_ids for effect in candidate.plan.storage_effects):
         pinned_count = sum(1 for effect in candidate.plan.storage_effects if effect.pinning_value_ids)
         evidence.append(
@@ -394,6 +424,12 @@ def diagnose_plan(
         candidate=candidate,
         feasibility=feasibility,
     )
+    if strategy_estimation_gap is not None and strategy_estimation_gap != 0:
+        if primary is RootCause.UNKNOWN:
+            primary = RootCause.SAVED_ESTIMATE_MISMATCH
+            secondary = ()
+        elif RootCause.SAVED_ESTIMATE_MISMATCH not in (primary,) + secondary:
+            secondary = (RootCause.SAVED_ESTIMATE_MISMATCH,) + secondary
     measured_causes, compiler_workspace_allocator_change = _measured_root_causes(candidate, measured)
     if measured is not None:
         estimated_peak = max(int(candidate.simulation.estimated_peak_bytes), 1)
@@ -472,16 +508,13 @@ def diagnose_plan(
             feasibility=feasibility,
             measured=measured,
         ),
-        strategy_expectation_status="unavailable",
-        strategy_expectation_provenance={
-            "source": "none",
-            "reason": "strategy did not provide a public saved-bytes expectation model",
-        },
-        strategy_expected_saved_reduction=None,
+        strategy_expectation_status=strategy_expectation_status,
+        strategy_expectation_provenance=strategy_expectation_provenance,
+        strategy_expected_saved_reduction=strategy_expected_saved,
         normalized_saved_reduction=expected_saved,
-        strategy_estimation_gap=None,
+        strategy_estimation_gap=strategy_estimation_gap,
         realization_gap=expected_saved - peak_reduction,
-        total_expectation_gap=None,
+        total_expectation_gap=total_expectation_gap,
     )
 
 

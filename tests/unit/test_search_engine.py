@@ -37,6 +37,10 @@ def test_search_plans_returns_ranked_evaluated_m0_plans():
     assert evaluated[0].plan.estimated_peak_bytes == evaluated[0].simulation.estimated_peak_bytes
     plan_ids = {plan.plan.plan_id for plan in evaluated}
     assert {"all_save", "torch_min_cut", "block_checkpoint"}.issubset(plan_ids)
+    provenance_by_plan = {plan.plan.plan_id: plan.plan.strategy_expectation_provenance for plan in evaluated}
+    assert provenance_by_plan["all_save"]["source"] == "all_save_baseline"
+    assert provenance_by_plan["torch_min_cut"]["source"] == "pytorch_min_cut_proxy"
+    assert provenance_by_plan["block_checkpoint"]["source"] == "block_checkpoint_proxy"
     assert plan_ids <= {
         "all_save",
         "torch_min_cut",

@@ -208,6 +208,8 @@ class RecomputePlan:
     safety_margin_bytes: int
     cost_sources: tuple[str, ...]
     plan_id: str = ""
+    strategy_saved_bytes: int | None = None
+    strategy_expectation_provenance: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

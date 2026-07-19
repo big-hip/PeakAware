@@ -62,6 +62,7 @@ def _manual_default_plans(ir: JointTrainingIR, budget_bytes: int, safety_margin_
         saved_value_ids=_all_forward_value_ids(ir),
         safety_margin_bytes=safety_margin_bytes,
         label="all_save",
+        strategy_expectation_source="all_save_baseline",
     )
     mandatory_only = build_recompute_plan(
         ir,
@@ -69,6 +70,7 @@ def _manual_default_plans(ir: JointTrainingIR, budget_bytes: int, safety_margin_
         saved_value_ids=_mandatory_value_ids(ir),
         safety_margin_bytes=safety_margin_bytes,
         label="torch_min_cut",
+        strategy_expectation_source="pytorch_min_cut_proxy",
     )
     middle_values = tuple(sorted(_all_forward_value_ids(ir) - _mandatory_value_ids(ir)))
     checkpoint_boundary = max(1, len(middle_values) // 2)
@@ -79,6 +81,7 @@ def _manual_default_plans(ir: JointTrainingIR, budget_bytes: int, safety_margin_
         saved_value_ids=checkpoint_values,
         safety_margin_bytes=safety_margin_bytes,
         label="block_checkpoint",
+        strategy_expectation_source="block_checkpoint_proxy",
     )
     return (all_save, mandatory_only, block_checkpoint)
 
@@ -104,6 +107,7 @@ def _greedy_seed_plans(
                 saved_value_ids=frozenset(saved | mandatory),
                 safety_margin_bytes=safety_margin_bytes,
                 label=f"greedy_drop_{index}",
+                strategy_expectation_source="greedy_bytes_per_cost",
             )
         )
         if len(plans) >= 4:
@@ -158,6 +162,7 @@ def search_plans_with_diagnostics(
                 saved_value_ids=saved,
                 safety_margin_bytes=safety_margin_bytes,
                 label=f"manual_{index}",
+                strategy_expectation_source="manual_saved_value_ids",
             )
         )
     baseline_evaluated = [evaluate_plan(ir, plan, fixed_timeline) for plan in plans]
