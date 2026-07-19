@@ -326,6 +326,40 @@ def test_optimize_training_does_not_advance_user_state_before_executor_step():
     assert optimizer.state_dict()["state"] == optimizer_before["state"]
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for Inductor steady-state validation")
+def test_inductor_cuda_executor_runs_step_without_advancing_state_during_optimization():
+    torch.manual_seed(0)
+    model = TinyResidual().cuda()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    x = torch.randn(4, 8, device="cuda")
+    before = tuple(p.detach().cpu().clone() for p in model.parameters())
+
+    result = optimize_training(
+        model,
+        (x,),
+        loss_fn=squared_mean_loss,
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 28,
+        config=PeakAwareConfig(
+            enable_compile=True,
+            enable_inductor=True,
+            top_k=1,
+            safety_margin_bytes=0,
+            safety_margin_ratio=0.0,
+            measurement_repeats=1,
+        ),
+    )
+    after_optimize = tuple(p.detach().cpu().clone() for p in model.parameters())
+    step = result.executor.step(x)
+
+    assert result.executable.correctness_passed
+    assert result.executable.phase_metrics["step_us"] > 0
+    assert all(torch.equal(left, right) for left, right in zip(before, after_optimize))
+    assert step.optimizer_step_performed is True
+    assert step.metrics["plan_id"] == result.selected_plan.plan_id
+    assert step.metrics["runtime_peak_bytes"] > 0
+
+
 def test_optimize_training_restores_existing_adamw_optimizer_state():
     torch.manual_seed(0)
     model = TinyResidual()
