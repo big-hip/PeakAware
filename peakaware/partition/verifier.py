@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import torch
@@ -70,6 +71,10 @@ def _clone_grads(model: nn.Module) -> tuple[Tensor | None, ...]:
     return tuple(None if p.grad is None else p.grad.detach().clone() for p in model.parameters())
 
 
+def _clone_model_state(model: nn.Module) -> dict[str, Tensor]:
+    return {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
+
+
 def _restore_grads(model: nn.Module, grads: tuple[Tensor | None, ...]) -> None:
     for param, grad in zip(model.parameters(), grads):
         param.grad = None if grad is None else grad.detach().clone()
@@ -78,6 +83,38 @@ def _restore_grads(model: nn.Module, grads: tuple[Tensor | None, ...]) -> None:
 def _zero_grads(model: nn.Module) -> None:
     for param in model.parameters():
         param.grad = None
+
+
+def _cuda_rng_state() -> list[Tensor] | None:
+    return torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+
+
+def _restore_rng(cpu_rng: Tensor, cuda_rng: list[Tensor] | None) -> None:
+    torch.set_rng_state(cpu_rng)
+    if cuda_rng is not None:
+        torch.cuda.set_rng_state_all(cuda_rng)
+
+
+def _compare_nested_state(left: Any, right: Any, path: str, *, atol: float, rtol: float) -> str | None:
+    if isinstance(left, Tensor) and isinstance(right, Tensor):
+        return None if torch.allclose(left, right, atol=atol, rtol=rtol) else f"state mismatch at {path}"
+    if isinstance(left, dict) and isinstance(right, dict):
+        if set(left) != set(right):
+            return f"state keys mismatch at {path}"
+        for key in left:
+            reason = _compare_nested_state(left[key], right[key], f"{path}.{key}", atol=atol, rtol=rtol)
+            if reason is not None:
+                return reason
+        return None
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        if len(left) != len(right):
+            return f"state length mismatch at {path}"
+        for index, (left_item, right_item) in enumerate(zip(left, right)):
+            reason = _compare_nested_state(left_item, right_item, f"{path}[{index}]", atol=atol, rtol=rtol)
+            if reason is not None:
+                return reason
+        return None
+    return None if left == right else f"state mismatch at {path}"
 
 
 def compare_dry_run_with_baseline(
@@ -118,6 +155,71 @@ def compare_dry_run_with_baseline(
         return True, None
     finally:
         _restore_grads(model, original_grads)
+
+
+def compare_multistep_training_with_baseline(
+    model: nn.Module,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    loss_fn: Any,
+    optimizer: torch.optim.Optimizer,
+    *,
+    step_count: int,
+    atol: float,
+    rtol: float,
+    zero_grad_set_to_none: bool = True,
+) -> tuple[bool, str | None]:
+    original_model_state = _clone_model_state(model)
+    original_optimizer_state = copy.deepcopy(optimizer.state_dict())
+    original_grads = _clone_grads(model)
+    original_cpu_rng = torch.get_rng_state()
+    original_cuda_rng = _cuda_rng_state()
+
+    step_count = max(int(step_count), 1)
+
+    def restore_all() -> None:
+        model.load_state_dict(original_model_state)
+        optimizer.load_state_dict(copy.deepcopy(original_optimizer_state))
+        _restore_grads(model, original_grads)
+        _restore_rng(original_cpu_rng, original_cuda_rng)
+
+    def run_steps() -> tuple[tuple[Tensor, ...], dict[str, Tensor], dict[str, Any]]:
+        losses: list[Tensor] = []
+        for _ in range(step_count):
+            optimizer.zero_grad(set_to_none=zero_grad_set_to_none)
+            loss = loss_fn(model(*args, **kwargs))
+            if loss.ndim != 0:
+                raise ValueError("loss_fn must return a scalar tensor")
+            loss.backward()
+            optimizer.step()
+            losses.append(loss.detach().clone())
+        return tuple(losses), _clone_model_state(model), copy.deepcopy(optimizer.state_dict())
+
+    try:
+        restore_all()
+        baseline_losses, baseline_state, baseline_optimizer_state = run_steps()
+        restore_all()
+        candidate_losses, candidate_state, candidate_optimizer_state = run_steps()
+
+        for index, (left, right) in enumerate(zip(baseline_losses, candidate_losses)):
+            if not torch.allclose(left, right, atol=atol, rtol=rtol):
+                return False, f"loss mismatch at step {index}"
+        for name, left in baseline_state.items():
+            right = candidate_state[name]
+            if not torch.allclose(left, right, atol=atol, rtol=rtol):
+                return False, f"parameter or buffer mismatch after step {step_count}: {name}"
+        optimizer_reason = _compare_nested_state(
+            baseline_optimizer_state,
+            candidate_optimizer_state,
+            "optimizer",
+            atol=atol,
+            rtol=rtol,
+        )
+        if optimizer_reason is not None:
+            return False, optimizer_reason
+        return True, None
+    finally:
+        restore_all()
 
 
 def run_aot_eager_dry_run(

@@ -14,7 +14,7 @@ from peakaware.contracts import (
 from peakaware.ir.builder import build_joint_ir
 from peakaware.memory.fixed_frontier import build_optimizer_spec
 from peakaware.partition.aot import partition_joint_graph
-from peakaware.partition.verifier import run_aot_eager_dry_run
+from peakaware.partition.verifier import compare_multistep_training_with_baseline, run_aot_eager_dry_run
 from peakaware.search.plan import build_recompute_plan
 
 
@@ -115,6 +115,32 @@ def test_dry_run_handles_tied_shared_weights():
     assert result.abi_valid
     assert result.outputs_match
     assert result.gradients_match
+
+
+def test_multistep_correctness_handles_dropout_and_restores_state():
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(3, 5), nn.Dropout(p=0.4), nn.Linear(5, 1))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+    args = (torch.randn(4, 3),)
+    model_state_before = {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
+    rng_before = torch.get_rng_state()
+
+    ok, reason = compare_multistep_training_with_baseline(
+        model,
+        args,
+        {},
+        lambda out: out.pow(2).mean(),
+        optimizer,
+        step_count=3,
+        atol=1e-6,
+        rtol=1e-5,
+    )
+
+    assert ok, reason
+    assert torch.equal(rng_before, torch.get_rng_state())
+    assert optimizer.state_dict()["state"] == {}
+    for name, tensor in model.state_dict().items():
+        assert torch.allclose(tensor, model_state_before[name])
 
 
 def test_saved_value_policy_changes_aot_partition_shape():
