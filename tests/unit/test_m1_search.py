@@ -161,6 +161,11 @@ def test_diagnostics_reports_recompute_wave_hint():
     report = diagnose_plan(baseline, candidate)
 
     assert report.bw_recompute_transient_change >= 0
+    assert report.strategy_expectation_status == "unavailable"
+    assert report.strategy_expected_saved_reduction is None
+    assert report.normalized_saved_reduction == report.expected_saved_reduction
+    assert report.strategy_estimation_gap is None
+    assert report.realization_gap == report.normalized_saved_reduction - report.actual_overall_peak_reduction
     if report.bw_recompute_transient_change > 0:
         assert RootCause.REMATERIALIZATION_WAVE.name in report.root_causes
         assert report.repair_hints

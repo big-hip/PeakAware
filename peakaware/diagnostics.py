@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any
@@ -51,6 +51,13 @@ class PlanDiagnosticReport:
     root_causes: tuple[str, ...]
     repair_hints: tuple[RepairHint, ...]
     counterfactuals: tuple[CounterfactualResult, ...] = ()
+    strategy_expectation_status: str = "unavailable"
+    strategy_expectation_provenance: dict[str, Any] = field(default_factory=dict)
+    strategy_expected_saved_reduction: int | None = None
+    normalized_saved_reduction: int = 0
+    strategy_estimation_gap: int | None = None
+    realization_gap: int = 0
+    total_expectation_gap: int | None = None
 
 
 def _snapshot_with_bytes(source: PeakSnapshot, total_bytes: int, confidence: float) -> PeakSnapshot:
@@ -226,6 +233,16 @@ def diagnose_plan(
             feasibility=feasibility,
             measured=measured,
         ),
+        strategy_expectation_status="unavailable",
+        strategy_expectation_provenance={
+            "source": "none",
+            "reason": "strategy did not provide a public saved-bytes expectation model",
+        },
+        strategy_expected_saved_reduction=None,
+        normalized_saved_reduction=expected_saved,
+        strategy_estimation_gap=None,
+        realization_gap=expected_saved - peak_reduction,
+        total_expectation_gap=None,
     )
 
 

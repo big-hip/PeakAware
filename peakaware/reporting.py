@@ -95,11 +95,24 @@ def _repair_hint_rows(report: PlanDiagnosticReport) -> list[dict[str, Any]]:
     ]
 
 
+def _expectation_row(report: PlanDiagnosticReport) -> dict[str, Any]:
+    return {
+        "strategy_status": report.strategy_expectation_status,
+        "strategy_provenance": report.strategy_expectation_provenance,
+        "strategy_expected_saved_reduction": report.strategy_expected_saved_reduction,
+        "normalized_saved_reduction": report.normalized_saved_reduction,
+        "strategy_estimation_gap": report.strategy_estimation_gap,
+        "realization_gap": report.realization_gap,
+        "total_expectation_gap": report.total_expectation_gap,
+    }
+
+
 def _diagnostic_row(report: PlanDiagnosticReport) -> dict[str, Any]:
     return {
         "plan_id": report.plan_id,
         "text": render_diagnostic_text(report),
         "expected_saved_reduction": report.expected_saved_reduction,
+        "expectation": _expectation_row(report),
         "after_fw_retained_reduction": report.after_fw_retained_reduction,
         "bw_recompute_transient_change": report.bw_recompute_transient_change,
         "fixed_frontier_overlap": report.fixed_frontier_overlap,
@@ -221,6 +234,7 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "text": diagnostic_text,
             "primary_cause": diagnostic.primary_cause.name,
             "secondary_causes": [cause.name for cause in diagnostic.secondary_causes],
+            "expectation": _expectation_row(diagnostic),
             "repair_hints": _repair_hint_rows(diagnostic),
             "counterfactuals": _counterfactual_rows(diagnostic),
         },
