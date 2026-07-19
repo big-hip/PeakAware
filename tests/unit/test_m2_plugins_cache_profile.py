@@ -103,21 +103,29 @@ def test_patch_session_rolls_back_when_enter_fails_midway():
     assert math.sqrt(9) == 3
 
 
-def test_patch_session_restores_real_torch_function_after_wrapper_exception():
-    original_add = torch.add
+@pytest.mark.parametrize(
+    ("target_attribute", "expected"),
+    (
+        ("add", 2.0),
+        ("mul", 1.0),
+    ),
+)
+def test_patch_session_restores_real_torch_function_after_wrapper_exception(target_attribute, expected):
+    original = getattr(torch, target_attribute)
 
     def raising_wrapper(next_fn, *args, **kwargs):
         del next_fn, args, kwargs
         raise RuntimeError("injected torch patch failure")
 
-    spec = PatchSpec("faulty_torch_add", "torch", "add", raising_wrapper)
+    spec = PatchSpec(f"faulty_torch_{target_attribute}", "torch", target_attribute, raising_wrapper)
 
     with pytest.raises(RuntimeError, match="injected torch patch failure"):
         with PatchSession((spec,)):
-            torch.add(torch.ones(1), torch.ones(1))
+            getattr(torch, target_attribute)(torch.ones(1), torch.ones(1))
 
-    assert torch.add is original_add
-    assert torch.equal(torch.add(torch.ones(1), torch.ones(1)), torch.full((1,), 2.0))
+    restored = getattr(torch, target_attribute)
+    assert restored is original
+    assert torch.equal(restored(torch.ones(1), torch.ones(1)), torch.full((1,), expected))
 
 
 def test_patch_session_validates_every_wrapper_signature_before_patching():
