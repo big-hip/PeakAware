@@ -96,18 +96,37 @@ def _plan_row(plan: EvaluatedPlan) -> dict[str, Any]:
     }
 
 
-def _prediction_error_row(plan: EvaluatedPlan | None, peak_bytes: int) -> dict[str, Any] | None:
+def _measured_peak_phase(phase_metrics: dict[str, Any]) -> str | None:
+    peaks = {
+        "fw": int(phase_metrics.get("fw_peak_bytes", 0)),
+        "bw": int(phase_metrics.get("bw_peak_bytes", 0)),
+        "optimizer": int(phase_metrics.get("optimizer_peak_bytes", 0)),
+    }
+    if not any(peaks.values()):
+        return None
+    return max(peaks, key=lambda phase: (peaks[phase], {"fw": 0, "bw": 1, "optimizer": 2}[phase]))
+
+
+def _prediction_error_row(
+    plan: EvaluatedPlan | None,
+    peak_bytes: int,
+    measured_phase: str | None = None,
+) -> dict[str, Any] | None:
     if plan is None:
         return None
     estimated = int(plan.simulation.estimated_peak_bytes)
     error = int(peak_bytes) - estimated
     relative = None if estimated == 0 else error / estimated
+    estimated_phase = plan.simulation.peak_snapshot.phase
     return {
         "plan_id": plan.plan.plan_id,
         "estimated_peak_bytes": estimated,
         "measured_peak_bytes": int(peak_bytes),
         "error_bytes": error,
         "relative_error": relative,
+        "estimated_peak_phase": estimated_phase,
+        "measured_peak_phase": measured_phase,
+        "phase_match": None if measured_phase is None else estimated_phase == measured_phase,
     }
 
 
@@ -119,6 +138,8 @@ def _simulation_accuracy_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "max_absolute_error_bytes": None,
             "mean_absolute_relative_error": None,
             "within_10_percent_rate": None,
+            "phase_classification_count": 0,
+            "phase_classification_accuracy": None,
         }
     absolute_errors = [abs(int(row["error_bytes"])) for row in rows]
     relative_errors = [
@@ -126,6 +147,7 @@ def _simulation_accuracy_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for row in rows
         if row["relative_error"] is not None
     ]
+    phase_matches = [bool(row["phase_match"]) for row in rows if row.get("phase_match") is not None]
     return {
         "candidate_count": len(rows),
         "mean_absolute_error_bytes": sum(absolute_errors) / len(absolute_errors),
@@ -136,6 +158,10 @@ def _simulation_accuracy_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "within_10_percent_rate": None
         if not relative_errors
         else sum(1 for error in relative_errors if error <= 0.10) / len(relative_errors),
+        "phase_classification_count": len(phase_matches),
+        "phase_classification_accuracy": None
+        if not phase_matches
+        else sum(1 for matched in phase_matches if matched) / len(phase_matches),
     }
 
 
@@ -307,11 +333,13 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
         {
             "plan_id": candidate.plan_id,
             "peak_bytes": candidate.measured_peak_bytes,
+            "peak_phase": _measured_peak_phase(candidate.phase_metrics),
             "step_us": candidate.measured_step_us,
             "correctness_passed": candidate.correctness_passed,
             "prediction_error": _prediction_error_row(
                 plans_by_id.get(candidate.plan_id),
                 candidate.measured_peak_bytes,
+                _measured_peak_phase(candidate.phase_metrics),
             ),
         }
         for candidate in result.measured_candidates
@@ -319,7 +347,11 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
     correction_rows = [
         row
         for row in (
-            _prediction_error_row(plans_by_id.get(candidate.plan_id), candidate.measured_peak_bytes)
+            _prediction_error_row(
+                plans_by_id.get(candidate.plan_id),
+                candidate.measured_peak_bytes,
+                _measured_peak_phase(candidate.phase_metrics),
+            )
             for candidate in result.measured_candidates
         )
         if row is not None
@@ -347,6 +379,7 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
         },
         "measured": {
             "peak_bytes": result.executable.measured_peak_bytes,
+            "peak_phase": _measured_peak_phase(result.executable.phase_metrics),
             "reserved_peak_bytes": int(result.executable.phase_metrics.get("overall_reserved_peak_bytes", 0)),
             "step_us": result.executable.measured_step_us,
             "correctness_passed": result.executable.correctness_passed,
@@ -354,7 +387,11 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
         },
         "measured_candidates": measured_candidate_rows,
         "topk_correction": {
-            "selected": _prediction_error_row(selected_evaluated, result.executable.measured_peak_bytes),
+            "selected": _prediction_error_row(
+                selected_evaluated,
+                result.executable.measured_peak_bytes,
+                _measured_peak_phase(result.executable.phase_metrics),
+            ),
             "candidates": correction_rows,
             "simulation_accuracy": _simulation_accuracy_row(correction_rows),
         },

@@ -47,6 +47,7 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert set(summary["selected_saved_value_ids"]).issubset(summary["selected_effective_saved_value_ids"])
     assert summary["estimated_peak_bytes"] == result.selected_plan.estimated_peak_bytes
     assert summary["selection_objective"] == "min_peak_then_time"
+    assert "peak_phase" in summary["measured"]
     assert "reserved_peak_bytes" in summary["measured"]
     assert "early_stop" in summary
     assert all(item["ranking_provenance"]["risk_score"]["range"] == "[0, 1]" for item in summary["plans"])
@@ -102,7 +103,9 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     )
     assert summary["topk_correction"]["simulation_accuracy"]["max_absolute_error_bytes"] >= 0
     assert summary["topk_correction"]["simulation_accuracy"]["within_10_percent_rate"] is not None
+    assert "phase_classification_accuracy" in summary["topk_correction"]["simulation_accuracy"]
     assert "error_bytes" in summary["measured_candidates"][0]["prediction_error"]
+    assert "phase_match" in summary["measured_candidates"][0]["prediction_error"]
     assert summary["cache"]["total_hits"] == result.cache_stats.total_hits
     assert plan_artifact["plan_id"] == result.selected_plan.plan_id
     assert plan_artifact["plan_key"] == summary["selected_plan_key"]

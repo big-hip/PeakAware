@@ -51,6 +51,8 @@ class ExperimentRecord:
     feasibility_status: str | None
     baseline_peak_phase: str | None
     selected_peak_phase: str | None
+    measured_peak_phase: str | None
+    selected_peak_phase_match: bool | None
     diagnostic_primary_cause: str | None
     diagnostic_normalized_saved_reduction_bytes: int | None
     diagnostic_realization_gap_bytes: int | None
@@ -116,8 +118,11 @@ class ExperimentSummary:
     max_simulation_accuracy_absolute_error_bytes: int | None
     mean_simulation_accuracy_absolute_relative_error: float | None
     mean_simulation_accuracy_within_10_percent_rate: float | None
+    phase_classification_count: int
+    phase_classification_accuracy: float | None
     root_cause_counts: dict[str, int]
     selected_peak_phase_counts: dict[str, int]
+    measured_peak_phase_counts: dict[str, int]
     diagnostic_hints_enabled_count: int
     diagnostic_hint_count: int
     diagnostic_hint_kind_counts: dict[str, int]
@@ -202,6 +207,8 @@ def _record_success(
         feasibility_status=summary["feasibility"]["status"],
         baseline_peak_phase=None if baseline_peak is None else baseline_peak["phase"],
         selected_peak_phase=None if selected_peak is None else selected_peak["phase"],
+        measured_peak_phase=measured.get("peak_phase"),
+        selected_peak_phase_match=None if selected_correction is None else selected_correction.get("phase_match"),
         diagnostic_primary_cause=None if diagnostic is None else diagnostic["primary_cause"],
         diagnostic_normalized_saved_reduction_bytes=expectation.get("normalized_saved_reduction"),
         diagnostic_realization_gap_bytes=expectation.get("realization_gap"),
@@ -265,6 +272,8 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         feasibility_status=None,
         baseline_peak_phase=None,
         selected_peak_phase=None,
+        measured_peak_phase=None,
+        selected_peak_phase_match=None,
         diagnostic_primary_cause=None,
         diagnostic_normalized_saved_reduction_bytes=None,
         diagnostic_realization_gap_bytes=None,
@@ -478,6 +487,11 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         for record in ok
         if record.simulation_accuracy_within_10_percent_rate is not None
     ]
+    phase_matches = [
+        record.selected_peak_phase_match
+        for record in ok
+        if record.selected_peak_phase_match is not None
+    ]
     normalized_saved = [
         record.diagnostic_normalized_saved_reduction_bytes
         for record in ok
@@ -535,8 +549,13 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         else max(simulation_accuracy_max_abs_errors),
         mean_simulation_accuracy_absolute_relative_error=_mean(simulation_accuracy_mean_relative_errors),
         mean_simulation_accuracy_within_10_percent_rate=_mean(simulation_accuracy_within_10),
+        phase_classification_count=len(phase_matches),
+        phase_classification_accuracy=None
+        if not phase_matches
+        else sum(1 for matched in phase_matches if matched) / len(phase_matches),
         root_cause_counts=_counts([record.diagnostic_primary_cause for record in ok]),
         selected_peak_phase_counts=_counts([record.selected_peak_phase for record in ok]),
+        measured_peak_phase_counts=_counts([record.measured_peak_phase for record in ok]),
         diagnostic_hints_enabled_count=sum(1 for record in ok if record.diagnostic_hints_enabled),
         diagnostic_hint_count=sum(record.diagnostic_hint_count for record in ok),
         diagnostic_hint_kind_counts=_tuple_counts([record.diagnostic_hint_kinds for record in ok]),
