@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from peakaware.contracts import EvaluatedPlan, OptimizedTrainingResult
-from peakaware.diagnostics import diagnose_plan, render_diagnostic_text
+from peakaware.contracts import EvaluatedPlan, FeasibilityReport, MeasuredExecutable, OptimizedTrainingResult
+from peakaware.diagnostics import PlanDiagnosticReport, diagnose_plan, render_diagnostic_text
 
 
 def _plan_row(plan: EvaluatedPlan) -> dict[str, Any]:
@@ -57,6 +57,73 @@ def _early_stop_row(result: OptimizedTrainingResult) -> dict[str, Any] | None:
             "budget_bytes": report.evidence.budget_bytes,
         },
     }
+
+
+def _counterfactual_rows(report: PlanDiagnosticReport) -> list[dict[str, Any]]:
+    return [
+        {
+            "level": item.level,
+            "status": item.status,
+            "peak_gain_bytes": item.peak_gain_bytes,
+            "confidence": item.confidence,
+            "unavailable_reason": item.unavailable_reason,
+        }
+        for item in report.counterfactuals
+    ]
+
+
+def _repair_hint_rows(report: PlanDiagnosticReport) -> list[dict[str, Any]]:
+    return [
+        {
+            "kind": hint.kind,
+            "target_ids": hint.target_ids,
+            "priority": hint.priority,
+            "reason": hint.reason,
+        }
+        for hint in report.repair_hints
+    ]
+
+
+def _diagnostic_row(report: PlanDiagnosticReport) -> dict[str, Any]:
+    return {
+        "plan_id": report.plan_id,
+        "text": render_diagnostic_text(report),
+        "expected_saved_reduction": report.expected_saved_reduction,
+        "after_fw_retained_reduction": report.after_fw_retained_reduction,
+        "bw_recompute_transient_change": report.bw_recompute_transient_change,
+        "fixed_frontier_overlap": report.fixed_frontier_overlap,
+        "compiler_workspace_allocator_change": report.compiler_workspace_allocator_change,
+        "actual_overall_peak_reduction": report.actual_overall_peak_reduction,
+        "primary_cause": report.primary_cause.name,
+        "secondary_causes": [cause.name for cause in report.secondary_causes],
+        "root_causes": list(report.root_causes),
+        "repair_hints": _repair_hint_rows(report),
+        "counterfactuals": _counterfactual_rows(report),
+    }
+
+
+def _plan_diagnostic_rows(
+    plans: tuple[EvaluatedPlan, ...],
+    baseline: EvaluatedPlan | None,
+    selected_measurement: MeasuredExecutable,
+    feasibility: FeasibilityReport,
+) -> list[dict[str, Any]]:
+    if baseline is None:
+        return []
+    rows = []
+    for plan in plans:
+        measured = selected_measurement if plan.plan.plan_id == selected_measurement.plan_id else None
+        rows.append(
+            _diagnostic_row(
+                diagnose_plan(
+                    baseline,
+                    plan,
+                    feasibility=feasibility,
+                    measured=measured,
+                )
+            )
+        )
+    return rows
 
 
 def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
@@ -129,6 +196,7 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "hit_rate": result.cache_stats.hit_rate,
         },
         "plans": [_plan_row(plan) for plan in plans],
+        "plan_diagnostics": _plan_diagnostic_rows(plans, baseline, result.executable, result.feasibility),
         "early_stop": _early_stop_row(result),
         "diagnostic": None
         if diagnostic is None
@@ -136,16 +204,8 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "text": diagnostic_text,
             "primary_cause": diagnostic.primary_cause.name,
             "secondary_causes": [cause.name for cause in diagnostic.secondary_causes],
-            "counterfactuals": [
-                {
-                    "level": item.level,
-                    "status": item.status,
-                    "peak_gain_bytes": item.peak_gain_bytes,
-                    "confidence": item.confidence,
-                    "unavailable_reason": item.unavailable_reason,
-                }
-                for item in diagnostic.counterfactuals
-            ],
+            "repair_hints": _repair_hint_rows(diagnostic),
+            "counterfactuals": _counterfactual_rows(diagnostic),
         },
     }
 

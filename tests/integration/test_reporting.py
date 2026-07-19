@@ -43,7 +43,13 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert summary["estimated_peak_bytes"] == result.selected_plan.estimated_peak_bytes
     assert "reserved_peak_bytes" in summary["measured"]
     assert "early_stop" in summary
+    diagnostic_by_plan = {item["plan_id"]: item for item in summary["plan_diagnostics"]}
+    assert {"all_save", "torch_min_cut", "block_checkpoint"}.issubset(diagnostic_by_plan)
+    assert all("expected_saved_reduction" in item for item in diagnostic_by_plan.values())
+    assert all("repair_hints" in item for item in diagnostic_by_plan.values())
+    assert all(item["counterfactuals"] for item in diagnostic_by_plan.values())
     assert summary["diagnostic"]["counterfactuals"][-1]["level"] == "D5"
+    assert "repair_hints" in summary["diagnostic"]
     assert summary["measured_candidates"]
     assert summary["topk_correction"]["selected"]["plan_id"] == result.selected_plan.plan_id
     assert "error_bytes" in summary["measured_candidates"][0]["prediction_error"]
