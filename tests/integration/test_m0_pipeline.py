@@ -90,6 +90,14 @@ def test_optimize_training_builds_executor_and_runs_step():
     assert result.executor.runtime_peak_threshold_bytes is not None
     assert result.executor.runtime_peak_threshold_bytes <= 1 << 28
     assert tuple(plan_id for plan_id, _ in result.executor.fallback_executables) == result.fallback_plan_ids
+    measured_checkpoint_by_plan = {
+        candidate.plan_id: bool(candidate.phase_metrics.get("activation_checkpoint", 0))
+        for candidate in result.measured_candidates
+    }
+    assert result.executor.fallback_activation_checkpoints == {
+        plan_id: measured_checkpoint_by_plan[plan_id]
+        for plan_id in result.fallback_plan_ids
+    }
     assert result.dry_run is not None and result.dry_run.gradients_match
     assert result.analysis is not None and result.analysis.ir.values
     assert result.analysis is not None and result.analysis.ir.graph_key == result.selected_plan.graph_key

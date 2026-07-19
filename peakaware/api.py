@@ -692,6 +692,11 @@ def optimize_training(
         for item in measured_tuple
         if item.plan_id != selected.plan.plan_id and item.correctness_passed
     )
+    executor.fallback_activation_checkpoints = {
+        item.plan_id: bool(item.phase_metrics.get("activation_checkpoint", 0))
+        for item in measured_tuple
+        if item.plan_id != selected.plan.plan_id and item.correctness_passed
+    }
     executor.runtime_peak_threshold_bytes = min(
         memory_budget_bytes,
         measured.measured_peak_bytes + config.runtime_peak_safety_margin_bytes,

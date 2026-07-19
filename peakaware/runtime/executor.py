@@ -76,6 +76,7 @@ class EagerTrainingStepExecutor:
         runtime_peak_observer: Callable[[], int] | None = None,
         selection_objective: str = "unconfigured",
         activation_checkpoint: bool = False,
+        fallback_activation_checkpoints: dict[str, bool] | None = None,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -89,6 +90,7 @@ class EagerTrainingStepExecutor:
         self.runtime_peak_observer = runtime_peak_observer
         self.selection_objective = selection_objective
         self.activation_checkpoint = activation_checkpoint
+        self.fallback_activation_checkpoints = dict(fallback_activation_checkpoints or {})
 
     def step(self, *args: Any, **kwargs: Any) -> StepResult:
         validate_runtime_guards(self.guards, args, kwargs)
@@ -104,6 +106,7 @@ class EagerTrainingStepExecutor:
             "plan_id": self.current_plan_id,
             "runtime_peak_bytes": peak_bytes,
             "runtime_peak_threshold_bytes": self.runtime_peak_threshold_bytes,
+            "activation_checkpoint": int(self.activation_checkpoint),
         }
         if self.runtime_peak_threshold_bytes is not None and peak_bytes > self.runtime_peak_threshold_bytes:
             metrics["fallback_reason"] = (
@@ -112,8 +115,14 @@ class EagerTrainingStepExecutor:
             )
             if self.fallback_executables:
                 fallback_plan_id, fallback_executable = self.fallback_executables[0]
-                replace_executable_on_fallback(self, fallback_executable, plan_id=fallback_plan_id)
+                replace_executable_on_fallback(
+                    self,
+                    fallback_executable,
+                    plan_id=fallback_plan_id,
+                    activation_checkpoint=self.fallback_activation_checkpoints.get(fallback_plan_id),
+                )
                 metrics["fallback_plan_id"] = fallback_plan_id
+                metrics["fallback_activation_checkpoint"] = int(self.activation_checkpoint)
             else:
                 metrics["fallback_plan_id"] = None
         return StepResult(loss=loss.detach(), optimizer_step_performed=True, metrics=metrics)
@@ -179,10 +188,13 @@ def replace_executable_on_fallback(
     executable: Callable[..., Any],
     *,
     plan_id: str | None = None,
+    activation_checkpoint: bool | None = None,
 ) -> EagerTrainingStepExecutor:
     executor.executable = executable
     if plan_id is not None:
         executor.current_plan_id = plan_id
+    if activation_checkpoint is not None:
+        executor.activation_checkpoint = activation_checkpoint
     return executor
 
 

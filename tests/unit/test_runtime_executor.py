@@ -102,6 +102,7 @@ def test_activation_checkpoint_executor_preserves_object_outputs():
 
     assert step.optimizer_step_performed
     assert executor.activation_checkpoint is True
+    assert step.metrics["activation_checkpoint"] == 1
 
 
 def test_executor_switches_to_verified_fallback_after_runtime_peak_breach():
@@ -141,3 +142,40 @@ def test_executor_switches_to_verified_fallback_after_runtime_peak_breach():
     assert calls == {"selected": 1, "fallback": 1}
     assert second.metrics["plan_id"] == "fallback"
     assert id(executor.optimizer) == optimizer_id
+
+
+def test_executor_fallback_refreshes_activation_checkpoint_marker():
+    torch.manual_seed(0)
+    model = nn.Linear(3, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+    def selected(x):
+        return model(x)
+
+    def fallback(x):
+        return model(x)
+
+    executor = EagerTrainingStepExecutor(
+        model,
+        optimizer,
+        lambda out: out.pow(2).mean(),
+        selected,
+        PeakAwareConfig(enable_compile=False),
+        plan_id="checkpointed",
+        fallback_executables=(("all_save", fallback),),
+        runtime_peak_threshold_bytes=5,
+        runtime_peak_observer=lambda: 10,
+        activation_checkpoint=True,
+        fallback_activation_checkpoints={"all_save": False},
+    )
+
+    first = executor.step(torch.ones(2, 3))
+    executor.runtime_peak_observer = lambda: 0
+    second = executor.step(torch.ones(2, 3))
+
+    assert first.metrics["activation_checkpoint"] == 1
+    assert first.metrics["fallback_plan_id"] == "all_save"
+    assert first.metrics["fallback_activation_checkpoint"] == 0
+    assert second.metrics["plan_id"] == "all_save"
+    assert second.metrics["activation_checkpoint"] == 0
+    assert executor.activation_checkpoint is False
