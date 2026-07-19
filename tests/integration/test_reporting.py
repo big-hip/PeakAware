@@ -81,12 +81,17 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert all("normalized_saved_reduction" in item["expectation"] for item in diagnostic_by_plan.values())
     assert all("realization_gap" in item["expectation"] for item in diagnostic_by_plan.values())
     assert all("repair_hints" in item for item in diagnostic_by_plan.values())
+    assert all(item["evidence"] for item in diagnostic_by_plan.values())
     assert all(item["counterfactuals"] for item in diagnostic_by_plan.values())
     assert all("candidate_peak" in item["counterfactuals"][0] for item in diagnostic_by_plan.values())
     assert summary["diagnostic"]["counterfactuals"][-1]["level"] == "D5"
     assert "baseline_peak" in summary["diagnostic"]["counterfactuals"][0]
     assert summary["diagnostic"]["expectation"]["strategy_status"] == "unavailable"
     assert "repair_hints" in summary["diagnostic"]
+    assert summary["diagnostic"]["evidence"]
+    assert {"evidence_id", "root_cause", "metric", "value", "threshold", "direction", "description"}.issubset(
+        summary["diagnostic"]["evidence"][0]
+    )
     assert summary["measured_candidates"]
     assert summary["topk_correction"]["selected"]["plan_id"] == result.selected_plan.plan_id
     assert summary["topk_correction"]["simulation_accuracy"]["candidate_count"] == len(

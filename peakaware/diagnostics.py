@@ -38,6 +38,17 @@ class CounterfactualResult:
 
 
 @dataclass(frozen=True)
+class DiagnosticEvidence:
+    evidence_id: str
+    root_cause: str
+    metric: str
+    value: int | float | str | None
+    threshold: int | float | str | None
+    direction: str
+    description: str
+
+
+@dataclass(frozen=True)
 class PlanDiagnosticReport:
     plan_id: str
     expected_saved_reduction: int
@@ -49,6 +60,7 @@ class PlanDiagnosticReport:
     primary_cause: RootCause
     secondary_causes: tuple[RootCause, ...]
     root_causes: tuple[str, ...]
+    evidence: tuple[DiagnosticEvidence, ...]
     repair_hints: tuple[RepairHint, ...]
     counterfactuals: tuple[CounterfactualResult, ...] = ()
     strategy_expectation_status: str = "unavailable"
@@ -192,7 +204,51 @@ def diagnose_plan(
     transient = candidate.simulation.max_recompute_live_bytes - baseline.simulation.max_recompute_live_bytes
     peak_reduction = baseline.simulation.estimated_peak_bytes - candidate.simulation.estimated_peak_bytes
     hints: list[RepairHint] = []
+    evidence: list[DiagnosticEvidence] = [
+        DiagnosticEvidence(
+            evidence_id=f"{candidate.plan.plan_id}:normalized_saved_reduction",
+            root_cause="EXPECTATION_GAP",
+            metric="normalized_saved_reduction_bytes",
+            value=expected_saved,
+            threshold=0,
+            direction="greater_than",
+            description="PeakAware storage-normalized after-FW retained reduction versus all-save baseline.",
+        ),
+        DiagnosticEvidence(
+            evidence_id=f"{candidate.plan.plan_id}:overall_peak_reduction",
+            root_cause="EXPECTATION_GAP",
+            metric="estimated_overall_peak_reduction_bytes",
+            value=peak_reduction,
+            threshold=expected_saved,
+            direction="compare_to_saved_reduction",
+            description="Estimated end-to-end peak reduction compared with normalized saved reduction.",
+        ),
+    ]
+    if any(effect.pinning_value_ids for effect in candidate.plan.storage_effects):
+        pinned_count = sum(1 for effect in candidate.plan.storage_effects if effect.pinning_value_ids)
+        evidence.append(
+            DiagnosticEvidence(
+                evidence_id=f"{candidate.plan.plan_id}:alias_pinning",
+                root_cause=RootCause.ALIAS_OR_VIEW_PINNING.name,
+                metric="pinned_storage_effect_count",
+                value=pinned_count,
+                threshold=0,
+                direction="greater_than",
+                description="Storage effects include values whose base storage remains pinned by aliases or outputs.",
+            )
+        )
     if transient > 0:
+        evidence.append(
+            DiagnosticEvidence(
+                evidence_id=f"{candidate.plan.plan_id}:recompute_transient",
+                root_cause=RootCause.REMATERIALIZATION_WAVE.name,
+                metric="bw_recompute_transient_change_bytes",
+                value=transient,
+                threshold=0,
+                direction="greater_than",
+                description="Candidate increases backward recompute live bytes relative to baseline.",
+            )
+        )
         hints.append(
             RepairHint(
                 kind="SAVE_PEAK_STORAGE",
@@ -204,6 +260,43 @@ def diagnose_plan(
     fixed_overlap = 0
     if feasibility is not None:
         fixed_overlap = max(0, feasibility.fixed_peak_lower_bound - candidate.simulation.estimated_peak_bytes)
+        if feasibility.status != "FEASIBLE":
+            evidence.append(
+                DiagnosticEvidence(
+                    evidence_id=f"{candidate.plan.plan_id}:fixed_frontier_status",
+                    root_cause=RootCause.FIXED_BACKWARD_FRONTIER.name,
+                    metric="feasibility_status",
+                    value=feasibility.status,
+                    threshold="FEASIBLE",
+                    direction="not_equal",
+                    description="Fixed frontier analyzer reported limited or impossible activation headroom.",
+                )
+            )
+    if expected_saved > 0 and peak_reduction <= 0:
+        if baseline.simulation.peak_snapshot.phase != candidate.simulation.peak_snapshot.phase:
+            evidence.append(
+                DiagnosticEvidence(
+                    evidence_id=f"{candidate.plan.plan_id}:peak_phase_migration",
+                    root_cause=RootCause.PEAK_PHASE_MIGRATION.name,
+                    metric="peak_phase_transition",
+                    value=f"{baseline.simulation.peak_snapshot.phase}->{candidate.simulation.peak_snapshot.phase}",
+                    threshold="same_phase",
+                    direction="not_equal",
+                    description="The candidate moves the overall peak to a different phase after reducing saved activations.",
+                )
+            )
+        else:
+            evidence.append(
+                DiagnosticEvidence(
+                    evidence_id=f"{candidate.plan.plan_id}:fixed_frontier_no_gain",
+                    root_cause=RootCause.FIXED_BACKWARD_FRONTIER.name,
+                    metric="estimated_overall_peak_reduction_bytes",
+                    value=peak_reduction,
+                    threshold=1,
+                    direction="less_than",
+                    description="Saved activations decrease but estimated end-to-end peak does not improve.",
+                )
+            )
     primary, secondary = rank_root_causes(
         expected_saved=expected_saved,
         transient=transient,
@@ -213,6 +306,48 @@ def diagnose_plan(
         feasibility=feasibility,
     )
     measured_causes, compiler_workspace_allocator_change = _measured_root_causes(candidate, measured)
+    if measured is not None:
+        estimated_peak = max(int(candidate.simulation.estimated_peak_bytes), 1)
+        peak_residual = int(measured.measured_peak_bytes) - estimated_peak
+        noise_threshold = max(1 << 20, int(estimated_peak * 0.01))
+        if abs(peak_residual) <= noise_threshold:
+            evidence.append(
+                DiagnosticEvidence(
+                    evidence_id=f"{candidate.plan.plan_id}:measurement_noise",
+                    root_cause=RootCause.MEASUREMENT_NOISE.name,
+                    metric="measured_minus_estimated_peak_bytes",
+                    value=peak_residual,
+                    threshold=noise_threshold,
+                    direction="absolute_less_or_equal",
+                    description="Measured peak differs from prediction within the configured noise tolerance.",
+                )
+            )
+        elif peak_residual > 0:
+            evidence.append(
+                DiagnosticEvidence(
+                    evidence_id=f"{candidate.plan.plan_id}:workspace_growth",
+                    root_cause=RootCause.WORKSPACE_GROWTH.name,
+                    metric="measured_minus_estimated_peak_bytes",
+                    value=peak_residual,
+                    threshold=noise_threshold,
+                    direction="greater_than",
+                    description="Runtime peak exceeds the simulated peak beyond the noise tolerance.",
+                )
+            )
+        estimated_step_us = max(float(candidate.simulation.estimated_step_us), 1.0)
+        measured_step_us = float(measured.measured_step_us)
+        if measured_step_us > estimated_step_us * 2.0 and measured_step_us - estimated_step_us > 100.0:
+            evidence.append(
+                DiagnosticEvidence(
+                    evidence_id=f"{candidate.plan.plan_id}:cost_model_misrank",
+                    root_cause=RootCause.COST_MODEL_MISRANK.name,
+                    metric="measured_to_estimated_step_ratio",
+                    value=measured_step_us / estimated_step_us,
+                    threshold=2.0,
+                    direction="greater_than",
+                    description="Runtime step time is much higher than the simulated recompute cost.",
+                )
+            )
     all_causes = tuple(dict.fromkeys((primary,) + secondary + measured_causes))
     causes = tuple(cause.name for cause in all_causes)
     return PlanDiagnosticReport(
@@ -226,6 +361,7 @@ def diagnose_plan(
         primary_cause=primary,
         secondary_causes=all_causes[1:],
         root_causes=causes,
+        evidence=tuple(evidence),
         repair_hints=tuple(hints),
         counterfactuals=build_counterfactual_ladder(
             baseline,

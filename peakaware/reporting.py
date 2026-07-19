@@ -199,6 +199,21 @@ def _repair_hint_rows(report: PlanDiagnosticReport) -> list[dict[str, Any]]:
     ]
 
 
+def _evidence_rows(report: PlanDiagnosticReport) -> list[dict[str, Any]]:
+    return [
+        {
+            "evidence_id": item.evidence_id,
+            "root_cause": item.root_cause,
+            "metric": item.metric,
+            "value": item.value,
+            "threshold": item.threshold,
+            "direction": item.direction,
+            "description": item.description,
+        }
+        for item in report.evidence
+    ]
+
+
 def _expectation_row(report: PlanDiagnosticReport) -> dict[str, Any]:
     return {
         "strategy_status": report.strategy_expectation_status,
@@ -225,6 +240,7 @@ def _diagnostic_row(report: PlanDiagnosticReport) -> dict[str, Any]:
         "primary_cause": report.primary_cause.name,
         "secondary_causes": [cause.name for cause in report.secondary_causes],
         "root_causes": list(report.root_causes),
+        "evidence": _evidence_rows(report),
         "repair_hints": _repair_hint_rows(report),
         "counterfactuals": _counterfactual_rows(report),
     }
@@ -344,6 +360,7 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "primary_cause": diagnostic.primary_cause.name,
             "secondary_causes": [cause.name for cause in diagnostic.secondary_causes],
             "expectation": _expectation_row(diagnostic),
+            "evidence": _evidence_rows(diagnostic),
             "repair_hints": _repair_hint_rows(diagnostic),
             "counterfactuals": _counterfactual_rows(diagnostic),
         },
