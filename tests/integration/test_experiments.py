@@ -114,6 +114,7 @@ def _minimal_record(
         optimization_executor_build_us=5.0 if status == "ok" else None,
         optimization_candidate_validation_measurement_us=35.0 if status == "ok" else None,
         optimization_amortization_steps=50.0 if status == "ok" else None,
+        actual_joint_capture_count=1 if status == "ok" else 0,
         candidate_count=1 if status == "ok" else 0,
         fallback_plan_ids=(),
         diagnostic_hints_enabled=True if status == "ok" else None,
@@ -181,6 +182,7 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.mean_optimization_executor_build_us == 5.0
     assert summary.mean_optimization_candidate_validation_measurement_us == 35.0
     assert summary.mean_optimization_amortization_steps == 50.0
+    assert summary.total_actual_joint_capture_count == 2
     variant_summaries = summarize_experiment_records_by_variant(
         (
             _minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80, samples_per_second=10.0),
@@ -255,6 +257,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert rows[0]["selected_estimated_peak_reduction_bytes"]
     assert rows[0]["selected_measured_peak_reduction_vs_all_save_bytes"]
     assert rows[0]["optimization_total_us"]
+    assert rows[0]["actual_joint_capture_count"] == "1"
     assert "selected_prediction_error_bytes" in rows[0]
     assert summary.total_records == 1
     assert summary.ok_records == 1
@@ -275,6 +278,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert "diagnostic_hint_count" in summary_payload
     assert "repair_success_rate" in summary_payload
     assert "mean_optimization_total_us" in summary_payload
+    assert summary_payload["total_actual_joint_capture_count"] == 1
 
 
 def test_experiment_writers_create_parent_directories(tmp_path):
@@ -394,6 +398,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["selected_estimated_peak_reduction_bytes"] is not None
     assert stdout_payload[0]["selected_measured_peak_reduction_vs_all_save_bytes"] is not None
     assert stdout_payload[0]["optimization_total_us"] is not None
+    assert stdout_payload[0]["actual_joint_capture_count"] == 1
     assert "selected_peak_phase_match" in stdout_payload[0]
     assert all(record["measurement_repeats"] == 2 for record in stdout_payload)
     assert stdout_payload[0]["simulation_accuracy_candidate_count"] >= 1
@@ -416,6 +421,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert "diagnostic_hint_kind_counts" in summary_payload
     assert summary_payload["exact_failure_count"] == 2
     assert "mean_optimization_amortization_steps" in summary_payload
+    assert summary_payload["total_actual_joint_capture_count"] == 2
     assert csv_path.read_text(encoding="utf-8").startswith(
         "variant_name,config_fingerprint,task_name,microbatch_size,budget_bytes"
     )

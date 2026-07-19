@@ -84,6 +84,7 @@ class ExperimentRecord:
     optimization_executor_build_us: float | None
     optimization_candidate_validation_measurement_us: float | None
     optimization_amortization_steps: float | None
+    actual_joint_capture_count: int
     candidate_count: int
     fallback_plan_ids: tuple[str, ...]
     diagnostic_hints_enabled: bool | None = None
@@ -133,6 +134,7 @@ class ExperimentSummary:
     mean_optimization_executor_build_us: float | None
     mean_optimization_candidate_validation_measurement_us: float | None
     mean_optimization_amortization_steps: float | None
+    total_actual_joint_capture_count: int
     selected_prediction_count: int
     mean_selected_prediction_absolute_error_bytes: float | None
     max_selected_prediction_absolute_error_bytes: int | None
@@ -289,6 +291,7 @@ def _record_success(
             "candidate_validation_measurement_us"
         ),
         optimization_amortization_steps=optimization_cost.get("amortization_steps"),
+        actual_joint_capture_count=int(optimization_cost.get("actual_joint_capture_count", 0)),
         candidate_count=len(summary["plans"]),
         fallback_plan_ids=tuple(summary["fallback_plan_ids"]),
         diagnostic_hints_enabled=search_diagnostics.get("diagnostic_hints_enabled"),
@@ -365,6 +368,7 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         optimization_executor_build_us=None,
         optimization_candidate_validation_measurement_us=None,
         optimization_amortization_steps=None,
+        actual_joint_capture_count=0,
         candidate_count=0,
         fallback_plan_ids=(),
         diagnostic_hints_enabled=None,
@@ -684,6 +688,7 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         mean_optimization_executor_build_us=_mean(optimization_executor_builds),
         mean_optimization_candidate_validation_measurement_us=_mean(optimization_candidate_validations),
         mean_optimization_amortization_steps=_mean(optimization_amortization_steps),
+        total_actual_joint_capture_count=sum(record.actual_joint_capture_count for record in records),
         selected_prediction_count=len(selected_abs_errors),
         mean_selected_prediction_absolute_error_bytes=_mean(selected_abs_errors),
         max_selected_prediction_absolute_error_bytes=None if not selected_abs_errors else max(selected_abs_errors),

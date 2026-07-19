@@ -530,10 +530,12 @@ def optimize_training(
     capture_start = time.perf_counter()
     capture_provenance = _capture_cache_provenance(request)
     use_capture_cache = cache_root is not None and _can_cache_capture(config)
+    actual_joint_capture_count = 0
     capture = None if not use_capture_cache else load_capture_cache(cache_root, request.request_key, capture_provenance)
     if use_capture_cache:
         record_cache("capture", capture is not None)
     if capture is None:
+        actual_joint_capture_count += 1
         capture = capture_joint_graph(request)
         if use_capture_cache:
             _try_store_capture_cache(cache_root, request.request_key, capture, capture_provenance)
@@ -684,6 +686,7 @@ def optimize_training(
     optimization_metrics["candidate_count"] = len(evaluated)
     optimization_metrics["measured_candidate_count"] = len(measured_tuple)
     optimization_metrics["rejected_candidate_count"] = len(rejected)
+    optimization_metrics["actual_joint_capture_count"] = actual_joint_capture_count
     optimization_metrics["total_optimization_us"] = (time.perf_counter() - optimization_start) * 1_000_000.0
     return OptimizedTrainingResult(
         selected_plan=selected.plan,
