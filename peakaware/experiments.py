@@ -102,6 +102,10 @@ class ExperimentRecord:
     candidate_count: int
     fallback_plan_ids: tuple[str, ...]
     dry_run_replay_mode: str | None = None
+    selected_activation_checkpoint: bool | None = None
+    selected_aot_partition_runtime: bool | None = None
+    activation_checkpoint_candidate_count: int = 0
+    aot_partition_runtime_candidate_count: int = 0
     diagnostic_hints_enabled: bool | None = None
     diagnostic_hint_count: int = 0
     diagnostic_hint_kinds: tuple[str, ...] = ()
@@ -196,6 +200,11 @@ class ExperimentSummary:
     root_cause_counts: dict[str, int]
     selected_peak_phase_counts: dict[str, int]
     measured_peak_phase_counts: dict[str, int]
+    selected_activation_checkpoint_count: int
+    selected_aot_partition_runtime_count: int
+    activation_checkpoint_candidate_count: int
+    aot_partition_runtime_candidate_count: int
+    aot_partition_runtime_candidate_rate: float | None
     diagnostic_hints_enabled_count: int
     diagnostic_hint_count: int
     diagnostic_hint_kind_counts: dict[str, int]
@@ -340,6 +349,16 @@ def _diagnostic_counterfactuals(summary: dict[str, Any]) -> tuple[dict[str, Any]
             }
         )
     return tuple(rows)
+
+
+def _phase_marker_enabled(phase_metrics: dict[str, Any], name: str) -> bool | None:
+    if name not in phase_metrics:
+        return None
+    return bool(phase_metrics.get(name, 0))
+
+
+def _count_phase_marker(rows: tuple[dict[str, Any], ...], name: str) -> int:
+    return sum(1 for row in rows if bool((row.get("phase_metrics") or {}).get(name, 0)))
 
 
 def _resolve_experiment_device(device: str) -> torch.device:
@@ -494,6 +513,16 @@ def _record_success(
         candidate_count=len(summary["plans"]),
         fallback_plan_ids=tuple(summary["fallback_plan_ids"]),
         dry_run_replay_mode=(summary.get("dry_run") or {}).get("replay_mode"),
+        selected_activation_checkpoint=_phase_marker_enabled(phase_metrics, "activation_checkpoint"),
+        selected_aot_partition_runtime=_phase_marker_enabled(phase_metrics, "aot_partition_runtime"),
+        activation_checkpoint_candidate_count=_count_phase_marker(
+            measured_plan_results,
+            "activation_checkpoint",
+        ),
+        aot_partition_runtime_candidate_count=_count_phase_marker(
+            measured_plan_results,
+            "aot_partition_runtime",
+        ),
         diagnostic_hints_enabled=search_diagnostics.get("diagnostic_hints_enabled"),
         diagnostic_hint_count=int(search_diagnostics.get("diagnostic_hint_count", 0)),
         diagnostic_hint_kinds=tuple(search_diagnostics.get("diagnostic_hint_kinds", ())),
@@ -743,6 +772,10 @@ def experiment_records_from_dicts(rows: list[dict[str, Any]]) -> tuple[Experimen
         normalized.setdefault("diagnostic_hint_candidate_match_count", 0)
         normalized.setdefault("diagnostic_hint_order_changed", False)
         normalized.setdefault("diagnostic_hint_order_delta_count", 0)
+        normalized.setdefault("selected_activation_checkpoint", None)
+        normalized.setdefault("selected_aot_partition_runtime", None)
+        normalized.setdefault("activation_checkpoint_candidate_count", 0)
+        normalized.setdefault("aot_partition_runtime_candidate_count", 0)
         for field in tuple_fields:
             if field in normalized:
                 normalized[field] = tuple(normalized[field])
@@ -1094,6 +1127,8 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
     ]
     repaired_candidate_count = sum(record.repaired_candidate_count for record in ok)
     repair_success_count = sum(record.repair_success_count for record in ok)
+    measured_candidate_count = sum(record.measured_candidate_count for record in ok)
+    aot_partition_runtime_candidate_count = sum(record.aot_partition_runtime_candidate_count for record in ok)
     exact_success = [record for record in ok if record.exact_plan_key is not None]
     exact_failures = [record for record in ok if record.exact_error_type is not None]
     exact_gaps = [
@@ -1234,6 +1269,13 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         root_cause_counts=_counts([record.diagnostic_primary_cause for record in ok]),
         selected_peak_phase_counts=_counts([record.selected_peak_phase for record in ok]),
         measured_peak_phase_counts=_counts([record.measured_peak_phase for record in ok]),
+        selected_activation_checkpoint_count=sum(1 for record in ok if record.selected_activation_checkpoint),
+        selected_aot_partition_runtime_count=sum(1 for record in ok if record.selected_aot_partition_runtime),
+        activation_checkpoint_candidate_count=sum(record.activation_checkpoint_candidate_count for record in ok),
+        aot_partition_runtime_candidate_count=aot_partition_runtime_candidate_count,
+        aot_partition_runtime_candidate_rate=None
+        if measured_candidate_count == 0
+        else aot_partition_runtime_candidate_count / measured_candidate_count,
         diagnostic_hints_enabled_count=sum(1 for record in ok if record.diagnostic_hints_enabled),
         diagnostic_hint_count=sum(record.diagnostic_hint_count for record in ok),
         diagnostic_hint_kind_counts=_tuple_counts([record.diagnostic_hint_kinds for record in ok]),

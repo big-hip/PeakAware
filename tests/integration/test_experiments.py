@@ -179,6 +179,10 @@ def _minimal_record(
                 "calibrated_prediction_error_bytes": 0,
                 "calibrated_prediction_relative_error": 0.0,
                 "correctness_passed": True,
+                "phase_metrics": {
+                    "activation_checkpoint": 0,
+                    "aot_partition_runtime": 0,
+                },
             },
             {
                 "plan_id": "torch_min_cut",
@@ -192,6 +196,10 @@ def _minimal_record(
                 "calibrated_prediction_error_bytes": 0,
                 "calibrated_prediction_relative_error": 0.0,
                 "correctness_passed": True,
+                "phase_metrics": {
+                    "activation_checkpoint": 0,
+                    "aot_partition_runtime": 1,
+                },
             },
             {
                 "plan_id": "block_checkpoint",
@@ -205,6 +213,10 @@ def _minimal_record(
                 "calibrated_prediction_error_bytes": 0,
                 "calibrated_prediction_relative_error": 0.0,
                 "correctness_passed": True,
+                "phase_metrics": {
+                    "activation_checkpoint": 1,
+                    "aot_partition_runtime": 0,
+                },
             },
         ),
         selected_prediction_error_bytes=4 if status == "ok" else None,
@@ -238,6 +250,10 @@ def _minimal_record(
         actual_joint_capture_count=1 if status == "ok" else 0,
         candidate_count=1 if status == "ok" else 0,
         fallback_plan_ids=(),
+        selected_activation_checkpoint=False if status == "ok" else None,
+        selected_aot_partition_runtime=True if status == "ok" else None,
+        activation_checkpoint_candidate_count=1 if status == "ok" else 0,
+        aot_partition_runtime_candidate_count=1 if status == "ok" else 0,
         diagnostic_hints_enabled=diagnostic_hints_enabled if status == "ok" else None,
         diagnostic_hint_count=2 if status == "ok" else 0,
         diagnostic_hint_kinds=("SAVE_PEAK_STORAGE",) if status == "ok" else (),
@@ -307,6 +323,11 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.root_cause_counts == {"REMATERIALIZATION_WAVE": 2}
     assert summary.selected_peak_phase_counts == {"bw": 2}
     assert summary.measured_peak_phase_counts == {"bw": 2}
+    assert summary.selected_activation_checkpoint_count == 0
+    assert summary.selected_aot_partition_runtime_count == 2
+    assert summary.activation_checkpoint_candidate_count == 2
+    assert summary.aot_partition_runtime_candidate_count == 2
+    assert summary.aot_partition_runtime_candidate_rate == 1 / 3
     assert summary.diagnostic_hints_enabled_count == 2
     assert summary.diagnostic_hint_count == 4
     assert summary.diagnostic_hint_kind_counts == {"SAVE_PEAK_STORAGE": 2}
@@ -711,6 +732,8 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].simulation_accuracy_candidate_count >= 1
     assert records[0].measured_plan_results
     assert records[0].dry_run_replay_mode in {"lowered_aot", "eager_baseline"}
+    assert records[0].selected_aot_partition_runtime is not None
+    assert records[0].aot_partition_runtime_candidate_count >= 0
     assert records[0].diagnostic_counterfactuals
     assert records[0].diagnostic_hints_enabled is True
     assert records[0].diagnostic_hint_count >= 0
@@ -753,6 +776,8 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert "p50_simulation_accuracy_absolute_error_bytes" in summary_payload
     assert "p90_simulation_accuracy_absolute_error_bytes" in summary_payload
     assert summary_payload["root_cause_counts"]
+    assert "selected_aot_partition_runtime_count" in summary_payload
+    assert "aot_partition_runtime_candidate_rate" in summary_payload
     assert "diagnostic_hint_count" in summary_payload
     assert "repair_success_rate" in summary_payload
     assert "mean_optimization_total_us" in summary_payload
@@ -765,6 +790,10 @@ def test_experiment_records_round_trip_from_json_dicts():
     payload = json.loads(json.dumps([record.__dict__ for record in records]))
     del payload[0]["selected_calibrated_prediction_error_bytes"]
     del payload[0]["selected_calibrated_prediction_relative_error"]
+    del payload[0]["selected_activation_checkpoint"]
+    del payload[0]["selected_aot_partition_runtime"]
+    del payload[0]["activation_checkpoint_candidate_count"]
+    del payload[0]["aot_partition_runtime_candidate_count"]
     for row in payload[0]["measured_plan_results"]:
         row.pop("calibrated_estimated_peak_bytes", None)
         row.pop("calibrated_prediction_error_bytes", None)
@@ -774,6 +803,8 @@ def test_experiment_records_round_trip_from_json_dicts():
 
     assert restored[0].selected_plan_id == records[0].selected_plan_id
     assert restored[0].selected_calibrated_prediction_error_bytes is None
+    assert restored[0].selected_aot_partition_runtime is None
+    assert restored[0].aot_partition_runtime_candidate_count == 0
     assert isinstance(restored[0].selected_saved_value_ids, tuple)
     assert isinstance(restored[0].measured_plan_results, tuple)
     assert restored[0].measured_plan_results[0]["calibrated_prediction_error_bytes"] == 0
