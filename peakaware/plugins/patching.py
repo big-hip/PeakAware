@@ -94,19 +94,27 @@ class PatchSession:
 
         _PATCH_LOCK.acquire()
         self._lock_acquired = True
-        grouped: dict[tuple[str, str], list[PatchSpec]] = {}
-        for spec in self.patch_specs:
-            _validate_torch_version(spec, torch.__version__)
-            grouped.setdefault((spec.target_module, spec.target_attribute), []).append(spec)
-        for (module_name, attr_name), specs in grouped.items():
-            module = importlib.import_module(module_name)
-            original = getattr(module, attr_name)
-            validate_target_signature(original, specs[0].expected_signature)
-            self._originals.append((module, attr_name, original))
-            setattr(module, attr_name, compose_wrapper_chain(original, tuple(specs)))
-        return self
+        try:
+            grouped: dict[tuple[str, str], list[PatchSpec]] = {}
+            for spec in self.patch_specs:
+                _validate_torch_version(spec, torch.__version__)
+                grouped.setdefault((spec.target_module, spec.target_attribute), []).append(spec)
+            for (module_name, attr_name), specs in grouped.items():
+                module = importlib.import_module(module_name)
+                original = getattr(module, attr_name)
+                for spec in specs:
+                    validate_target_signature(original, spec.expected_signature)
+                self._originals.append((module, attr_name, original))
+                setattr(module, attr_name, compose_wrapper_chain(original, tuple(specs)))
+            return self
+        except BaseException:
+            self._restore_originals()
+            raise
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._restore_originals()
+
+    def _restore_originals(self) -> None:
         try:
             for module, attr_name, original in reversed(self._originals):
                 setattr(module, attr_name, original)

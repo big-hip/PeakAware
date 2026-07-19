@@ -22,7 +22,7 @@ from peakaware.cost.collector import (
 )
 from peakaware.cost.composite import CompositeCostProvider, build_composite_provider
 from peakaware.cost.profile_db import ExactProfileProvider, InterpolatedProfileProvider, ProfileDB, ProfileRecord
-from peakaware.errors import PluginConflictError
+from peakaware.errors import PatchRestoreError, PluginConflictError
 from peakaware.plugins import ServiceKind, build_default_registry
 from peakaware.plugins.patching import PatchSession, PatchSpec
 from peakaware.plugins.registry import PluginRegistry
@@ -81,6 +81,43 @@ def test_patch_session_restores_identity_and_composes_wrappers():
         assert calls == ["first", "second"]
 
     assert math.sqrt is original
+
+
+def test_patch_session_rolls_back_when_enter_fails_midway():
+    original_sqrt = math.sqrt
+
+    def wrapper(next_fn, *args, **kwargs):
+        return next_fn(*args, **kwargs) + 1
+
+    specs = (
+        PatchSpec("valid", "math", "sqrt", wrapper),
+        PatchSpec("missing", "math", "definitely_missing_peakaware_attr", wrapper),
+    )
+
+    with pytest.raises(AttributeError):
+        with PatchSession(specs):
+            pass
+
+    assert math.sqrt is original_sqrt
+    assert math.sqrt(9) == 3
+
+
+def test_patch_session_validates_every_wrapper_signature_before_patching():
+    original_sqrt = math.sqrt
+
+    def wrapper(next_fn, *args, **kwargs):
+        return next_fn(*args, **kwargs)
+
+    specs = (
+        PatchSpec("compatible", "math", "sqrt", wrapper, expected_signature="(x, /)"),
+        PatchSpec("incompatible", "math", "sqrt", wrapper, expected_signature="(value)"),
+    )
+
+    with pytest.raises(PatchRestoreError, match="signature mismatch"):
+        with PatchSession(specs):
+            pass
+
+    assert math.sqrt is original_sqrt
 
 
 def test_cache_keys_are_stable_and_separate_layers():
