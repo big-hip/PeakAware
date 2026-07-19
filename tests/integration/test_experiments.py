@@ -15,6 +15,7 @@ from peakaware.experiments import (
     run_experiment_matrix,
     summarize_baseline_comparisons,
     summarize_cache_reuse,
+    summarize_effect_acceptance,
     summarize_hint_ablation,
     summarize_layered_simulation_accuracy,
     summarize_simulation_error_root_causes,
@@ -524,6 +525,30 @@ def test_baseline_comparison_summary_can_include_usable_sac_rows():
     assert sac_row["step_time_delta_vs_plan_us"] == 5.0
 
 
+def test_effect_acceptance_summary_reports_budget_peak_and_speedup_counts():
+    records = (
+        _minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80),
+        replace(
+            _minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=100),
+            selected_measured_peak_reduction_vs_all_save_bytes=0,
+            selected_samples_per_second_speedup_vs_all_save=0.9,
+        ),
+        _minimal_record(status="failed", budget_bytes=100, measured_peak_bytes=None),
+    )
+
+    summary = summarize_effect_acceptance(records)
+
+    assert summary["record_count"] == 3
+    assert summary["ok_count"] == 2
+    assert summary["failed_count"] == 1
+    assert summary["budget_safe_count"] == 2
+    assert summary["positive_peak_reduction_count"] == 1
+    assert summary["nonnegative_peak_reduction_count"] == 2
+    assert summary["speedup_ge_one_count"] == 1
+    assert summary["positive_peak_reduction_rate"] == 0.5
+    assert summary["speedup_ge_one_rate"] == 0.5
+
+
 def test_layered_simulation_accuracy_summarizes_diagnostic_counterfactuals():
     records = (
         _minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80),
@@ -770,6 +795,49 @@ def test_summarize_baseline_comparison_script_reads_saved_records(tmp_path):
     assert completed.stdout.strip() == str(output_path)
     assert "pytorch_sac" in summary["baseline_groups"]
     assert summary["external_sac_rows_usable"] == 1
+
+
+def test_summarize_effect_acceptance_script_merges_records(tmp_path):
+    first_path = tmp_path / "first.json"
+    second_path = tmp_path / "second.json"
+    output_path = tmp_path / "effect_acceptance.json"
+    first_path.write_text(
+        json.dumps([_minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80).__dict__]),
+        encoding="utf-8",
+    )
+    second_path.write_text(
+        json.dumps(
+            [
+                replace(
+                    _minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=100),
+                    selected_measured_peak_reduction_vs_all_save_bytes=0,
+                    selected_samples_per_second_speedup_vs_all_save=0.9,
+                ).__dict__
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/summarize_effect_acceptance.py",
+            str(first_path),
+            str(second_path),
+            "--output-json",
+            str(output_path),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    stdout_payload = json.loads(completed.stdout)
+    summary = json.loads(output_path.read_text(encoding="utf-8"))
+    assert stdout_payload["record_count"] == 2
+    assert summary["record_count"] == 2
+    assert summary["positive_peak_reduction_count"] == 1
+    assert summary["speedup_ge_one_count"] == 1
 
 
 def test_summarize_experiment_records_script_regenerates_artifacts(tmp_path):

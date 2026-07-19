@@ -1169,6 +1169,51 @@ def experiment_variant_summaries_to_dict(
     return {variant_name: experiment_summary_to_dict(summary) for variant_name, summary in summaries.items()}
 
 
+def summarize_effect_acceptance(records: tuple[ExperimentRecord, ...]) -> dict[str, Any]:
+    ok = tuple(record for record in records if record.status == "ok")
+    measured = tuple(record for record in ok if record.measured_peak_bytes is not None)
+    budget_safe = tuple(record for record in measured if record.measured_peak_bytes <= record.budget_bytes)
+    reductions = [
+        int(record.selected_measured_peak_reduction_vs_all_save_bytes)
+        for record in ok
+        if record.selected_measured_peak_reduction_vs_all_save_bytes is not None
+    ]
+    speedups = [
+        float(record.selected_samples_per_second_speedup_vs_all_save)
+        for record in ok
+        if record.selected_samples_per_second_speedup_vs_all_save is not None
+    ]
+    positive_reductions = [value for value in reductions if value > 0]
+    nonnegative_reductions = [value for value in reductions if value >= 0]
+    speedups_ge_one = [value for value in speedups if value >= 1.0]
+
+    def ratio(count: int, denominator: int) -> float | None:
+        return None if denominator == 0 else count / denominator
+
+    return {
+        "record_count": len(records),
+        "ok_count": len(ok),
+        "failed_count": len(records) - len(ok),
+        "measured_count": len(measured),
+        "budget_safe_count": len(budget_safe),
+        "budget_violation_count": len(measured) - len(budget_safe),
+        "budget_safe_rate": ratio(len(budget_safe), len(measured)),
+        "tasks": sorted({record.task_name for record in records}),
+        "microbatch_sizes": sorted({record.microbatch_size for record in records}),
+        "budget_bytes": sorted({record.budget_bytes for record in records}),
+        "positive_peak_reduction_count": len(positive_reductions),
+        "nonnegative_peak_reduction_count": len(nonnegative_reductions),
+        "peak_reduction_observation_count": len(reductions),
+        "positive_peak_reduction_rate": ratio(len(positive_reductions), len(reductions)),
+        "nonnegative_peak_reduction_rate": ratio(len(nonnegative_reductions), len(reductions)),
+        "mean_peak_reduction_vs_all_save_bytes": _mean(reductions),
+        "speedup_ge_one_count": len(speedups_ge_one),
+        "speedup_observation_count": len(speedups),
+        "speedup_ge_one_rate": ratio(len(speedups_ge_one), len(speedups)),
+        "mean_samples_per_second_speedup_vs_all_save": _mean(speedups),
+    }
+
+
 def _record_pair_key(record: ExperimentRecord) -> tuple[str, int, int, int]:
     return (record.task_name, record.microbatch_size, record.budget_bytes, record.matrix_pass_index)
 
@@ -1860,6 +1905,11 @@ def write_experiment_baseline_comparison_json(
     sac_baseline: dict[str, Any] | None = None,
 ) -> None:
     text = json.dumps(summarize_baseline_comparisons(records, sac_baseline), indent=2, sort_keys=True)
+    _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
+
+
+def write_experiment_effect_acceptance_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
+    text = json.dumps(summarize_effect_acceptance(records), indent=2, sort_keys=True)
     _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 
