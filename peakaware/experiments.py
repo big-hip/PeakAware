@@ -171,9 +171,10 @@ def _plan_by_id(summary: dict[str, Any], plan_id: str) -> dict[str, Any] | None:
     return next((plan for plan in summary.get("plans", ()) if plan.get("plan_id") == plan_id), None)
 
 
-def _config_fingerprint(config: PeakAwareConfig) -> dict[str, Any]:
+def _config_fingerprint(config: PeakAwareConfig, device: str = "cpu") -> dict[str, Any]:
     return {
         "top_k": config.top_k,
+        "device": device,
         "selection_objective": config.selection_objective,
         "enable_diagnostic_hints": config.enable_diagnostic_hints,
         "safety_margin_bytes": config.safety_margin_bytes,
@@ -191,6 +192,27 @@ def _config_fingerprint(config: PeakAwareConfig) -> dict[str, Any]:
 
 def _measured_candidate_by_id(summary: dict[str, Any], plan_id: str) -> dict[str, Any] | None:
     return next((item for item in summary.get("measured_candidates", ()) if item.get("plan_id") == plan_id), None)
+
+
+def _resolve_experiment_device(device: str) -> torch.device:
+    if device == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    resolved = torch.device(device)
+    if resolved.type == "cuda" and not torch.cuda.is_available():
+        raise ValueError(f"CUDA device requested but unavailable: {device}")
+    return resolved
+
+
+def _move_batch_to_device(value: Any, device: torch.device) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.to(device)
+    if isinstance(value, tuple):
+        return tuple(_move_batch_to_device(item, device) for item in value)
+    if isinstance(value, list):
+        return [_move_batch_to_device(item, device) for item in value]
+    if isinstance(value, dict):
+        return {key: _move_batch_to_device(item, device) for key, item in value.items()}
+    return value
 
 
 def _record_success(
@@ -393,6 +415,7 @@ def run_experiment_matrix(
     include_exact_baseline: bool = False,
     exact_max_candidate_count: int = 12,
     variant_name: str = "default",
+    device: str = "cpu",
 ) -> tuple[ExperimentRecord, ...]:
     if not task_names:
         raise ValueError("task_names must not be empty")
@@ -408,16 +431,19 @@ def run_experiment_matrix(
         raise ValueError("exact_max_candidate_count must be non-negative")
     registry = registry or TrainingTaskRegistry.with_defaults()
     config = config or PeakAwareConfig()
-    config_fingerprint = _config_fingerprint(config)
+    resolved_device = _resolve_experiment_device(device)
+    config_fingerprint = _config_fingerprint(config, str(resolved_device))
     records: list[ExperimentRecord] = []
     for task_name in task_names:
         task = registry.get(task_name)
         for microbatch_size in microbatch_sizes:
             for budget in budget_bytes:
                 case = ExperimentCase(variant_name, config_fingerprint, task_name, microbatch_size, budget)
-                model = task.build_model()
+                model = task.build_model().to(resolved_device)
                 optimizer = task.build_optimizer(model)
                 args, kwargs = task.build_batch(microbatch_size)
+                args = _move_batch_to_device(args, resolved_device)
+                kwargs = _move_batch_to_device(kwargs, resolved_device)
                 try:
                     result = optimize_training(
                         model,

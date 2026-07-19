@@ -37,6 +37,7 @@ def main() -> None:
     parser.add_argument("--budget-mib", default="256")
     parser.add_argument("--microbatches", default="1")
     parser.add_argument("--top-k", type=int, default=3)
+    parser.add_argument("--device", default="cpu")
     parser.add_argument("--isolate", action="store_true")
     parser.add_argument("--diagnostic-hints", choices=("on", "off", "both"), default="on")
     parser.add_argument("--selection-objective", choices=("min_peak_then_time", "min_time_then_peak"), default="min_peak_then_time")
@@ -79,6 +80,7 @@ def main() -> None:
             include_exact_baseline=args.exact_small_graph,
             exact_max_candidate_count=args.exact_max_candidates,
             variant_name=variant_name,
+            device=args.device,
         )
     )
     if args.output_json is not None:

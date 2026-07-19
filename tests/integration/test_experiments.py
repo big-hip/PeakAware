@@ -58,6 +58,7 @@ def _minimal_record(
         variant_name="diagnostic_hints_on" if status == "ok" else "failed",
         config_fingerprint={
             "top_k": 1,
+            "device": "cpu",
             "selection_objective": "min_peak_then_time",
             "enable_diagnostic_hints": status == "ok",
         },
@@ -220,6 +221,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert len(records) == 1
     assert records[0].status == "ok"
     assert records[0].variant_name == "default"
+    assert records[0].config_fingerprint["device"] == "cpu"
     assert records[0].config_fingerprint["selection_objective"] == "min_peak_then_time"
     assert records[0].selected_plan_key is not None
     assert records[0].graph_key is not None
@@ -351,6 +353,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             "1",
             "--top-k",
             "1",
+            "--device",
+            "cpu",
             "--diagnostic-hints",
             "both",
             "--selection-objective",
@@ -387,6 +391,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert all(record["status"] == "ok" for record in stdout_payload)
     assert stdout_payload[0]["status"] == "ok"
     assert stdout_payload[0]["selected_plan_key"]
+    assert stdout_payload[0]["config_fingerprint"]["device"] == "cpu"
     assert stdout_payload[0]["config_fingerprint"]["measurement_repeats"] == 2
     assert stdout_payload[0]["exact_plan_key"] is None
     assert stdout_payload[0]["exact_error_type"] == "PlanValidationError"
