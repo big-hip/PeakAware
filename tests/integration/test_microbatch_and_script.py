@@ -58,6 +58,7 @@ def test_run_mvp_script_outputs_json():
 
 def test_run_mvp_script_writes_report_json(tmp_path):
     report_path = tmp_path / "mvp.json"
+    plan_path = tmp_path / "plan.json"
     completed = subprocess.run(
         [
             sys.executable,
@@ -68,6 +69,8 @@ def test_run_mvp_script_writes_report_json(tmp_path):
             "1,2",
             "--report-json",
             str(report_path),
+            "--plan-json",
+            str(plan_path),
         ],
         check=True,
         text=True,
@@ -76,5 +79,9 @@ def test_run_mvp_script_writes_report_json(tmp_path):
 
     stdout_payload = json.loads(completed.stdout)
     file_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
     assert stdout_payload["mode"] == "microbatch"
     assert file_payload["selected_report"]["diagnostic"]["counterfactuals"]
+    assert plan_payload["plan_id"] == file_payload["selected_report"]["selected_plan_id"]
+    assert plan_payload["saved_value_ids"]
+    assert plan_payload["correctness"]["gradients_match"] is True

@@ -128,6 +128,35 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
     }
 
 
+def summarize_plan_artifact(result: OptimizedTrainingResult) -> dict[str, Any]:
+    dry_run = result.dry_run
+    return {
+        "plan_id": result.selected_plan.plan_id,
+        "graph_key": result.selected_plan.graph_key,
+        "saved_value_ids": tuple(sorted(result.selected_plan.saved_value_ids)),
+        "budget_bytes": result.selected_plan.budget_bytes,
+        "safety_margin_bytes": result.selected_plan.safety_margin_bytes,
+        "estimated_peak_bytes": result.selected_plan.estimated_peak_bytes,
+        "estimated_step_us": result.selected_plan.estimated_step_us,
+        "max_recompute_live_bytes": result.selected_plan.max_recompute_live_bytes,
+        "recompute_span_ops": result.selected_plan.recompute_span_ops,
+        "risk_score": result.selected_plan.risk_score,
+        "confidence": result.selected_plan.confidence,
+        "measured_peak_bytes": result.executable.measured_peak_bytes,
+        "measured_step_us": result.executable.measured_step_us,
+        "correctness": None
+        if dry_run is None
+        else {
+            "abi_valid": dry_run.abi_valid,
+            "outputs_match": dry_run.outputs_match,
+            "gradients_match": dry_run.gradients_match,
+            "rng_match": dry_run.rng_match,
+            "failure_reason": dry_run.failure_reason,
+        },
+        "fallback_plan_ids": result.fallback_plan_ids,
+    }
+
+
 def render_text_report(result: OptimizedTrainingResult) -> str:
     summary = summarize_result(result)
     lines = [
@@ -143,6 +172,13 @@ def render_text_report(result: OptimizedTrainingResult) -> str:
 
 def export_result_json(result: OptimizedTrainingResult, path: str | Path | None = None) -> str:
     text = json.dumps(summarize_result(result), indent=2, sort_keys=True, default=str)
+    if path is not None:
+        Path(path).write_text(text + "\n", encoding="utf-8")
+    return text
+
+
+def export_plan_artifact_json(result: OptimizedTrainingResult, path: str | Path | None = None) -> str:
+    text = json.dumps(summarize_plan_artifact(result), indent=2, sort_keys=True, default=str)
     if path is not None:
         Path(path).write_text(text + "\n", encoding="utf-8")
     return text

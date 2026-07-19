@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 from peakaware import PeakAwareConfig, optimize_training
 from peakaware.microbatch import optimize_microbatches
 from peakaware.models import TrainingTaskRegistry
-from peakaware.reporting import summarize_result
+from peakaware.reporting import export_plan_artifact_json, summarize_result
 
 
 def main() -> None:
@@ -22,6 +22,7 @@ def main() -> None:
     parser.add_argument("--microbatches", default="")
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--report-json", type=Path, default=None)
+    parser.add_argument("--plan-json", type=Path, default=None)
     args = parser.parse_args()
 
     registry = TrainingTaskRegistry.with_defaults()
@@ -74,6 +75,11 @@ def main() -> None:
         args.report_json.write_text(text + "\n", encoding="utf-8")
     if args.output is not None:
         args.output.write_text(text + "\n", encoding="utf-8")
+    if args.plan_json is not None:
+        if args.microbatches:
+            export_plan_artifact_json(result.selected.result, args.plan_json)
+        else:
+            export_plan_artifact_json(result, args.plan_json)
     print(text)
 
 
