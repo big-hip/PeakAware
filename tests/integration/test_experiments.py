@@ -27,6 +27,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert len(records) == 1
     assert records[0].status == "ok"
     assert records[0].selected_prediction_error_bytes is not None
+    assert records[0].cache_total_hits == 0
     assert payload[0]["selected_plan_id"] is not None
     assert rows[0]["task_name"] == "tiny_residual_w8"
     assert "selected_prediction_error_bytes" in rows[0]
@@ -62,5 +63,6 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
 
     assert stdout_payload[0]["status"] == "ok"
     assert stdout_payload[0]["selected_prediction_error_bytes"] is not None
+    assert stdout_payload[0]["cache_total_hits"] == 0
     assert file_payload[0]["task_name"] == "tiny_mlp_w8_d3"
     assert csv_path.read_text(encoding="utf-8").startswith("task_name,microbatch_size,budget_bytes")

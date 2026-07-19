@@ -95,6 +95,13 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "selected": _prediction_error_row(selected_evaluated, result.executable.measured_peak_bytes),
             "candidates": correction_rows,
         },
+        "cache": {
+            "layer_hits": result.cache_stats.layer_hits,
+            "layer_misses": result.cache_stats.layer_misses,
+            "total_hits": result.cache_stats.total_hits,
+            "total_misses": result.cache_stats.total_misses,
+            "hit_rate": result.cache_stats.hit_rate,
+        },
         "plans": [_plan_row(plan) for plan in plans],
         "diagnostic": None
         if diagnostic is None

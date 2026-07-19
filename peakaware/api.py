@@ -12,6 +12,7 @@ from peakaware.capture import capture_joint_graph
 from peakaware.config import PeakAwareConfig
 from peakaware.contracts import (
     AnalysisBundle,
+    CacheStats,
     CapturedJointGraph,
     DryRunResult,
     EvaluatedPlan,
@@ -255,6 +256,7 @@ class _CandidateMeasurement:
 class _CandidateValidation:
     dry_run: DryRunResult
     measurement: _CandidateMeasurement | None
+    cache_hit: bool = False
 
 
 def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValidation:
@@ -306,6 +308,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                     measured_step_us=cached.measured_step_us,
                     phase_metrics=cached.phase_metrics,
                 ),
+                cache_hit=True,
             )
     measured = make_measured_executable(
         candidate.plan.plan_id,
@@ -382,6 +385,12 @@ def optimize_training(
     model.train()
     registry = build_default_registry(profile_db_path=config.profile_db_path)
     cache_root = _cache_root(config)
+    cache_hits: dict[str, int] = {}
+    cache_misses: dict[str, int] = {}
+
+    def record_cache(layer: str, hit: bool) -> None:
+        target = cache_hits if hit else cache_misses
+        target[layer] = target.get(layer, 0) + 1
 
     optimizer_spec = build_optimizer_spec(optimizer, model)
     request = TrainingRequest(
@@ -404,6 +413,8 @@ def optimize_training(
     capture_provenance = _capture_cache_provenance(request)
     use_capture_cache = cache_root is not None and _can_cache_capture(config)
     capture = None if not use_capture_cache else load_capture_cache(cache_root, request.request_key, capture_provenance)
+    if use_capture_cache:
+        record_cache("capture", capture is not None)
     if capture is None:
         capture = capture_joint_graph(request)
         if use_capture_cache:
@@ -419,6 +430,8 @@ def optimize_training(
     analysis_key = _analysis_cache_key(request, optimizer_spec.name, memory_budget_bytes, config)
     analysis_provenance = _analysis_cache_provenance(request, optimizer_spec.name, memory_budget_bytes, config)
     cached_analysis = None if cache_root is None else load_analysis_cache(cache_root, analysis_key, analysis_provenance)
+    if cache_root is not None:
+        record_cache("analysis", cached_analysis is not None)
     if cached_analysis is not None:
         evaluated = _rebind_evaluated_plans(cached_analysis.baseline_results, ir.graph_key)
     else:
@@ -478,6 +491,8 @@ def optimize_training(
         ):
             rejected[candidate.plan.plan_id] = validation.dry_run.failure_reason or "candidate failed dry-run"
             continue
+        if cache_root is not None:
+            record_cache("executable", validation.cache_hit)
         if validation.measurement is None:
             rejected[candidate.plan.plan_id] = "candidate measurement is unavailable"
             continue
@@ -506,4 +521,5 @@ def optimize_training(
         analysis=analysis,
         dry_run=dry_run,
         measured_candidates=measured_tuple,
+        cache_stats=CacheStats(layer_hits=cache_hits, layer_misses=cache_misses),
     )

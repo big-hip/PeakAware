@@ -56,5 +56,8 @@ def test_optimize_training_reuses_analysis_and_executable_cache(tmp_path, monkey
     assert first.selected_plan.plan_id == second.selected_plan.plan_id
     assert first.executable.measured_peak_bytes == second.executable.measured_peak_bytes
     assert second.dry_run is not None and second.dry_run.gradients_match
+    assert second.cache_stats.layer_hits["analysis"] == 1
+    assert second.cache_stats.layer_hits["executable"] == 1
+    assert second.cache_stats.hit_rate is not None and second.cache_stats.hit_rate > 0
     assert (tmp_path / "analysis").exists()
     assert (tmp_path / "executable").exists()

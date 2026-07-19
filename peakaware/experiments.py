@@ -34,6 +34,9 @@ class ExperimentRecord:
     measured_candidate_count: int
     selected_prediction_error_bytes: int | None
     selected_prediction_relative_error: float | None
+    cache_total_hits: int
+    cache_total_misses: int
+    cache_hit_rate: float | None
     error_type: str | None = None
     error_message: str | None = None
 
@@ -42,6 +45,7 @@ def _record_success(case: ExperimentCase, summary: dict[str, Any]) -> Experiment
     measured = summary["measured"]
     diagnostic = summary.get("diagnostic")
     selected_correction = summary.get("topk_correction", {}).get("selected")
+    cache = summary.get("cache", {})
     step_us = float(measured["step_us"])
     return ExperimentRecord(
         task_name=case.task_name,
@@ -57,6 +61,9 @@ def _record_success(case: ExperimentCase, summary: dict[str, Any]) -> Experiment
         measured_candidate_count=len(summary["measured_candidates"]),
         selected_prediction_error_bytes=None if selected_correction is None else selected_correction["error_bytes"],
         selected_prediction_relative_error=None if selected_correction is None else selected_correction["relative_error"],
+        cache_total_hits=int(cache.get("total_hits", 0)),
+        cache_total_misses=int(cache.get("total_misses", 0)),
+        cache_hit_rate=cache.get("hit_rate"),
     )
 
 
@@ -75,6 +82,9 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         measured_candidate_count=0,
         selected_prediction_error_bytes=None,
         selected_prediction_relative_error=None,
+        cache_total_hits=0,
+        cache_total_misses=0,
+        cache_hit_rate=None,
         error_type=type(exc).__name__,
         error_message=str(exc),
     )

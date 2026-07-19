@@ -323,6 +323,27 @@ class FailureRecord:
 
 
 @dataclass(frozen=True)
+class CacheStats:
+    layer_hits: dict[str, int] = field(default_factory=dict)
+    layer_misses: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def total_hits(self) -> int:
+        return sum(self.layer_hits.values())
+
+    @property
+    def total_misses(self) -> int:
+        return sum(self.layer_misses.values())
+
+    @property
+    def hit_rate(self) -> float | None:
+        total = self.total_hits + self.total_misses
+        if total == 0:
+            return None
+        return self.total_hits / total
+
+
+@dataclass(frozen=True)
 class OptimizedTrainingResult:
     selected_plan: RecomputePlan
     executable: MeasuredExecutable
@@ -332,6 +353,7 @@ class OptimizedTrainingResult:
     analysis: AnalysisBundle | None = None
     dry_run: DryRunResult | None = None
     measured_candidates: tuple[MeasuredExecutable, ...] = ()
+    cache_stats: CacheStats = field(default_factory=CacheStats)
 
 
 @dataclass(frozen=True)
