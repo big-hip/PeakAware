@@ -118,6 +118,8 @@ def _prediction_error_row(
     error = int(peak_bytes) - estimated
     relative = None if estimated == 0 else error / estimated
     estimated_phase = plan.simulation.peak_snapshot.phase
+    estimated_feasible = bool(plan.feasible)
+    measured_feasible = int(peak_bytes) <= int(plan.plan.budget_bytes)
     return {
         "plan_id": plan.plan.plan_id,
         "estimated_peak_bytes": estimated,
@@ -127,6 +129,9 @@ def _prediction_error_row(
         "estimated_peak_phase": estimated_phase,
         "measured_peak_phase": measured_phase,
         "phase_match": None if measured_phase is None else estimated_phase == measured_phase,
+        "estimated_feasible": estimated_feasible,
+        "measured_feasible": measured_feasible,
+        "feasibility_match": estimated_feasible == measured_feasible,
     }
 
 
@@ -140,6 +145,8 @@ def _simulation_accuracy_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "within_10_percent_rate": None,
             "phase_classification_count": 0,
             "phase_classification_accuracy": None,
+            "feasible_classification_count": 0,
+            "feasible_classification_accuracy": None,
         }
     absolute_errors = [abs(int(row["error_bytes"])) for row in rows]
     relative_errors = [
@@ -148,6 +155,11 @@ def _simulation_accuracy_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if row["relative_error"] is not None
     ]
     phase_matches = [bool(row["phase_match"]) for row in rows if row.get("phase_match") is not None]
+    feasible_matches = [
+        bool(row["feasibility_match"])
+        for row in rows
+        if row.get("feasibility_match") is not None
+    ]
     return {
         "candidate_count": len(rows),
         "mean_absolute_error_bytes": sum(absolute_errors) / len(absolute_errors),
@@ -162,6 +174,10 @@ def _simulation_accuracy_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "phase_classification_accuracy": None
         if not phase_matches
         else sum(1 for matched in phase_matches if matched) / len(phase_matches),
+        "feasible_classification_count": len(feasible_matches),
+        "feasible_classification_accuracy": None
+        if not feasible_matches
+        else sum(1 for matched in feasible_matches if matched) / len(feasible_matches),
     }
 
 

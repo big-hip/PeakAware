@@ -98,6 +98,7 @@ def _minimal_record(
         measured_candidate_count=1 if status == "ok" else 0,
         selected_prediction_error_bytes=4 if status == "ok" else None,
         selected_prediction_relative_error=0.05 if status == "ok" else None,
+        selected_feasibility_prediction_match=True if status == "ok" else None,
         simulation_accuracy_candidate_count=2 if status == "ok" else 0,
         simulation_accuracy_mean_absolute_error_bytes=6.0 if status == "ok" else None,
         simulation_accuracy_max_absolute_error_bytes=8 if status == "ok" else None,
@@ -151,6 +152,8 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.mean_simulation_accuracy_within_10_percent_rate == 0.5
     assert summary.phase_classification_count == 2
     assert summary.phase_classification_accuracy == 1.0
+    assert summary.feasible_classification_count == 2
+    assert summary.feasible_classification_accuracy == 1.0
     assert summary.root_cause_counts == {"REMATERIALIZATION_WAVE": 2}
     assert summary.selected_peak_phase_counts == {"bw": 2}
     assert summary.measured_peak_phase_counts == {"bw": 2}
@@ -249,6 +252,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert variant_summary_payload["default"]["total_records"] == 1
     assert summary_payload["mean_measured_peak_reduction_vs_all_save_bytes"] is not None
     assert "phase_classification_accuracy" in summary_payload
+    assert "feasible_classification_accuracy" in summary_payload
     assert "measured_peak_phase_counts" in summary_payload
     assert summary_payload["selected_prediction_count"] == 1
     assert summary_payload["simulation_accuracy_candidate_count"] >= 1
@@ -370,6 +374,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["selected_saved_value_ids"]
     assert stdout_payload[0]["selected_effective_saved_value_ids"]
     assert stdout_payload[0]["selected_prediction_error_bytes"] is not None
+    assert stdout_payload[0]["selected_feasibility_prediction_match"] is not None
     assert stdout_payload[0]["selected_estimated_peak_reduction_bytes"] is not None
     assert stdout_payload[0]["selected_measured_peak_reduction_vs_all_save_bytes"] is not None
     assert "selected_peak_phase_match" in stdout_payload[0]
@@ -389,6 +394,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert summary_payload["selected_prediction_count"] == 2
     assert summary_payload["mean_selected_samples_per_second_speedup_vs_all_save"] is not None
     assert "phase_classification_count" in summary_payload
+    assert "feasible_classification_count" in summary_payload
     assert summary_payload["mean_simulation_accuracy_absolute_error_bytes"] is not None
     assert "diagnostic_hint_kind_counts" in summary_payload
     assert summary_payload["exact_failure_count"] == 2

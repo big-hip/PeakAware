@@ -68,6 +68,7 @@ class ExperimentRecord:
     measured_candidate_count: int
     selected_prediction_error_bytes: int | None
     selected_prediction_relative_error: float | None
+    selected_feasibility_prediction_match: bool | None
     simulation_accuracy_candidate_count: int
     simulation_accuracy_mean_absolute_error_bytes: float | None
     simulation_accuracy_max_absolute_error_bytes: int | None
@@ -129,6 +130,8 @@ class ExperimentSummary:
     mean_simulation_accuracy_within_10_percent_rate: float | None
     phase_classification_count: int
     phase_classification_accuracy: float | None
+    feasible_classification_count: int
+    feasible_classification_accuracy: float | None
     root_cause_counts: dict[str, int]
     selected_peak_phase_counts: dict[str, int]
     measured_peak_phase_counts: dict[str, int]
@@ -251,6 +254,9 @@ def _record_success(
         measured_candidate_count=len(summary["measured_candidates"]),
         selected_prediction_error_bytes=None if selected_correction is None else selected_correction["error_bytes"],
         selected_prediction_relative_error=None if selected_correction is None else selected_correction["relative_error"],
+        selected_feasibility_prediction_match=None
+        if selected_correction is None
+        else selected_correction["feasibility_match"],
         simulation_accuracy_candidate_count=int(simulation_accuracy.get("candidate_count", 0)),
         simulation_accuracy_mean_absolute_error_bytes=simulation_accuracy.get("mean_absolute_error_bytes"),
         simulation_accuracy_max_absolute_error_bytes=simulation_accuracy.get("max_absolute_error_bytes"),
@@ -319,6 +325,7 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         measured_candidate_count=0,
         selected_prediction_error_bytes=None,
         selected_prediction_relative_error=None,
+        selected_feasibility_prediction_match=None,
         simulation_accuracy_candidate_count=0,
         simulation_accuracy_mean_absolute_error_bytes=None,
         simulation_accuracy_max_absolute_error_bytes=None,
@@ -556,6 +563,11 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         for record in ok
         if record.selected_peak_phase_match is not None
     ]
+    feasible_matches = [
+        record.selected_feasibility_prediction_match
+        for record in ok
+        if record.selected_feasibility_prediction_match is not None
+    ]
     normalized_saved = [
         record.diagnostic_normalized_saved_reduction_bytes
         for record in ok
@@ -618,6 +630,10 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         phase_classification_accuracy=None
         if not phase_matches
         else sum(1 for matched in phase_matches if matched) / len(phase_matches),
+        feasible_classification_count=len(feasible_matches),
+        feasible_classification_accuracy=None
+        if not feasible_matches
+        else sum(1 for matched in feasible_matches if matched) / len(feasible_matches),
         root_cause_counts=_counts([record.diagnostic_primary_cause for record in ok]),
         selected_peak_phase_counts=_counts([record.selected_peak_phase for record in ok]),
         measured_peak_phase_counts=_counts([record.measured_peak_phase for record in ok]),
