@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import csv
 import json
+import platform
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+import torch
 
 from peakaware.api import optimize_training
 from peakaware.config import PeakAwareConfig
@@ -94,6 +98,7 @@ class ExperimentSummary:
     ok_records: int
     failed_records: int
     success_rate: float | None
+    environment_fingerprint: dict[str, Any]
     variant_counts: dict[str, int]
     budget_violation_count: int
     budget_violation_rate: float | None
@@ -410,6 +415,31 @@ def _tuple_counts(values: list[tuple[str, ...]]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def _environment_fingerprint() -> dict[str, Any]:
+    cuda_devices = []
+    if torch.cuda.is_available():
+        for index in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(index)
+            cuda_devices.append(
+                {
+                    "index": index,
+                    "name": props.name,
+                    "total_memory_bytes": int(props.total_memory),
+                    "capability": f"{props.major}.{props.minor}",
+                }
+            )
+    return {
+        "python_version": sys.version.split()[0],
+        "python_implementation": platform.python_implementation(),
+        "platform": platform.platform(),
+        "torch_version": torch.__version__,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_version": torch.version.cuda,
+        "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        "cuda_devices": tuple(cuda_devices),
+    }
+
+
 def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> ExperimentSummary:
     total = len(records)
     ok = [record for record in records if record.status == "ok"]
@@ -523,6 +553,7 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         ok_records=len(ok),
         failed_records=failed_count,
         success_rate=None if total == 0 else len(ok) / total,
+        environment_fingerprint=_environment_fingerprint(),
         variant_counts=_counts([record.variant_name for record in records]),
         budget_violation_count=len(violations),
         budget_violation_rate=None if not ok else len(violations) / len(ok),

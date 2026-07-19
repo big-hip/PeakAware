@@ -122,6 +122,8 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.ok_records == 2
     assert summary.failed_records == 1
     assert summary.success_rate == 2 / 3
+    assert "torch_version" in summary.environment_fingerprint
+    assert "python_version" in summary.environment_fingerprint
     assert summary.variant_counts == {"diagnostic_hints_on": 2, "failed": 1}
     assert summary.budget_violation_count == 1
     assert summary.budget_violation_rate == 0.5
@@ -217,6 +219,8 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert summary.budget_violation_count == 0
     assert summary.max_feasible_microbatch == 1
     assert summary_payload["success_rate"] == 1.0
+    assert "torch_version" in summary_payload["environment_fingerprint"]
+    assert "cuda_available" in summary_payload["environment_fingerprint"]
     assert summary_payload["variant_counts"] == {"default": 1}
     assert summary_payload["mean_measured_peak_reduction_vs_all_save_bytes"] is not None
     assert "phase_classification_accuracy" in summary_payload
@@ -323,6 +327,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert file_payload[0]["exact_error_type"] == "PlanValidationError"
     assert summary_payload["total_records"] == 2
     assert summary_payload["ok_records"] == 2
+    assert "python_version" in summary_payload["environment_fingerprint"]
     assert summary_payload["variant_counts"] == {"diagnostic_hints_off": 1, "diagnostic_hints_on": 1}
     assert summary_payload["selected_prediction_count"] == 2
     assert summary_payload["mean_selected_samples_per_second_speedup_vs_all_save"] is not None
