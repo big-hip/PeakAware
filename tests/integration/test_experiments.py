@@ -56,6 +56,11 @@ def _minimal_record(
 ) -> ExperimentRecord:
     return ExperimentRecord(
         variant_name="diagnostic_hints_on" if status == "ok" else "failed",
+        config_fingerprint={
+            "top_k": 1,
+            "selection_objective": "min_peak_then_time",
+            "enable_diagnostic_hints": status == "ok",
+        },
         task_name="synthetic",
         microbatch_size=1,
         budget_bytes=budget_bytes,
@@ -196,6 +201,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert len(records) == 1
     assert records[0].status == "ok"
     assert records[0].variant_name == "default"
+    assert records[0].config_fingerprint["selection_objective"] == "min_peak_then_time"
     assert records[0].selected_plan_key is not None
     assert records[0].graph_key is not None
     assert records[0].selected_saved_value_ids
@@ -221,6 +227,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].cache_total_hits == 0
     assert payload[0]["selected_plan_id"] is not None
     assert payload[0]["variant_name"] == "default"
+    assert payload[0]["config_fingerprint"]["top_k"] == 1
     assert payload[0]["selected_plan_key"] == records[0].selected_plan_key
     assert payload[0]["graph_key"] == records[0].graph_key
     assert payload[0]["selected_saved_value_ids"] == list(records[0].selected_saved_value_ids)
@@ -339,6 +346,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert all(record["status"] == "ok" for record in stdout_payload)
     assert stdout_payload[0]["status"] == "ok"
     assert stdout_payload[0]["selected_plan_key"]
+    assert stdout_payload[0]["config_fingerprint"]["measurement_repeats"] == 2
     assert stdout_payload[0]["exact_plan_key"] is None
     assert stdout_payload[0]["exact_error_type"] == "PlanValidationError"
     assert stdout_payload[0]["graph_key"]
@@ -367,4 +375,6 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert summary_payload["mean_simulation_accuracy_absolute_error_bytes"] is not None
     assert "diagnostic_hint_kind_counts" in summary_payload
     assert summary_payload["exact_failure_count"] == 2
-    assert csv_path.read_text(encoding="utf-8").startswith("variant_name,task_name,microbatch_size,budget_bytes")
+    assert csv_path.read_text(encoding="utf-8").startswith(
+        "variant_name,config_fingerprint,task_name,microbatch_size,budget_bytes"
+    )

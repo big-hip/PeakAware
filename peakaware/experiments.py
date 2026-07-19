@@ -21,6 +21,7 @@ from peakaware.search.plan import plan_identity_key
 @dataclass(frozen=True)
 class ExperimentCase:
     variant_name: str
+    config_fingerprint: dict[str, Any]
     task_name: str
     microbatch_size: int
     budget_bytes: int
@@ -29,6 +30,7 @@ class ExperimentCase:
 @dataclass(frozen=True)
 class ExperimentRecord:
     variant_name: str
+    config_fingerprint: dict[str, Any]
     task_name: str
     microbatch_size: int
     budget_bytes: int
@@ -150,6 +152,24 @@ def _plan_by_id(summary: dict[str, Any], plan_id: str) -> dict[str, Any] | None:
     return next((plan for plan in summary.get("plans", ()) if plan.get("plan_id") == plan_id), None)
 
 
+def _config_fingerprint(config: PeakAwareConfig) -> dict[str, Any]:
+    return {
+        "top_k": config.top_k,
+        "selection_objective": config.selection_objective,
+        "enable_diagnostic_hints": config.enable_diagnostic_hints,
+        "safety_margin_bytes": config.safety_margin_bytes,
+        "safety_margin_ratio": config.safety_margin_ratio,
+        "measurement_warmup_steps": config.measurement_warmup_steps,
+        "measurement_repeats": config.measurement_repeats,
+        "isolate_candidate_measurement": config.isolate_candidate_measurement,
+        "candidate_worker_timeout_s": config.candidate_worker_timeout_s,
+        "profile_db_path": str(config.profile_db_path or "none"),
+        "cache_root": str(config.cache_root or "none"),
+        "manual_saved_value_ids": tuple(tuple(sorted(item)) for item in config.manual_saved_value_ids),
+        "precision": dict(config.precision_fingerprint()),
+    }
+
+
 def _measured_candidate_by_id(summary: dict[str, Any], plan_id: str) -> dict[str, Any] | None:
     return next((item for item in summary.get("measured_candidates", ()) if item.get("plan_id") == plan_id), None)
 
@@ -182,6 +202,7 @@ def _record_success(
     return ExperimentRecord(
         task_name=case.task_name,
         variant_name=case.variant_name,
+        config_fingerprint=case.config_fingerprint,
         microbatch_size=case.microbatch_size,
         budget_bytes=case.budget_bytes,
         status="ok",
@@ -261,6 +282,7 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
     return ExperimentRecord(
         task_name=case.task_name,
         variant_name=case.variant_name,
+        config_fingerprint=case.config_fingerprint,
         microbatch_size=case.microbatch_size,
         budget_bytes=case.budget_bytes,
         status="failed",
@@ -344,12 +366,13 @@ def run_experiment_matrix(
         raise ValueError("exact_max_candidate_count must be non-negative")
     registry = registry or TrainingTaskRegistry.with_defaults()
     config = config or PeakAwareConfig()
+    config_fingerprint = _config_fingerprint(config)
     records: list[ExperimentRecord] = []
     for task_name in task_names:
         task = registry.get(task_name)
         for microbatch_size in microbatch_sizes:
             for budget in budget_bytes:
-                case = ExperimentCase(variant_name, task_name, microbatch_size, budget)
+                case = ExperimentCase(variant_name, config_fingerprint, task_name, microbatch_size, budget)
                 model = task.build_model()
                 optimizer = task.build_optimizer(model)
                 args, kwargs = task.build_batch(microbatch_size)
