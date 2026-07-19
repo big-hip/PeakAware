@@ -33,15 +33,29 @@ class ExperimentRecord:
     selected_saved_value_ids: tuple[int, ...]
     selected_effective_saved_value_ids: tuple[int, ...]
     selected_estimated_peak_bytes: int | None
+    baseline_plan_id: str | None
+    baseline_estimated_peak_bytes: int | None
+    selected_estimated_peak_reduction_bytes: int | None
     measured_peak_bytes: int | None
     measured_peak_reserved_bytes: int | None
+    measured_budget_headroom_bytes: int | None
     measured_step_us: float | None
     samples_per_second: float | None
     feasibility_status: str | None
+    baseline_peak_phase: str | None
+    selected_peak_phase: str | None
     diagnostic_primary_cause: str | None
+    diagnostic_normalized_saved_reduction_bytes: int | None
+    diagnostic_realization_gap_bytes: int | None
+    diagnostic_total_expectation_gap_bytes: int | None
     measured_candidate_count: int
     selected_prediction_error_bytes: int | None
     selected_prediction_relative_error: float | None
+    simulation_accuracy_candidate_count: int
+    simulation_accuracy_mean_absolute_error_bytes: float | None
+    simulation_accuracy_max_absolute_error_bytes: int | None
+    simulation_accuracy_mean_absolute_relative_error: float | None
+    simulation_accuracy_within_10_percent_rate: float | None
     cache_total_hits: int
     cache_total_misses: int
     cache_hit_rate: float | None
@@ -70,12 +84,32 @@ class ExperimentSummary:
     mean_samples_per_second: float | None
     mean_measured_step_us: float | None
     mean_measured_peak_bytes: float | None
+    mean_measured_budget_headroom_bytes: float | None
+    mean_estimated_peak_reduction_bytes: float | None
     aggregate_cache_hit_rate: float | None
     total_cache_hits: int
     total_cache_misses: int
+    selected_prediction_count: int
+    mean_selected_prediction_absolute_error_bytes: float | None
+    max_selected_prediction_absolute_error_bytes: int | None
+    mean_selected_prediction_absolute_relative_error: float | None
+    simulation_accuracy_candidate_count: int
+    mean_simulation_accuracy_absolute_error_bytes: float | None
+    max_simulation_accuracy_absolute_error_bytes: int | None
+    mean_simulation_accuracy_absolute_relative_error: float | None
+    mean_simulation_accuracy_within_10_percent_rate: float | None
+    root_cause_counts: dict[str, int]
+    selected_peak_phase_counts: dict[str, int]
+    mean_diagnostic_normalized_saved_reduction_bytes: float | None
+    mean_diagnostic_realization_gap_bytes: float | None
+    mean_diagnostic_total_expectation_gap_bytes: float | None
     exact_success_count: int
     exact_failure_count: int
     mean_selected_exact_peak_gap_bytes: float | None
+
+
+def _plan_by_id(summary: dict[str, Any], plan_id: str) -> dict[str, Any] | None:
+    return next((plan for plan in summary.get("plans", ()) if plan.get("plan_id") == plan_id), None)
 
 
 def _record_success(
@@ -85,7 +119,15 @@ def _record_success(
 ) -> ExperimentRecord:
     measured = summary["measured"]
     diagnostic = summary.get("diagnostic")
+    expectation = {} if diagnostic is None else diagnostic.get("expectation", {})
     selected_correction = summary.get("topk_correction", {}).get("selected")
+    simulation_accuracy = summary.get("topk_correction", {}).get("simulation_accuracy", {})
+    baseline = _plan_by_id(summary, "all_save")
+    selected_plan = _plan_by_id(summary, summary["selected_plan_id"])
+    baseline_peak = None if baseline is None else baseline.get("peak_snapshot")
+    selected_peak = None if selected_plan is None else selected_plan.get("peak_snapshot")
+    baseline_peak_bytes = None if baseline is None else int(baseline["estimated_peak_bytes"])
+    selected_peak_bytes = int(summary["estimated_peak_bytes"])
     cache = summary.get("cache", {})
     step_us = float(measured["step_us"])
     exact = exact or {}
@@ -99,16 +141,32 @@ def _record_success(
         graph_key=summary["graph_key"],
         selected_saved_value_ids=tuple(summary["selected_saved_value_ids"]),
         selected_effective_saved_value_ids=tuple(summary["selected_effective_saved_value_ids"]),
-        selected_estimated_peak_bytes=int(summary["estimated_peak_bytes"]),
+        selected_estimated_peak_bytes=selected_peak_bytes,
+        baseline_plan_id=None if baseline is None else baseline["plan_id"],
+        baseline_estimated_peak_bytes=baseline_peak_bytes,
+        selected_estimated_peak_reduction_bytes=None
+        if baseline_peak_bytes is None
+        else baseline_peak_bytes - selected_peak_bytes,
         measured_peak_bytes=int(measured["peak_bytes"]),
         measured_peak_reserved_bytes=int(measured.get("reserved_peak_bytes", 0)),
+        measured_budget_headroom_bytes=case.budget_bytes - int(measured["peak_bytes"]),
         measured_step_us=step_us,
         samples_per_second=case.microbatch_size * 1_000_000.0 / max(step_us, 1.0),
         feasibility_status=summary["feasibility"]["status"],
+        baseline_peak_phase=None if baseline_peak is None else baseline_peak["phase"],
+        selected_peak_phase=None if selected_peak is None else selected_peak["phase"],
         diagnostic_primary_cause=None if diagnostic is None else diagnostic["primary_cause"],
+        diagnostic_normalized_saved_reduction_bytes=expectation.get("normalized_saved_reduction"),
+        diagnostic_realization_gap_bytes=expectation.get("realization_gap"),
+        diagnostic_total_expectation_gap_bytes=expectation.get("total_expectation_gap"),
         measured_candidate_count=len(summary["measured_candidates"]),
         selected_prediction_error_bytes=None if selected_correction is None else selected_correction["error_bytes"],
         selected_prediction_relative_error=None if selected_correction is None else selected_correction["relative_error"],
+        simulation_accuracy_candidate_count=int(simulation_accuracy.get("candidate_count", 0)),
+        simulation_accuracy_mean_absolute_error_bytes=simulation_accuracy.get("mean_absolute_error_bytes"),
+        simulation_accuracy_max_absolute_error_bytes=simulation_accuracy.get("max_absolute_error_bytes"),
+        simulation_accuracy_mean_absolute_relative_error=simulation_accuracy.get("mean_absolute_relative_error"),
+        simulation_accuracy_within_10_percent_rate=simulation_accuracy.get("within_10_percent_rate"),
         cache_total_hits=int(cache.get("total_hits", 0)),
         cache_total_misses=int(cache.get("total_misses", 0)),
         cache_hit_rate=cache.get("hit_rate"),
@@ -136,15 +194,29 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         selected_saved_value_ids=(),
         selected_effective_saved_value_ids=(),
         selected_estimated_peak_bytes=None,
+        baseline_plan_id=None,
+        baseline_estimated_peak_bytes=None,
+        selected_estimated_peak_reduction_bytes=None,
         measured_peak_bytes=None,
         measured_peak_reserved_bytes=None,
+        measured_budget_headroom_bytes=None,
         measured_step_us=None,
         samples_per_second=None,
         feasibility_status=None,
+        baseline_peak_phase=None,
+        selected_peak_phase=None,
         diagnostic_primary_cause=None,
+        diagnostic_normalized_saved_reduction_bytes=None,
+        diagnostic_realization_gap_bytes=None,
+        diagnostic_total_expectation_gap_bytes=None,
         measured_candidate_count=0,
         selected_prediction_error_bytes=None,
         selected_prediction_relative_error=None,
+        simulation_accuracy_candidate_count=0,
+        simulation_accuracy_mean_absolute_error_bytes=None,
+        simulation_accuracy_max_absolute_error_bytes=None,
+        simulation_accuracy_mean_absolute_relative_error=None,
+        simulation_accuracy_within_10_percent_rate=None,
         cache_total_hits=0,
         cache_total_misses=0,
         cache_hit_rate=None,
@@ -240,6 +312,19 @@ def experiment_records_to_dicts(records: tuple[ExperimentRecord, ...]) -> list[d
     return [asdict(record) for record in records]
 
 
+def _mean(values: list[float | int]) -> float | None:
+    return None if not values else sum(values) / len(values)
+
+
+def _counts(values: list[str | None]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        if value is None:
+            continue
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
 def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> ExperimentSummary:
     total = len(records)
     ok = [record for record in records if record.status == "ok"]
@@ -257,6 +342,66 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
     samples = [record.samples_per_second for record in ok if record.samples_per_second is not None]
     steps = [record.measured_step_us for record in ok if record.measured_step_us is not None]
     peaks = [record.measured_peak_bytes for record in ok if record.measured_peak_bytes is not None]
+    headrooms = [
+        record.measured_budget_headroom_bytes
+        for record in ok
+        if record.measured_budget_headroom_bytes is not None
+    ]
+    reductions = [
+        record.selected_estimated_peak_reduction_bytes
+        for record in ok
+        if record.selected_estimated_peak_reduction_bytes is not None
+    ]
+    selected_abs_errors = [
+        abs(record.selected_prediction_error_bytes)
+        for record in ok
+        if record.selected_prediction_error_bytes is not None
+    ]
+    selected_abs_relative_errors = [
+        abs(record.selected_prediction_relative_error)
+        for record in ok
+        if record.selected_prediction_relative_error is not None
+    ]
+    simulation_accuracy_counts = [
+        record.simulation_accuracy_candidate_count
+        for record in ok
+        if record.simulation_accuracy_candidate_count > 0
+    ]
+    simulation_accuracy_mean_abs_errors = [
+        record.simulation_accuracy_mean_absolute_error_bytes
+        for record in ok
+        if record.simulation_accuracy_mean_absolute_error_bytes is not None
+    ]
+    simulation_accuracy_max_abs_errors = [
+        record.simulation_accuracy_max_absolute_error_bytes
+        for record in ok
+        if record.simulation_accuracy_max_absolute_error_bytes is not None
+    ]
+    simulation_accuracy_mean_relative_errors = [
+        record.simulation_accuracy_mean_absolute_relative_error
+        for record in ok
+        if record.simulation_accuracy_mean_absolute_relative_error is not None
+    ]
+    simulation_accuracy_within_10 = [
+        record.simulation_accuracy_within_10_percent_rate
+        for record in ok
+        if record.simulation_accuracy_within_10_percent_rate is not None
+    ]
+    normalized_saved = [
+        record.diagnostic_normalized_saved_reduction_bytes
+        for record in ok
+        if record.diagnostic_normalized_saved_reduction_bytes is not None
+    ]
+    realization_gaps = [
+        record.diagnostic_realization_gap_bytes
+        for record in ok
+        if record.diagnostic_realization_gap_bytes is not None
+    ]
+    total_expectation_gaps = [
+        record.diagnostic_total_expectation_gap_bytes
+        for record in ok
+        if record.diagnostic_total_expectation_gap_bytes is not None
+    ]
     total_hits = sum(record.cache_total_hits for record in records)
     total_misses = sum(record.cache_total_misses for record in records)
     exact_success = [record for record in ok if record.exact_plan_key is not None]
@@ -274,15 +419,33 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         budget_violation_count=len(violations),
         budget_violation_rate=None if not ok else len(violations) / len(ok),
         max_feasible_microbatch=max(feasible_microbatches) if feasible_microbatches else None,
-        mean_samples_per_second=None if not samples else sum(samples) / len(samples),
-        mean_measured_step_us=None if not steps else sum(steps) / len(steps),
-        mean_measured_peak_bytes=None if not peaks else sum(peaks) / len(peaks),
+        mean_samples_per_second=_mean(samples),
+        mean_measured_step_us=_mean(steps),
+        mean_measured_peak_bytes=_mean(peaks),
+        mean_measured_budget_headroom_bytes=_mean(headrooms),
+        mean_estimated_peak_reduction_bytes=_mean(reductions),
         aggregate_cache_hit_rate=None if total_hits + total_misses == 0 else total_hits / (total_hits + total_misses),
         total_cache_hits=total_hits,
         total_cache_misses=total_misses,
+        selected_prediction_count=len(selected_abs_errors),
+        mean_selected_prediction_absolute_error_bytes=_mean(selected_abs_errors),
+        max_selected_prediction_absolute_error_bytes=None if not selected_abs_errors else max(selected_abs_errors),
+        mean_selected_prediction_absolute_relative_error=_mean(selected_abs_relative_errors),
+        simulation_accuracy_candidate_count=sum(simulation_accuracy_counts),
+        mean_simulation_accuracy_absolute_error_bytes=_mean(simulation_accuracy_mean_abs_errors),
+        max_simulation_accuracy_absolute_error_bytes=None
+        if not simulation_accuracy_max_abs_errors
+        else max(simulation_accuracy_max_abs_errors),
+        mean_simulation_accuracy_absolute_relative_error=_mean(simulation_accuracy_mean_relative_errors),
+        mean_simulation_accuracy_within_10_percent_rate=_mean(simulation_accuracy_within_10),
+        root_cause_counts=_counts([record.diagnostic_primary_cause for record in ok]),
+        selected_peak_phase_counts=_counts([record.selected_peak_phase for record in ok]),
+        mean_diagnostic_normalized_saved_reduction_bytes=_mean(normalized_saved),
+        mean_diagnostic_realization_gap_bytes=_mean(realization_gaps),
+        mean_diagnostic_total_expectation_gap_bytes=_mean(total_expectation_gaps),
         exact_success_count=len(exact_success),
         exact_failure_count=len(exact_failures),
-        mean_selected_exact_peak_gap_bytes=None if not exact_gaps else sum(exact_gaps) / len(exact_gaps),
+        mean_selected_exact_peak_gap_bytes=_mean(exact_gaps),
     )
 
 

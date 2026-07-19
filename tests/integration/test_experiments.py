@@ -63,15 +63,29 @@ def _minimal_record(
         selected_saved_value_ids=(1,) if status == "ok" else (),
         selected_effective_saved_value_ids=(1,) if status == "ok" else (),
         selected_estimated_peak_bytes=measured_peak_bytes,
+        baseline_plan_id="all_save" if status == "ok" else None,
+        baseline_estimated_peak_bytes=None if measured_peak_bytes is None else measured_peak_bytes + 20,
+        selected_estimated_peak_reduction_bytes=20 if status == "ok" else None,
         measured_peak_bytes=measured_peak_bytes,
         measured_peak_reserved_bytes=0 if measured_peak_bytes is not None else None,
+        measured_budget_headroom_bytes=None if measured_peak_bytes is None else budget_bytes - measured_peak_bytes,
         measured_step_us=10.0 if status == "ok" else None,
         samples_per_second=samples_per_second,
         feasibility_status="FEASIBLE" if status == "ok" else None,
-        diagnostic_primary_cause=None,
+        baseline_peak_phase="fw" if status == "ok" else None,
+        selected_peak_phase="bw" if status == "ok" else None,
+        diagnostic_primary_cause="REMATERIALIZATION_WAVE" if status == "ok" else None,
+        diagnostic_normalized_saved_reduction_bytes=32 if status == "ok" else None,
+        diagnostic_realization_gap_bytes=12 if status == "ok" else None,
+        diagnostic_total_expectation_gap_bytes=None,
         measured_candidate_count=1 if status == "ok" else 0,
-        selected_prediction_error_bytes=0 if status == "ok" else None,
-        selected_prediction_relative_error=0.0 if status == "ok" else None,
+        selected_prediction_error_bytes=4 if status == "ok" else None,
+        selected_prediction_relative_error=0.05 if status == "ok" else None,
+        simulation_accuracy_candidate_count=2 if status == "ok" else 0,
+        simulation_accuracy_mean_absolute_error_bytes=6.0 if status == "ok" else None,
+        simulation_accuracy_max_absolute_error_bytes=8 if status == "ok" else None,
+        simulation_accuracy_mean_absolute_relative_error=0.075 if status == "ok" else None,
+        simulation_accuracy_within_10_percent_rate=0.5 if status == "ok" else None,
         cache_total_hits=1,
         cache_total_misses=1,
         cache_hit_rate=0.5,
@@ -96,6 +110,19 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.budget_violation_count == 1
     assert summary.budget_violation_rate == 0.5
     assert summary.mean_samples_per_second == 15.0
+    assert summary.mean_measured_budget_headroom_bytes == 0.0
+    assert summary.mean_estimated_peak_reduction_bytes == 20.0
+    assert summary.selected_prediction_count == 2
+    assert summary.mean_selected_prediction_absolute_error_bytes == 4.0
+    assert summary.mean_selected_prediction_absolute_relative_error == 0.05
+    assert summary.simulation_accuracy_candidate_count == 4
+    assert summary.mean_simulation_accuracy_absolute_error_bytes == 6.0
+    assert summary.max_simulation_accuracy_absolute_error_bytes == 8
+    assert summary.mean_simulation_accuracy_within_10_percent_rate == 0.5
+    assert summary.root_cause_counts == {"REMATERIALIZATION_WAVE": 2}
+    assert summary.selected_peak_phase_counts == {"bw": 2}
+    assert summary.mean_diagnostic_normalized_saved_reduction_bytes == 32.0
+    assert summary.mean_diagnostic_realization_gap_bytes == 12.0
     assert summary.aggregate_cache_hit_rate == 0.5
 
 
@@ -127,6 +154,12 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].selected_saved_value_ids
     assert set(records[0].selected_saved_value_ids).issubset(records[0].selected_effective_saved_value_ids)
     assert records[0].selected_estimated_peak_bytes is not None
+    assert records[0].baseline_plan_id == "all_save"
+    assert records[0].baseline_estimated_peak_bytes is not None
+    assert records[0].selected_estimated_peak_reduction_bytes is not None
+    assert records[0].measured_budget_headroom_bytes is not None
+    assert records[0].selected_peak_phase is not None
+    assert records[0].simulation_accuracy_candidate_count >= 1
     assert records[0].selected_prediction_error_bytes is not None
     assert records[0].candidate_count >= records[0].measured_candidate_count
     assert records[0].cache_total_hits == 0
@@ -138,12 +171,16 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert rows[0]["task_name"] == "tiny_residual_w8"
     assert rows[0]["graph_key"] == records[0].graph_key
     assert rows[0]["selected_estimated_peak_bytes"]
+    assert rows[0]["selected_estimated_peak_reduction_bytes"]
     assert "selected_prediction_error_bytes" in rows[0]
     assert summary.total_records == 1
     assert summary.ok_records == 1
     assert summary.budget_violation_count == 0
     assert summary.max_feasible_microbatch == 1
     assert summary_payload["success_rate"] == 1.0
+    assert summary_payload["selected_prediction_count"] == 1
+    assert summary_payload["simulation_accuracy_candidate_count"] >= 1
+    assert summary_payload["root_cause_counts"]
 
 
 def test_experiment_matrix_can_include_exact_small_graph_baseline():
@@ -223,10 +260,14 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["selected_saved_value_ids"]
     assert stdout_payload[0]["selected_effective_saved_value_ids"]
     assert stdout_payload[0]["selected_prediction_error_bytes"] is not None
+    assert stdout_payload[0]["selected_estimated_peak_reduction_bytes"] is not None
+    assert stdout_payload[0]["simulation_accuracy_candidate_count"] >= 1
     assert stdout_payload[0]["cache_total_hits"] == 0
     assert file_payload[0]["task_name"] == "tiny_mlp_w8_d3"
     assert file_payload[0]["exact_error_type"] == "PlanValidationError"
     assert summary_payload["total_records"] == 1
     assert summary_payload["ok_records"] == 1
+    assert summary_payload["selected_prediction_count"] == 1
+    assert summary_payload["mean_simulation_accuracy_absolute_error_bytes"] is not None
     assert summary_payload["exact_failure_count"] == 1
     assert csv_path.read_text(encoding="utf-8").startswith("task_name,microbatch_size,budget_bytes")
