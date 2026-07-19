@@ -77,10 +77,11 @@ def _capture_with_fx(request: TrainingRequest, failures: tuple[FailureRecord, ..
     if breaks:
         raise CaptureError(f"graph breaks are unsupported in M0: {breaks}")
 
-    capture_key = build_graph_key(gm, request.model)
+    guards = _collect_guards(request)
+    capture_key = build_graph_key(gm, request.model, guards)
     return CapturedJointGraph(
         joint_module=gm,
-        guards=_collect_guards(request),
+        guards=guards,
         parameter_mapping=_collect_parameter_mapping(request),
         capture_key=capture_key,
         backend="fx",
@@ -132,10 +133,11 @@ def _capture_with_aot_autograd(request: TrainingRequest) -> CapturedJointGraph:
     joint = captured.get("joint")
     if joint is None:
         raise CaptureError("AOTAutograd did not invoke partition_fn")
-    capture_key = build_graph_key(joint, request.model)
+    guards = _collect_guards(request)
+    capture_key = build_graph_key(joint, request.model, guards)
     return CapturedJointGraph(
         joint_module=joint,
-        guards=_collect_guards(request),
+        guards=guards,
         parameter_mapping=_collect_parameter_mapping(request),
         capture_key=capture_key,
         fw_module=captured.get("fw"),
