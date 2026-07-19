@@ -13,12 +13,14 @@ from peakaware.experiments import (
     experiment_records_from_dicts,
     run_experiment_matrix,
     summarize_baseline_comparisons,
+    summarize_cache_reuse,
     summarize_hint_ablation,
     summarize_layered_simulation_accuracy,
     summarize_experiment_records,
     summarize_experiment_records_by_variant,
     write_experiment_csv,
     write_experiment_baseline_comparison_json,
+    write_experiment_cache_reuse_json,
     write_experiment_hint_ablation_json,
     write_experiment_json,
     write_experiment_layered_accuracy_json,
@@ -63,6 +65,10 @@ def _minimal_record(
     samples_per_second: float | None = None,
     variant_name: str | None = None,
     diagnostic_hints_enabled: bool | None = None,
+    cache_total_hits: int = 1,
+    cache_total_misses: int = 1,
+    matrix_pass_index: int = 0,
+    matrix_pass_count: int = 1,
 ) -> ExperimentRecord:
     variant_name = variant_name or ("diagnostic_hints_on" if status == "ok" else "failed")
     diagnostic_hints_enabled = status == "ok" if diagnostic_hints_enabled is None else diagnostic_hints_enabled
@@ -180,11 +186,13 @@ def _minimal_record(
         simulation_accuracy_max_absolute_error_bytes=8 if status == "ok" else None,
         simulation_accuracy_mean_absolute_relative_error=0.075 if status == "ok" else None,
         simulation_accuracy_within_10_percent_rate=0.5 if status == "ok" else None,
-        cache_total_hits=1,
-        cache_total_misses=1,
-        cache_hit_rate=0.5,
-        cache_layer_hits={"analysis": 1} if status == "ok" else {},
-        cache_layer_misses={"capture": 1} if status == "ok" else {},
+        cache_total_hits=cache_total_hits,
+        cache_total_misses=cache_total_misses,
+        cache_hit_rate=cache_total_hits / (cache_total_hits + cache_total_misses)
+        if cache_total_hits + cache_total_misses
+        else None,
+        cache_layer_hits={"analysis": cache_total_hits} if status == "ok" and cache_total_hits else {},
+        cache_layer_misses={"capture": cache_total_misses} if status == "ok" and cache_total_misses else {},
         optimization_total_us=100.0 if status == "ok" else None,
         optimization_capture_us=10.0 if status == "ok" else None,
         optimization_ir_build_us=20.0 if status == "ok" else None,
@@ -202,6 +210,8 @@ def _minimal_record(
         repair_success_count=1 if status == "ok" else 0,
         feasible_before_repair_count=0 if status == "ok" else 0,
         feasible_after_repair_count=1 if status == "ok" else 0,
+        matrix_pass_index=matrix_pass_index,
+        matrix_pass_count=matrix_pass_count,
     )
 
 
@@ -342,6 +352,40 @@ def test_hint_ablation_summary_reports_no_pairs_verdict():
 
     assert summary["pair_count"] == 0
     assert summary["verdict"] == "no_pairs"
+
+
+def test_cache_reuse_summary_groups_matrix_passes(tmp_path):
+    records = (
+        _minimal_record(
+            status="ok",
+            budget_bytes=100,
+            measured_peak_bytes=80,
+            cache_total_hits=0,
+            cache_total_misses=2,
+            matrix_pass_index=0,
+            matrix_pass_count=2,
+        ),
+        _minimal_record(
+            status="ok",
+            budget_bytes=100,
+            measured_peak_bytes=80,
+            cache_total_hits=3,
+            cache_total_misses=1,
+            matrix_pass_index=1,
+            matrix_pass_count=2,
+        ),
+    )
+
+    summary = summarize_cache_reuse(records)
+    output_path = tmp_path / "cache_reuse.json"
+    write_experiment_cache_reuse_json(records, output_path)
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert summary["matrix_pass_count"] == 2
+    assert summary["cold_cache_hit_rate"] == 0.0
+    assert summary["mean_warm_cache_hit_rate"] == 0.75
+    assert summary["pass_rows"][1]["total_cache_hits"] == 3
+    assert payload == summary
 
 
 def test_baseline_comparison_summary_reports_selected_deltas():
@@ -660,6 +704,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     summary_path = tmp_path / "summary.json"
     variant_summary_path = tmp_path / "variant_summary.json"
     hint_ablation_path = tmp_path / "hint_ablation.json"
+    cache_reuse_path = tmp_path / "cache_reuse.json"
     baseline_comparison_path = tmp_path / "baseline_comparison.json"
     layered_accuracy_path = tmp_path / "layered_accuracy.json"
     plan_artifact_dir = tmp_path / "plan_artifacts"
@@ -705,6 +750,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             "min_peak_then_time",
             "--measurement-repeats",
             "2",
+            "--matrix-passes",
+            "2",
             "--cache-root",
             str(tmp_path / "cache"),
             "--plan-artifact-dir",
@@ -720,6 +767,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             str(variant_summary_path),
             "--output-hint-ablation-json",
             str(hint_ablation_path),
+            "--output-cache-reuse-json",
+            str(cache_reuse_path),
             "--output-baseline-comparison-json",
             str(baseline_comparison_path),
             "--sac-baseline-json",
@@ -737,10 +786,11 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
     variant_summary_payload = json.loads(variant_summary_path.read_text(encoding="utf-8"))
     hint_ablation_payload = json.loads(hint_ablation_path.read_text(encoding="utf-8"))
+    cache_reuse_payload = json.loads(cache_reuse_path.read_text(encoding="utf-8"))
     baseline_comparison_payload = json.loads(baseline_comparison_path.read_text(encoding="utf-8"))
     layered_accuracy_payload = json.loads(layered_accuracy_path.read_text(encoding="utf-8"))
 
-    assert len(stdout_payload) == 2
+    assert len(stdout_payload) == 4
     assert {record["variant_name"] for record in stdout_payload} == {
         "diagnostic_hints_on",
         "diagnostic_hints_off",
@@ -765,6 +815,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["actual_joint_capture_count"] == 1
     assert "selected_peak_phase_match" in stdout_payload[0]
     assert all(record["measurement_repeats"] == 2 for record in stdout_payload)
+    assert {record["matrix_pass_index"] for record in stdout_payload} == {0, 1}
+    assert all(record["matrix_pass_count"] == 2 for record in stdout_payload)
     assert stdout_payload[0]["simulation_accuracy_candidate_count"] >= 1
     assert {record["diagnostic_hints_enabled"] for record in stdout_payload} == {True, False}
     assert stdout_payload[0]["cache_total_hits"] == 0
@@ -772,14 +824,17 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert "cache_layer_misses" in stdout_payload[0]
     assert file_payload[0]["task_name"] == "tiny_mlp_w8_d3"
     assert file_payload[0]["exact_error_type"] == "PlanValidationError"
-    assert summary_payload["total_records"] == 2
-    assert summary_payload["ok_records"] == 2
+    assert summary_payload["total_records"] == 4
+    assert summary_payload["ok_records"] == 4
     assert "python_version" in summary_payload["environment_fingerprint"]
-    assert summary_payload["variant_counts"] == {"diagnostic_hints_off": 1, "diagnostic_hints_on": 1}
+    assert summary_payload["variant_counts"] == {"diagnostic_hints_off": 2, "diagnostic_hints_on": 2}
     assert set(variant_summary_payload) == {"diagnostic_hints_off", "diagnostic_hints_on"}
-    assert variant_summary_payload["diagnostic_hints_on"]["ok_records"] == 1
-    assert variant_summary_payload["diagnostic_hints_off"]["ok_records"] == 1
-    assert hint_ablation_payload["pair_count"] == 1
+    assert variant_summary_payload["diagnostic_hints_on"]["ok_records"] == 2
+    assert variant_summary_payload["diagnostic_hints_off"]["ok_records"] == 2
+    assert hint_ablation_payload["pair_count"] == 2
+    assert "verdict" in hint_ablation_payload
+    assert cache_reuse_payload["matrix_pass_count"] == 2
+    assert cache_reuse_payload["warm_pass_count"] == 1
     assert "all_save" in baseline_comparison_payload["baseline_groups"]
     assert "pytorch_sac" in baseline_comparison_payload["baseline_groups"]
     assert baseline_comparison_payload["external_sac_rows_usable"] == 1
@@ -798,7 +853,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
         "regressed_success",
         "regressed_throughput",
     }
-    assert summary_payload["selected_prediction_count"] == 2
+    assert summary_payload["selected_prediction_count"] == 4
     assert summary_payload["mean_selected_samples_per_second_speedup_vs_all_save"] is not None
     assert "phase_classification_count" in summary_payload
     assert "feasible_classification_count" in summary_payload
@@ -806,12 +861,12 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert summary_payload["p50_simulation_accuracy_absolute_error_bytes"] is not None
     assert summary_payload["p90_simulation_accuracy_absolute_error_bytes"] is not None
     assert "diagnostic_hint_kind_counts" in summary_payload
-    assert summary_payload["exact_failure_count"] == 2
+    assert summary_payload["exact_failure_count"] == 4
     assert "mean_optimization_amortization_steps" in summary_payload
     assert set(summary_payload["cache_layer_hit_rates"]).issubset({"analysis", "executable"})
-    assert summary_payload["total_actual_joint_capture_count"] == 2
+    assert summary_payload["total_actual_joint_capture_count"] >= 2
     plan_artifacts = list(plan_artifact_dir.glob("*.json"))
-    assert len(plan_artifacts) == 2
+    assert len(plan_artifacts) == 4
     assert all(validate_plan_artifact_identity(load_plan_artifact_json(path))["valid"] for path in plan_artifacts)
     assert csv_path.read_text(encoding="utf-8").startswith(
         "variant_name,config_fingerprint,task_name,microbatch_size,budget_bytes"

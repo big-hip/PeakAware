@@ -18,6 +18,7 @@ from peakaware.experiments import (
     summarize_experiment_records_by_variant,
     write_experiment_csv,
     write_experiment_baseline_comparison_json,
+    write_experiment_cache_reuse_json,
     write_experiment_hint_ablation_json,
     write_experiment_json,
     write_experiment_layered_accuracy_json,
@@ -46,6 +47,7 @@ def main() -> None:
     parser.add_argument("--selection-objective", choices=("min_peak_then_time", "min_time_then_peak"), default="min_peak_then_time")
     parser.add_argument("--measurement-warmup-steps", type=int, default=0)
     parser.add_argument("--measurement-repeats", type=int, default=1)
+    parser.add_argument("--matrix-passes", type=int, default=1)
     parser.add_argument("--exact-small-graph", action="store_true")
     parser.add_argument("--exact-max-candidates", type=int, default=12)
     parser.add_argument("--profile-db", type=Path, default=None)
@@ -56,10 +58,13 @@ def main() -> None:
     parser.add_argument("--output-summary-json", type=Path, default=None)
     parser.add_argument("--output-variant-summary-json", type=Path, default=None)
     parser.add_argument("--output-hint-ablation-json", type=Path, default=None)
+    parser.add_argument("--output-cache-reuse-json", type=Path, default=None)
     parser.add_argument("--output-baseline-comparison-json", type=Path, default=None)
     parser.add_argument("--sac-baseline-json", type=Path, default=None)
     parser.add_argument("--output-layered-accuracy-json", type=Path, default=None)
     args = parser.parse_args()
+    if args.matrix_passes <= 0:
+        raise ValueError("--matrix-passes must be positive")
 
     base_config = PeakAwareConfig(
         safety_margin_bytes=0,
@@ -79,6 +84,7 @@ def main() -> None:
         variants = ((f"diagnostic_hints_{args.diagnostic_hints}", enabled),)
     records = tuple(
         record
+        for pass_index in range(args.matrix_passes)
         for variant_name, enabled in variants
         for record in run_experiment_matrix(
             task_names=_parse_csv_text(args.tasks),
@@ -90,6 +96,8 @@ def main() -> None:
             variant_name=variant_name,
             device=args.device,
             plan_artifact_dir=args.plan_artifact_dir,
+            matrix_pass_index=pass_index,
+            matrix_pass_count=args.matrix_passes,
         )
     )
     if args.output_json is not None:
@@ -106,6 +114,8 @@ def main() -> None:
         )
     if args.output_hint_ablation_json is not None:
         write_experiment_hint_ablation_json(records, args.output_hint_ablation_json)
+    if args.output_cache_reuse_json is not None:
+        write_experiment_cache_reuse_json(records, args.output_cache_reuse_json)
     if args.output_baseline_comparison_json is not None:
         sac_baseline = None
         if args.sac_baseline_json is not None:

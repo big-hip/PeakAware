@@ -25,6 +25,8 @@ class ExperimentCase:
     task_name: str
     microbatch_size: int
     budget_bytes: int
+    matrix_pass_index: int = 0
+    matrix_pass_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,8 @@ class ExperimentRecord:
     exact_error_message: str | None = None
     error_type: str | None = None
     error_message: str | None = None
+    matrix_pass_index: int = 0
+    matrix_pass_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -391,6 +395,8 @@ def _record_success(
         selected_exact_peak_gap_bytes=exact.get("selected_peak_gap_bytes"),
         exact_error_type=exact.get("error_type"),
         exact_error_message=exact.get("error_message"),
+        matrix_pass_index=case.matrix_pass_index,
+        matrix_pass_count=case.matrix_pass_count,
     )
 
 
@@ -467,6 +473,8 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         feasible_after_repair_count=0,
         error_type=type(exc).__name__,
         error_message=str(exc),
+        matrix_pass_index=case.matrix_pass_index,
+        matrix_pass_count=case.matrix_pass_count,
     )
 
 
@@ -482,6 +490,8 @@ def run_experiment_matrix(
     variant_name: str = "default",
     device: str = "cpu",
     plan_artifact_dir: str | Path | None = None,
+    matrix_pass_index: int = 0,
+    matrix_pass_count: int = 1,
 ) -> tuple[ExperimentRecord, ...]:
     if not task_names:
         raise ValueError("task_names must not be empty")
@@ -495,6 +505,8 @@ def run_experiment_matrix(
         raise ValueError("budget_bytes must be positive")
     if exact_max_candidate_count < 0:
         raise ValueError("exact_max_candidate_count must be non-negative")
+    if matrix_pass_index < 0 or matrix_pass_count <= 0 or matrix_pass_index >= matrix_pass_count:
+        raise ValueError("matrix pass index/count is invalid")
     registry = registry or TrainingTaskRegistry.with_defaults()
     config = config or PeakAwareConfig()
     resolved_device = _resolve_experiment_device(device)
@@ -506,7 +518,15 @@ def run_experiment_matrix(
         task = registry.get(task_name)
         for microbatch_size in microbatch_sizes:
             for budget in budget_bytes:
-                case = ExperimentCase(variant_name, config_fingerprint, task_name, microbatch_size, budget)
+                case = ExperimentCase(
+                    variant_name,
+                    config_fingerprint,
+                    task_name,
+                    microbatch_size,
+                    budget,
+                    matrix_pass_index=matrix_pass_index,
+                    matrix_pass_count=matrix_pass_count,
+                )
                 model = task.build_model().to(resolved_device)
                 optimizer = task.build_optimizer(model)
                 args, kwargs = task.build_batch(microbatch_size)
@@ -529,6 +549,7 @@ def run_experiment_matrix(
                 if plan_artifact_dir is not None:
                     stem = _safe_artifact_stem(
                         variant_name,
+                        f"pass{matrix_pass_index}",
                         task_name,
                         f"mb{microbatch_size}",
                         f"budget{budget}",
@@ -931,8 +952,8 @@ def experiment_variant_summaries_to_dict(
     return {variant_name: experiment_summary_to_dict(summary) for variant_name, summary in summaries.items()}
 
 
-def _record_pair_key(record: ExperimentRecord) -> tuple[str, int, int]:
-    return (record.task_name, record.microbatch_size, record.budget_bytes)
+def _record_pair_key(record: ExperimentRecord) -> tuple[str, int, int, int]:
+    return (record.task_name, record.microbatch_size, record.budget_bytes, record.matrix_pass_index)
 
 
 def _metric_delta(on_value: float | int | None, off_value: float | int | None) -> float | None:
@@ -990,7 +1011,7 @@ def _hint_ablation_verdict(conclusion_counts: dict[str, int]) -> str:
 
 
 def summarize_hint_ablation(records: tuple[ExperimentRecord, ...]) -> dict[str, Any]:
-    by_variant: dict[str, dict[tuple[str, int, int], ExperimentRecord]] = {
+    by_variant: dict[str, dict[tuple[str, int, int, int], ExperimentRecord]] = {
         "diagnostic_hints_on": {},
         "diagnostic_hints_off": {},
     }
@@ -999,13 +1020,14 @@ def summarize_hint_ablation(records: tuple[ExperimentRecord, ...]) -> dict[str, 
             by_variant[record.variant_name][_record_pair_key(record)] = record
     paired_keys = sorted(set(by_variant["diagnostic_hints_on"]) & set(by_variant["diagnostic_hints_off"]))
     rows: list[dict[str, Any]] = []
-    for task_name, microbatch_size, budget_bytes in paired_keys:
-        on_record = by_variant["diagnostic_hints_on"][(task_name, microbatch_size, budget_bytes)]
-        off_record = by_variant["diagnostic_hints_off"][(task_name, microbatch_size, budget_bytes)]
+    for task_name, microbatch_size, budget_bytes, matrix_pass_index in paired_keys:
+        on_record = by_variant["diagnostic_hints_on"][(task_name, microbatch_size, budget_bytes, matrix_pass_index)]
+        off_record = by_variant["diagnostic_hints_off"][(task_name, microbatch_size, budget_bytes, matrix_pass_index)]
         row = {
             "task_name": task_name,
             "microbatch_size": microbatch_size,
             "budget_bytes": budget_bytes,
+            "matrix_pass_index": matrix_pass_index,
             "on_status": on_record.status,
             "off_status": off_record.status,
             "success_delta": int(on_record.status == "ok") - int(off_record.status == "ok"),
@@ -1069,6 +1091,43 @@ def summarize_hint_ablation(records: tuple[ExperimentRecord, ...]) -> dict[str, 
         "inconclusive_pair_count": conclusion_counts.get("inconclusive", 0),
         "verdict": _hint_ablation_verdict(conclusion_counts),
         "rows": rows,
+    }
+
+
+def summarize_cache_reuse(records: tuple[ExperimentRecord, ...]) -> dict[str, Any]:
+    pass_rows = []
+    for pass_index in sorted({record.matrix_pass_index for record in records}):
+        subset = [record for record in records if record.matrix_pass_index == pass_index]
+        hits = sum(record.cache_total_hits for record in subset)
+        misses = sum(record.cache_total_misses for record in subset)
+        total = hits + misses
+        layer_hits = _sum_layer_counts(subset, "cache_layer_hits")
+        layer_misses = _sum_layer_counts(subset, "cache_layer_misses")
+        pass_rows.append(
+            {
+                "matrix_pass_index": pass_index,
+                "record_count": len(subset),
+                "ok_count": sum(1 for record in subset if record.status == "ok"),
+                "failed_count": sum(1 for record in subset if record.status != "ok"),
+                "total_cache_hits": hits,
+                "total_cache_misses": misses,
+                "cache_hit_rate": None if total == 0 else hits / total,
+                "cache_layer_hits": layer_hits,
+                "cache_layer_misses": layer_misses,
+                "cache_layer_hit_rates": _layer_hit_rates(layer_hits, layer_misses),
+                "actual_joint_capture_count": sum(record.actual_joint_capture_count for record in subset),
+            }
+        )
+    warm_rows = [row for row in pass_rows if int(row["matrix_pass_index"]) > 0]
+    return {
+        "matrix_pass_count": len(pass_rows),
+        "record_count": len(records),
+        "warm_pass_count": len(warm_rows),
+        "cold_cache_hit_rate": None if not pass_rows else pass_rows[0]["cache_hit_rate"],
+        "mean_warm_cache_hit_rate": _mean_optional([row["cache_hit_rate"] for row in warm_rows]),
+        "cold_actual_joint_capture_count": None if not pass_rows else pass_rows[0]["actual_joint_capture_count"],
+        "warm_actual_joint_capture_count": sum(int(row["actual_joint_capture_count"]) for row in warm_rows),
+        "pass_rows": pass_rows,
     }
 
 
@@ -1297,6 +1356,11 @@ def write_experiment_variant_summary_json(
 
 def write_experiment_hint_ablation_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
     text = json.dumps(summarize_hint_ablation(records), indent=2, sort_keys=True)
+    _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
+
+
+def write_experiment_cache_reuse_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
+    text = json.dumps(summarize_cache_reuse(records), indent=2, sort_keys=True)
     _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 
