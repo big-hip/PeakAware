@@ -22,6 +22,26 @@ def test_microbatch_optimizer_selects_candidate():
     assert result.selected.useful_samples_per_second > 0
 
 
+def test_microbatch_optimizer_supports_isolated_default_tasks():
+    task = TrainingTaskRegistry.with_defaults().get("tiny_mlp_w8_d3")
+
+    result = optimize_microbatches(
+        task,
+        (1,),
+        memory_budget_bytes=1 << 28,
+        config=PeakAwareConfig(
+            safety_margin_bytes=0,
+            safety_margin_ratio=0.0,
+            top_k=1,
+            isolate_candidate_measurement=True,
+            candidate_worker_timeout_s=30.0,
+        ),
+    )
+
+    assert result.selected.microbatch_size == 1
+    assert result.selected.result.executable.correctness_passed
+
+
 def test_run_mvp_script_outputs_json():
     completed = subprocess.run(
         [sys.executable, "scripts/run_mvp.py", "--budget-mib", "256"],
