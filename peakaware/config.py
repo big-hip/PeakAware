@@ -23,6 +23,8 @@ class PeakAwareConfig:
     candidate_worker_timeout_s: float = 60.0
     profile_db_path: str | Path | None = None
     cache_root: str | Path | None = None
+    measurement_warmup_steps: int = 0
+    measurement_repeats: int = 1
     rng_seed: int | None = 1337
     atol: float = 1e-5
     rtol: float = 1e-4
@@ -40,3 +42,7 @@ class PeakAwareConfig:
             raise ValueError("capture_backend must be one of: auto, aot, fx")
         if self.candidate_worker_timeout_s <= 0:
             raise ValueError("candidate_worker_timeout_s must be positive")
+        if self.measurement_warmup_steps < 0:
+            raise ValueError("measurement_warmup_steps must be non-negative")
+        if self.measurement_repeats <= 0:
+            raise ValueError("measurement_repeats must be positive")

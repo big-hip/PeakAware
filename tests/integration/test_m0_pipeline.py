@@ -47,7 +47,16 @@ def test_optimize_training_builds_executor_and_runs_step():
     assert step.optimizer_step_performed is True
     assert step.loss.ndim == 0
     assert result.executable.phase_metrics["step_us"] > 0
-    assert {"fw_us", "bw_us", "optimizer_us", "overall_peak_bytes"}.issubset(result.executable.phase_metrics)
+    assert {
+        "fw_us",
+        "bw_us",
+        "optimizer_us",
+        "overall_peak_bytes",
+        "overall_reserved_peak_bytes",
+        "step_us_median",
+        "step_us_p10",
+        "step_us_p90",
+    }.issubset(result.executable.phase_metrics)
     assert len(result.measured_candidates) >= 2
     assert result.executable.plan_id in {candidate.plan_id for candidate in result.measured_candidates}
     assert result.dry_run is not None and result.dry_run.gradients_match

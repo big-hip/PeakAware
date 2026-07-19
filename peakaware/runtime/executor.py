@@ -81,6 +81,8 @@ def make_measured_executable(
         args,
         kwargs,
         zero_grad_set_to_none=executor.config.zero_grad_set_to_none,
+        warmup_steps=executor.config.measurement_warmup_steps,
+        repeat_count=executor.config.measurement_repeats,
     )
     measured_peak = int(phase_metrics["overall_peak_bytes"])
     measured_us = float(phase_metrics["step_us"])
