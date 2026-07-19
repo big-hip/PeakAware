@@ -15,6 +15,7 @@ from .experiments import (
     summarize_experiment_records_by_variant,
 )
 from .microbatch import optimize_microbatches
+from .external_baselines import summarize_external_baseline_capabilities
 from .reporting import (
     export_plan_artifact_json,
     export_result_json,
@@ -40,6 +41,7 @@ __all__ = [
     "StepResult",
     "summarize_plan_artifact",
     "summarize_baseline_comparisons",
+    "summarize_external_baseline_capabilities",
     "summarize_hint_ablation",
     "summarize_layered_simulation_accuracy",
     "summarize_experiment_records",
