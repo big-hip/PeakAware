@@ -32,6 +32,8 @@ class ExperimentRecord:
     feasibility_status: str | None
     diagnostic_primary_cause: str | None
     measured_candidate_count: int
+    selected_prediction_error_bytes: int | None
+    selected_prediction_relative_error: float | None
     error_type: str | None = None
     error_message: str | None = None
 
@@ -39,6 +41,7 @@ class ExperimentRecord:
 def _record_success(case: ExperimentCase, summary: dict[str, Any]) -> ExperimentRecord:
     measured = summary["measured"]
     diagnostic = summary.get("diagnostic")
+    selected_correction = summary.get("topk_correction", {}).get("selected")
     step_us = float(measured["step_us"])
     return ExperimentRecord(
         task_name=case.task_name,
@@ -52,6 +55,8 @@ def _record_success(case: ExperimentCase, summary: dict[str, Any]) -> Experiment
         feasibility_status=summary["feasibility"]["status"],
         diagnostic_primary_cause=None if diagnostic is None else diagnostic["primary_cause"],
         measured_candidate_count=len(summary["measured_candidates"]),
+        selected_prediction_error_bytes=None if selected_correction is None else selected_correction["error_bytes"],
+        selected_prediction_relative_error=None if selected_correction is None else selected_correction["relative_error"],
     )
 
 
@@ -68,6 +73,8 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         feasibility_status=None,
         diagnostic_primary_cause=None,
         measured_candidate_count=0,
+        selected_prediction_error_bytes=None,
+        selected_prediction_relative_error=None,
         error_type=type(exc).__name__,
         error_message=str(exc),
     )

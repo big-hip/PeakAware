@@ -23,10 +23,26 @@ def _plan_row(plan: EvaluatedPlan) -> dict[str, Any]:
     }
 
 
+def _prediction_error_row(plan: EvaluatedPlan | None, peak_bytes: int) -> dict[str, Any] | None:
+    if plan is None:
+        return None
+    estimated = int(plan.simulation.estimated_peak_bytes)
+    error = int(peak_bytes) - estimated
+    relative = None if estimated == 0 else error / estimated
+    return {
+        "plan_id": plan.plan.plan_id,
+        "estimated_peak_bytes": estimated,
+        "measured_peak_bytes": int(peak_bytes),
+        "error_bytes": error,
+        "relative_error": relative,
+    }
+
+
 def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
     plans = result.analysis.baseline_results if result.analysis is not None else ()
+    plans_by_id = {plan.plan.plan_id: plan for plan in plans}
     baseline = next((plan for plan in plans if plan.plan.plan_id == "all_save"), plans[0] if plans else None)
-    selected_evaluated = next((plan for plan in plans if plan.plan.plan_id == result.selected_plan.plan_id), None)
+    selected_evaluated = plans_by_id.get(result.selected_plan.plan_id)
     diagnostic = None
     diagnostic_text = None
     if baseline is not None and selected_evaluated is not None:
@@ -37,6 +53,27 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             measured=result.executable,
         )
         diagnostic_text = render_diagnostic_text(diagnostic)
+    measured_candidate_rows = [
+        {
+            "plan_id": candidate.plan_id,
+            "peak_bytes": candidate.measured_peak_bytes,
+            "step_us": candidate.measured_step_us,
+            "correctness_passed": candidate.correctness_passed,
+            "prediction_error": _prediction_error_row(
+                plans_by_id.get(candidate.plan_id),
+                candidate.measured_peak_bytes,
+            ),
+        }
+        for candidate in result.measured_candidates
+    ]
+    correction_rows = [
+        row
+        for row in (
+            _prediction_error_row(plans_by_id.get(candidate.plan_id), candidate.measured_peak_bytes)
+            for candidate in result.measured_candidates
+        )
+        if row is not None
+    ]
     return {
         "selected_plan_id": result.selected_plan.plan_id,
         "fallback_plan_ids": result.fallback_plan_ids,
@@ -53,15 +90,11 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "correctness_passed": result.executable.correctness_passed,
             "phase_metrics": result.executable.phase_metrics,
         },
-        "measured_candidates": [
-            {
-                "plan_id": candidate.plan_id,
-                "peak_bytes": candidate.measured_peak_bytes,
-                "step_us": candidate.measured_step_us,
-                "correctness_passed": candidate.correctness_passed,
-            }
-            for candidate in result.measured_candidates
-        ],
+        "measured_candidates": measured_candidate_rows,
+        "topk_correction": {
+            "selected": _prediction_error_row(selected_evaluated, result.executable.measured_peak_bytes),
+            "candidates": correction_rows,
+        },
         "plans": [_plan_row(plan) for plan in plans],
         "diagnostic": None
         if diagnostic is None
