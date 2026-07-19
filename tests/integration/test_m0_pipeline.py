@@ -124,7 +124,7 @@ def test_isolated_candidate_failure_falls_back_to_next_candidate(monkeypatch):
         ),
     )
 
-    assert calls["count"] == 2
+    assert calls["count"] > 1
     assert result.executable.correctness_passed
     assert result.executable.plan_id != "all_save"
 

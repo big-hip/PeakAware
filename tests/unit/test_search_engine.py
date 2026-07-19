@@ -31,9 +31,44 @@ def test_search_plans_returns_ranked_evaluated_m0_plans():
 
     evaluated = search_plans(ir, fixed, budget_bytes=1 << 30, safety_margin_bytes=0, top_k=3)
 
-    assert len(evaluated) == 3
+    assert len(evaluated) == 6
     assert evaluated[0].feasible
     assert evaluated[0].plan.estimated_peak_bytes == evaluated[0].simulation.estimated_peak_bytes
     plan_ids = {plan.plan.plan_id for plan in evaluated}
-    assert "all_save" in plan_ids
-    assert plan_ids <= {"all_save", "mandatory_only", "manual_alternating", "greedy_drop_0", "greedy_drop_1"}
+    assert {"all_save", "torch_min_cut", "block_checkpoint"}.issubset(plan_ids)
+    assert plan_ids <= {
+        "all_save",
+        "torch_min_cut",
+        "block_checkpoint",
+        "greedy_drop_0",
+        "greedy_drop_1",
+        "greedy_drop_2",
+        "greedy_drop_3",
+    }
+
+
+def test_search_keeps_baselines_when_extra_candidates_are_topk_limited():
+    model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 1))
+    args = (torch.randn(2, 4),)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    request = TrainingRequest(
+        model=model,
+        example_args=args,
+        example_kwargs={},
+        loss_fn=lambda out: out.sum(),
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 30,
+        config=PeakAwareConfig(),
+        optimizer_spec=build_optimizer_spec(optimizer, model),
+        hardware=HardwareSpec("cpu", False, None),
+        request_key="test",
+    )
+    fixed, _ = analyze_coarse_feasibility(model, optimizer, 1 << 30)
+    capture = capture_joint_graph(request)
+    ir, _ = build_joint_ir(capture)
+
+    evaluated = search_plans(ir, fixed, budget_bytes=1 << 30, safety_margin_bytes=0, top_k=1)
+    plan_ids = tuple(plan.plan.plan_id for plan in evaluated)
+
+    assert plan_ids[:3] == ("all_save", "torch_min_cut", "block_checkpoint")
+    assert len(evaluated) == 4

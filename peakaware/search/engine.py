@@ -59,18 +59,19 @@ def _manual_default_plans(ir: JointTrainingIR, budget_bytes: int, safety_margin_
         budget_bytes=budget_bytes,
         saved_value_ids=_mandatory_value_ids(ir),
         safety_margin_bytes=safety_margin_bytes,
-        label="mandatory_only",
+        label="torch_min_cut",
     )
     middle_values = tuple(sorted(_all_forward_value_ids(ir) - _mandatory_value_ids(ir)))
-    half = frozenset(middle_values[::2]) | _mandatory_value_ids(ir)
-    alternating = build_recompute_plan(
+    checkpoint_boundary = max(1, len(middle_values) // 2)
+    checkpoint_values = frozenset(middle_values[:checkpoint_boundary]) | _mandatory_value_ids(ir)
+    block_checkpoint = build_recompute_plan(
         ir,
         budget_bytes=budget_bytes,
-        saved_value_ids=half,
+        saved_value_ids=checkpoint_values,
         safety_margin_bytes=safety_margin_bytes,
-        label="manual_alternating",
+        label="block_checkpoint",
     )
-    return (all_save, mandatory_only, alternating)
+    return (all_save, mandatory_only, block_checkpoint)
 
 
 def _greedy_seed_plans(
@@ -132,17 +133,17 @@ def search_plans(
     )
     hints = repair_hints + diagnostic_hints
     plans.extend(_greedy_seed_plans(ir, budget_bytes, safety_margin_bytes, cost_provider, hints))
-    evaluated = baseline_evaluated + [
+    searched = [
         evaluate_plan(ir, plan, fixed_timeline)
         for plan in plans[len(baseline_evaluated) :]
     ]
     from .repair import repair_to_budget
 
-    repaired = [repair_to_budget(ir, fixed_timeline, plan, hints=hints) for plan in evaluated if not plan.feasible]
+    repaired = [repair_to_budget(ir, fixed_timeline, plan, hints=hints) for plan in searched if not plan.feasible]
     unique: dict[str, EvaluatedPlan] = {}
-    for plan in evaluated + repaired:
+    for plan in select_pareto_topk(tuple(searched + repaired), top_k):
         unique.setdefault(plan.plan.plan_id, plan)
-    return select_pareto_topk(tuple(unique.values()), top_k)
+    return tuple(baseline_evaluated) + tuple(unique.values())
 
 
 def improve_feasible_plan(evaluated: EvaluatedPlan) -> EvaluatedPlan:

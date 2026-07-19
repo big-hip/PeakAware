@@ -97,7 +97,8 @@ def test_m1_search_returns_pareto_ranked_greedy_candidates():
     )
 
     assert evaluated
-    assert len(evaluated) <= 5
+    assert len(evaluated) <= 8
+    assert {plan.plan.plan_id for plan in evaluated[:3]} == {"all_save", "torch_min_cut", "block_checkpoint"}
     assert any(plan.plan.plan_id.startswith("greedy_drop_") for plan in evaluated)
     assert all(0 <= plan.plan.risk_score <= 1 for plan in evaluated)
     assert all(0 <= plan.plan.confidence <= 1 for plan in evaluated)
