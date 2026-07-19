@@ -10,6 +10,10 @@ from torch import Tensor, nn
 from peakaware.contracts import DryRunResult, JointTrainingIR, LoweredPartition
 
 
+class PartitionReplayUnsupported(RuntimeError):
+    pass
+
+
 def verify_partition_abi(lowered: LoweredPartition) -> tuple[bool, str | None]:
     abi = lowered.partition_abi
     if len(abi.fw_output_value_ids) != len(abi.bw_placeholder_value_ids):
@@ -183,6 +187,125 @@ def compare_dry_run_with_baseline(
         restore_all()
 
 
+def _placeholder_names(graph: torch.fx.GraphModule) -> tuple[str, ...]:
+    return tuple(str(node.target) for node in graph.graph.nodes if node.op == "placeholder")
+
+
+def _aot_partition_replay_supported(lowered: LoweredPartition, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
+    if kwargs:
+        return False
+    if any(not isinstance(arg, Tensor) for arg in args):
+        return False
+    fw_placeholders = _placeholder_names(lowered.fw_graph)
+    bw_placeholders = _placeholder_names(lowered.bw_graph)
+    return (
+        bool(fw_placeholders)
+        and bool(bw_placeholders)
+        and all(name.startswith("primals_") for name in fw_placeholders)
+        and any(name.startswith("tangents_") for name in bw_placeholders)
+    )
+
+
+def _as_tuple(value: Any) -> tuple[Any, ...]:
+    return value if isinstance(value, tuple) else (value,)
+
+
+def _loss_input_from_user_outputs(outputs: tuple[Any, ...]) -> Any:
+    if len(outputs) != 1:
+        return outputs
+    return outputs[0]
+
+
+def _detach_for_tangent(value: Any) -> Any:
+    if isinstance(value, Tensor):
+        return value.detach().requires_grad_(value.is_floating_point())
+    if isinstance(value, tuple):
+        return tuple(_detach_for_tangent(item) for item in value)
+    if isinstance(value, list):
+        return [_detach_for_tangent(item) for item in value]
+    raise PartitionReplayUnsupported("lowered partition replay only supports tensor outputs")
+
+
+def _flatten_tensors(value: Any) -> tuple[Tensor, ...]:
+    if isinstance(value, Tensor):
+        return (value,)
+    if isinstance(value, (tuple, list)):
+        tensors: list[Tensor] = []
+        for item in value:
+            tensors.extend(_flatten_tensors(item))
+        return tuple(tensors)
+    raise PartitionReplayUnsupported("lowered partition replay only supports tensor outputs")
+
+
+def compare_lowered_partition_with_baseline(
+    lowered: LoweredPartition,
+    model: nn.Module,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    loss_fn: Any,
+    *,
+    num_fwd_outputs: int = 1,
+    atol: float,
+    rtol: float,
+) -> tuple[bool, str | None]:
+    if not _aot_partition_replay_supported(lowered, args, kwargs):
+        raise PartitionReplayUnsupported("lowered partition replay requires AOT primals/tangents ABI")
+    if num_fwd_outputs < 1:
+        raise PartitionReplayUnsupported("lowered partition replay requires at least one FW user output")
+
+    original_model_state = _clone_model_state(model)
+    original_grads = _clone_grads(model)
+    cpu_rng = torch.get_rng_state()
+    cuda_rng = _cuda_rng_state()
+    params = tuple(model.parameters())
+    state_inputs = params + tuple(model.buffers())
+
+    def restore_all() -> None:
+        model.load_state_dict(original_model_state)
+        _restore_grads(model, original_grads)
+        _restore_rng(cpu_rng, cuda_rng)
+
+    try:
+        with _deterministic_backend_for_comparison():
+            restore_all()
+            _zero_grads(model)
+            baseline_loss = loss_fn(model(*args, **kwargs))
+            if baseline_loss.ndim != 0:
+                return False, "loss_fn must return a scalar tensor"
+            baseline_loss.backward()
+            baseline_grads = _clone_grads(model)
+
+            restore_all()
+            _zero_grads(model)
+            fw_outputs = _as_tuple(lowered.fw_graph(*(state_inputs + args)))
+            if len(fw_outputs) < num_fwd_outputs:
+                return False, "lowered FW graph returned fewer user outputs than expected"
+            user_outputs = fw_outputs[:num_fwd_outputs]
+            saved_for_bw = fw_outputs[num_fwd_outputs:]
+            tangent_outputs = _detach_for_tangent(_loss_input_from_user_outputs(user_outputs))
+            candidate_loss = loss_fn(tangent_outputs)
+            if candidate_loss.ndim != 0:
+                return False, "loss_fn must return a scalar tensor"
+            tangent_tensors = _flatten_tensors(tangent_outputs)
+            tangents = torch.autograd.grad(candidate_loss, tangent_tensors, allow_unused=False)
+            bw_outputs = _as_tuple(lowered.bw_graph(*(saved_for_bw + tuple(tangents))))
+
+        if not torch.allclose(baseline_loss.detach(), candidate_loss.detach(), atol=atol, rtol=rtol):
+            return False, "loss mismatch"
+        if len(bw_outputs) < len(params):
+            return False, "lowered BW graph returned fewer gradients than model parameters"
+        for index, (expected, actual) in enumerate(zip(baseline_grads, bw_outputs[: len(params)])):
+            if expected is None and actual is None:
+                continue
+            if expected is None or actual is None:
+                return False, f"gradient presence mismatch at parameter {index}"
+            if not torch.allclose(expected, actual, atol=atol, rtol=rtol):
+                return False, f"lowered gradient mismatch at parameter {index}"
+        return True, None
+    finally:
+        restore_all()
+
+
 def compare_multistep_training_with_baseline(
     model: nn.Module,
     args: tuple[Any, ...],
@@ -258,6 +381,7 @@ def run_aot_eager_dry_run(
     atol: float,
     rtol: float,
     ir: JointTrainingIR | None = None,
+    num_fwd_outputs: int = 1,
 ) -> DryRunResult:
     if ir is None:
         structure_valid, structure_reason = verify_partition_abi(lowered)
@@ -273,7 +397,19 @@ def run_aot_eager_dry_run(
     cpu_rng = torch.get_rng_state()
     cuda_rng = _cuda_rng_state()
     try:
-        ok, reason = compare_dry_run_with_baseline(model, args, kwargs, loss_fn, atol=atol, rtol=rtol)
+        try:
+            ok, reason = compare_lowered_partition_with_baseline(
+                lowered,
+                model,
+                args,
+                kwargs,
+                loss_fn,
+                num_fwd_outputs=num_fwd_outputs,
+                atol=atol,
+                rtol=rtol,
+            )
+        except PartitionReplayUnsupported:
+            ok, reason = compare_dry_run_with_baseline(model, args, kwargs, loss_fn, atol=atol, rtol=rtol)
     except Exception as exc:
         _restore_rng(cpu_rng, cuda_rng)
         return DryRunResult(lowered.plan_id, True, False, False, False, str(exc))

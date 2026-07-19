@@ -313,6 +313,7 @@ def _dry_run_candidate(
     example_kwargs: dict[str, Any],
     loss_fn: Callable[..., Tensor],
     config: PeakAwareConfig,
+    num_fwd_outputs: int = 1,
 ) -> DryRunResult:
     return run_aot_eager_dry_run(
         lowered,
@@ -323,6 +324,7 @@ def _dry_run_candidate(
         atol=config.atol,
         rtol=config.rtol,
         ir=ir,
+        num_fwd_outputs=num_fwd_outputs,
     )
 
 
@@ -392,6 +394,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         example_kwargs=example_kwargs,
         loss_fn=loss_fn,
         config=config,
+        num_fwd_outputs=capture.num_fwd_outputs,
     )
     if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
         return _CandidateValidation(dry_run=dry_run, measurement=None)

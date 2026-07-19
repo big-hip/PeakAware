@@ -15,6 +15,7 @@ from peakaware.ir.builder import build_joint_ir
 from peakaware.memory.fixed_frontier import build_optimizer_spec
 from peakaware.partition.aot import partition_joint_graph
 from peakaware.partition.verifier import (
+    compare_lowered_partition_with_baseline,
     compare_dry_run_with_baseline,
     compare_multistep_training_with_baseline,
     run_aot_eager_dry_run,
@@ -242,6 +243,172 @@ def test_saved_value_policy_changes_aot_partition_shape():
         mandatory_partition.partition_abi.fw_output_value_ids
         != all_save_partition.partition_abi.fw_output_value_ids
     )
+
+
+def test_lowered_aot_partition_replay_matches_baseline_gradients():
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 1))
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    args = (torch.randn(2, 4),)
+    request = TrainingRequest(
+        model=model,
+        example_args=args,
+        example_kwargs={},
+        loss_fn=lambda out: out.sum(),
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 30,
+        config=PeakAwareConfig(capture_backend="aot"),
+        optimizer_spec=build_optimizer_spec(optimizer, model),
+        hardware=HardwareSpec("cpu", False, None),
+        request_key="partition-replay",
+    )
+    capture = capture_joint_graph(request)
+    ir, report = build_joint_ir(capture)
+    assert report.valid
+    plan = build_recompute_plan(
+        ir,
+        budget_bytes=1 << 30,
+        saved_value_ids=frozenset(value.id for value in ir.values if value.phase == "fw"),
+        label="all_save",
+    )
+    lowered = partition_joint_graph(
+        capture.joint_module,
+        plan,
+        ir,
+        num_fwd_outputs=capture.num_fwd_outputs,
+        static_lifetime_input_indices=capture.static_lifetime_input_indices,
+    )
+
+    ok, reason = compare_lowered_partition_with_baseline(
+        lowered,
+        model,
+        args,
+        {},
+        lambda out: out.sum(),
+        num_fwd_outputs=capture.num_fwd_outputs,
+        atol=1e-5,
+        rtol=1e-4,
+    )
+
+    assert ok, reason
+
+
+def test_lowered_aot_partition_replay_passes_model_buffers_as_primals():
+    torch.manual_seed(0)
+    model = nn.Sequential(
+        nn.Linear(4, 4),
+        nn.BatchNorm1d(4),
+        nn.ReLU(),
+        nn.Linear(4, 1),
+    )
+    model.eval()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    args = (torch.randn(3, 4),)
+    request = TrainingRequest(
+        model=model,
+        example_args=args,
+        example_kwargs={},
+        loss_fn=lambda out: out.pow(2).mean(),
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 30,
+        config=PeakAwareConfig(capture_backend="aot"),
+        optimizer_spec=build_optimizer_spec(optimizer, model),
+        hardware=HardwareSpec("cpu", False, None),
+        request_key="partition-replay-buffers",
+    )
+    capture = capture_joint_graph(request)
+    ir, report = build_joint_ir(capture)
+    assert report.valid
+    plan = build_recompute_plan(
+        ir,
+        budget_bytes=1 << 30,
+        saved_value_ids=frozenset(value.id for value in ir.values if value.phase == "fw"),
+        label="all_save",
+    )
+    lowered = partition_joint_graph(
+        capture.joint_module,
+        plan,
+        ir,
+        num_fwd_outputs=capture.num_fwd_outputs,
+        static_lifetime_input_indices=capture.static_lifetime_input_indices,
+    )
+
+    ok, reason = compare_lowered_partition_with_baseline(
+        lowered,
+        model,
+        args,
+        {},
+        lambda out: out.pow(2).mean(),
+        num_fwd_outputs=capture.num_fwd_outputs,
+        atol=1e-5,
+        rtol=1e-4,
+    )
+
+    assert ok, reason
+
+
+def test_lowered_aot_partition_replay_detects_bad_backward_gradient():
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 1))
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    args = (torch.randn(2, 4),)
+    request = TrainingRequest(
+        model=model,
+        example_args=args,
+        example_kwargs={},
+        loss_fn=lambda out: out.sum(),
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 30,
+        config=PeakAwareConfig(capture_backend="aot"),
+        optimizer_spec=build_optimizer_spec(optimizer, model),
+        hardware=HardwareSpec("cpu", False, None),
+        request_key="partition-replay-bad",
+    )
+    capture = capture_joint_graph(request)
+    ir, report = build_joint_ir(capture)
+    assert report.valid
+    plan = build_recompute_plan(
+        ir,
+        budget_bytes=1 << 30,
+        saved_value_ids=frozenset(value.id for value in ir.values if value.phase == "fw"),
+        label="all_save",
+    )
+    lowered = partition_joint_graph(
+        capture.joint_module,
+        plan,
+        ir,
+        num_fwd_outputs=capture.num_fwd_outputs,
+        static_lifetime_input_indices=capture.static_lifetime_input_indices,
+    )
+
+    class BadBackward:
+        graph = lowered.bw_graph.graph
+
+        def __call__(self, *inputs):
+            outputs = list(lowered.bw_graph(*inputs))
+            outputs[0] = torch.zeros_like(outputs[0])
+            return tuple(outputs)
+
+    bad = LoweredPartition(
+        lowered.plan_id,
+        lowered.fw_graph,
+        BadBackward(),
+        lowered.partition_abi,
+    )
+
+    ok, reason = compare_lowered_partition_with_baseline(
+        bad,
+        model,
+        args,
+        {},
+        lambda out: out.sum(),
+        num_fwd_outputs=capture.num_fwd_outputs,
+        atol=1e-5,
+        rtol=1e-4,
+    )
+
+    assert not ok
+    assert reason == "lowered gradient mismatch at parameter 0"
 
 
 def test_dry_run_rejects_unknown_partition_abi_value():
