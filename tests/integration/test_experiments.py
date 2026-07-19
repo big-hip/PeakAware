@@ -11,9 +11,11 @@ from peakaware.contracts import TrainingTaskSpec
 from peakaware.experiments import (
     ExperimentRecord,
     run_experiment_matrix,
+    summarize_hint_ablation,
     summarize_experiment_records,
     summarize_experiment_records_by_variant,
     write_experiment_csv,
+    write_experiment_hint_ablation_json,
     write_experiment_json,
     write_experiment_summary_json,
     write_experiment_variant_summary_json,
@@ -53,14 +55,18 @@ def _minimal_record(
     budget_bytes: int,
     measured_peak_bytes: int | None,
     samples_per_second: float | None = None,
+    variant_name: str | None = None,
+    diagnostic_hints_enabled: bool | None = None,
 ) -> ExperimentRecord:
+    variant_name = variant_name or ("diagnostic_hints_on" if status == "ok" else "failed")
+    diagnostic_hints_enabled = status == "ok" if diagnostic_hints_enabled is None else diagnostic_hints_enabled
     return ExperimentRecord(
-        variant_name="diagnostic_hints_on" if status == "ok" else "failed",
+        variant_name=variant_name,
         config_fingerprint={
             "top_k": 1,
             "device": "cpu",
             "selection_objective": "min_peak_then_time",
-            "enable_diagnostic_hints": status == "ok",
+            "enable_diagnostic_hints": diagnostic_hints_enabled,
         },
         task_name="synthetic",
         microbatch_size=1,
@@ -118,7 +124,7 @@ def _minimal_record(
         actual_joint_capture_count=1 if status == "ok" else 0,
         candidate_count=1 if status == "ok" else 0,
         fallback_plan_ids=(),
-        diagnostic_hints_enabled=True if status == "ok" else None,
+        diagnostic_hints_enabled=diagnostic_hints_enabled if status == "ok" else None,
         diagnostic_hint_count=2 if status == "ok" else 0,
         diagnostic_hint_kinds=("SAVE_PEAK_STORAGE",) if status == "ok" else (),
         repaired_candidate_count=1 if status == "ok" else 0,
@@ -192,6 +198,45 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     )
     assert set(variant_summaries) == {"diagnostic_hints_on", "failed"}
     assert variant_summaries["diagnostic_hints_on"].ok_records == 1
+
+
+def test_hint_ablation_summary_pairs_on_off_variants():
+    records = (
+        _minimal_record(
+            status="ok",
+            budget_bytes=100,
+            measured_peak_bytes=80,
+            samples_per_second=12.0,
+            variant_name="diagnostic_hints_on",
+            diagnostic_hints_enabled=True,
+        ),
+        _minimal_record(
+            status="ok",
+            budget_bytes=100,
+            measured_peak_bytes=120,
+            samples_per_second=10.0,
+            variant_name="diagnostic_hints_off",
+            diagnostic_hints_enabled=False,
+        ),
+        _minimal_record(
+            status="ok",
+            budget_bytes=100,
+            measured_peak_bytes=80,
+            samples_per_second=11.0,
+            variant_name="unpaired",
+            diagnostic_hints_enabled=True,
+        ),
+    )
+
+    summary = summarize_hint_ablation(records)
+
+    assert summary["pair_count"] == 1
+    assert summary["both_ok_count"] == 1
+    assert summary["success_rate_delta"] == 0.0
+    assert summary["mean_samples_per_second_delta"] == 2.0
+    assert summary["rows"][0]["budget_violation_delta"] == -1
+    assert summary["rows"][0]["conclusion"] == "improved_budget"
+    assert summary["conclusion_counts"] == {"improved_budget": 1}
 
 
 def test_experiment_matrix_writes_json_and_csv(tmp_path):
@@ -293,11 +338,13 @@ def test_experiment_writers_create_parent_directories(tmp_path):
     write_experiment_csv(records, base / "records.csv")
     write_experiment_summary_json(summary, base / "summary.json")
     write_experiment_variant_summary_json(variant_summaries, base / "variant_summary.json")
+    write_experiment_hint_ablation_json(records, base / "hint_ablation.json")
 
     assert (base / "records.json").exists()
     assert (base / "records.csv").exists()
     assert (base / "summary.json").exists()
     assert (base / "variant_summary.json").exists()
+    assert (base / "hint_ablation.json").exists()
 
 
 def test_experiment_matrix_can_include_exact_small_graph_baseline():
@@ -341,6 +388,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     csv_path = tmp_path / "records.csv"
     summary_path = tmp_path / "summary.json"
     variant_summary_path = tmp_path / "variant_summary.json"
+    hint_ablation_path = tmp_path / "hint_ablation.json"
     completed = subprocess.run(
         [
             sys.executable,
@@ -372,6 +420,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             str(summary_path),
             "--output-variant-summary-json",
             str(variant_summary_path),
+            "--output-hint-ablation-json",
+            str(hint_ablation_path),
         ],
         check=True,
         text=True,
@@ -382,6 +432,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     file_payload = json.loads(json_path.read_text(encoding="utf-8"))
     summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
     variant_summary_payload = json.loads(variant_summary_path.read_text(encoding="utf-8"))
+    hint_ablation_payload = json.loads(hint_ablation_path.read_text(encoding="utf-8"))
 
     assert len(stdout_payload) == 2
     assert {record["variant_name"] for record in stdout_payload} == {
@@ -418,6 +469,18 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert set(variant_summary_payload) == {"diagnostic_hints_off", "diagnostic_hints_on"}
     assert variant_summary_payload["diagnostic_hints_on"]["ok_records"] == 1
     assert variant_summary_payload["diagnostic_hints_off"]["ok_records"] == 1
+    assert hint_ablation_payload["pair_count"] == 1
+    assert hint_ablation_payload["rows"][0]["conclusion"] in {
+        "improved_budget",
+        "improved_search",
+        "improved_success",
+        "improved_throughput",
+        "neutral",
+        "regressed_budget",
+        "regressed_search",
+        "regressed_success",
+        "regressed_throughput",
+    }
     assert summary_payload["selected_prediction_count"] == 2
     assert summary_payload["mean_selected_samples_per_second_speedup_vs_all_save"] is not None
     assert "phase_classification_count" in summary_payload

@@ -8,6 +8,7 @@ from .experiments import (
     ExperimentRecord,
     ExperimentSummary,
     run_experiment_matrix,
+    summarize_hint_ablation,
     summarize_experiment_records,
     summarize_experiment_records_by_variant,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "render_text_report",
     "StepResult",
     "summarize_plan_artifact",
+    "summarize_hint_ablation",
     "summarize_experiment_records",
     "summarize_experiment_records_by_variant",
     "summarize_result",

@@ -776,6 +776,122 @@ def experiment_variant_summaries_to_dict(
     return {variant_name: experiment_summary_to_dict(summary) for variant_name, summary in summaries.items()}
 
 
+def _record_pair_key(record: ExperimentRecord) -> tuple[str, int, int]:
+    return (record.task_name, record.microbatch_size, record.budget_bytes)
+
+
+def _metric_delta(on_value: float | int | None, off_value: float | int | None) -> float | None:
+    if on_value is None or off_value is None:
+        return None
+    return float(on_value) - float(off_value)
+
+
+def _mean_optional(values: list[float | None]) -> float | None:
+    filtered = [value for value in values if value is not None]
+    return _mean(filtered)
+
+
+def _hint_pair_conclusion(row: dict[str, Any]) -> str:
+    if row["on_status"] == "ok" and row["off_status"] != "ok":
+        return "improved_success"
+    if row["on_status"] != "ok" and row["off_status"] == "ok":
+        return "regressed_success"
+    if row["on_status"] != "ok" or row["off_status"] != "ok":
+        return "inconclusive"
+    violation_delta = row["budget_violation_delta"]
+    throughput_delta = row["samples_per_second_delta"]
+    candidate_delta = row["candidate_count_delta"]
+    if violation_delta is not None and violation_delta < 0:
+        return "improved_budget"
+    if throughput_delta is not None and throughput_delta > 0:
+        return "improved_throughput"
+    if candidate_delta is not None and candidate_delta < 0:
+        return "improved_search"
+    if violation_delta is not None and violation_delta > 0:
+        return "regressed_budget"
+    if throughput_delta is not None and throughput_delta < 0:
+        return "regressed_throughput"
+    if candidate_delta is not None and candidate_delta > 0:
+        return "regressed_search"
+    return "neutral"
+
+
+def summarize_hint_ablation(records: tuple[ExperimentRecord, ...]) -> dict[str, Any]:
+    by_variant: dict[str, dict[tuple[str, int, int], ExperimentRecord]] = {
+        "diagnostic_hints_on": {},
+        "diagnostic_hints_off": {},
+    }
+    for record in records:
+        if record.variant_name in by_variant:
+            by_variant[record.variant_name][_record_pair_key(record)] = record
+    paired_keys = sorted(set(by_variant["diagnostic_hints_on"]) & set(by_variant["diagnostic_hints_off"]))
+    rows: list[dict[str, Any]] = []
+    for task_name, microbatch_size, budget_bytes in paired_keys:
+        on_record = by_variant["diagnostic_hints_on"][(task_name, microbatch_size, budget_bytes)]
+        off_record = by_variant["diagnostic_hints_off"][(task_name, microbatch_size, budget_bytes)]
+        row = {
+            "task_name": task_name,
+            "microbatch_size": microbatch_size,
+            "budget_bytes": budget_bytes,
+            "on_status": on_record.status,
+            "off_status": off_record.status,
+            "success_delta": int(on_record.status == "ok") - int(off_record.status == "ok"),
+            "budget_violation_delta": int(
+                on_record.status == "ok"
+                and on_record.measured_peak_bytes is not None
+                and on_record.measured_peak_bytes > on_record.budget_bytes
+            )
+            - int(
+                off_record.status == "ok"
+                and off_record.measured_peak_bytes is not None
+                and off_record.measured_peak_bytes > off_record.budget_bytes
+            ),
+            "samples_per_second_delta": _metric_delta(on_record.samples_per_second, off_record.samples_per_second),
+            "measured_step_us_delta": _metric_delta(on_record.measured_step_us, off_record.measured_step_us),
+            "measured_peak_bytes_delta": _metric_delta(on_record.measured_peak_bytes, off_record.measured_peak_bytes),
+            "candidate_count_delta": _metric_delta(on_record.candidate_count, off_record.candidate_count),
+            "measured_candidate_count_delta": _metric_delta(
+                on_record.measured_candidate_count,
+                off_record.measured_candidate_count,
+            ),
+            "repair_success_count_delta": _metric_delta(
+                on_record.repair_success_count,
+                off_record.repair_success_count,
+            ),
+            "diagnostic_hint_count_delta": _metric_delta(
+                on_record.diagnostic_hint_count,
+                off_record.diagnostic_hint_count,
+            ),
+        }
+        row["conclusion"] = _hint_pair_conclusion(row)
+        rows.append(row)
+    conclusion_counts = _counts([row["conclusion"] for row in rows])
+    return {
+        "pair_count": len(rows),
+        "both_ok_count": sum(1 for row in rows if row["on_status"] == "ok" and row["off_status"] == "ok"),
+        "on_success_count": sum(1 for row in rows if row["on_status"] == "ok"),
+        "off_success_count": sum(1 for row in rows if row["off_status"] == "ok"),
+        "success_rate_delta": None
+        if not rows
+        else (
+            sum(1 for row in rows if row["on_status"] == "ok")
+            - sum(1 for row in rows if row["off_status"] == "ok")
+        )
+        / len(rows),
+        "mean_samples_per_second_delta": _mean_optional([row["samples_per_second_delta"] for row in rows]),
+        "mean_measured_step_us_delta": _mean_optional([row["measured_step_us_delta"] for row in rows]),
+        "mean_measured_peak_bytes_delta": _mean_optional([row["measured_peak_bytes_delta"] for row in rows]),
+        "mean_candidate_count_delta": _mean_optional([row["candidate_count_delta"] for row in rows]),
+        "mean_measured_candidate_count_delta": _mean_optional(
+            [row["measured_candidate_count_delta"] for row in rows]
+        ),
+        "mean_repair_success_count_delta": _mean_optional([row["repair_success_count_delta"] for row in rows]),
+        "mean_diagnostic_hint_count_delta": _mean_optional([row["diagnostic_hint_count_delta"] for row in rows]),
+        "conclusion_counts": conclusion_counts,
+        "rows": rows,
+    }
+
+
 def _ensure_parent_dir(path: str | Path) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -797,6 +913,11 @@ def write_experiment_variant_summary_json(
     path: str | Path,
 ) -> None:
     text = json.dumps(experiment_variant_summaries_to_dict(summaries), indent=2, sort_keys=True)
+    _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
+
+
+def write_experiment_hint_ablation_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
+    text = json.dumps(summarize_hint_ablation(records), indent=2, sort_keys=True)
     _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 
