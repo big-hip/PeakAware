@@ -4,7 +4,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from peakaware.cost.base import OpCost, OpSignature
+from peakaware.cost.base import OpCost, OpSignature, current_hardware_version, current_software_version
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,8 @@ def _signature_hash(signature: OpSignature) -> str:
 class ProfileDB:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        self.hardware_version = current_hardware_version()
+        self.software_version = current_software_version()
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
@@ -70,7 +72,14 @@ class ProfileDB:
         sample_count, p50_us, p90_us, mean_us, workspace_bytes = row
         del p90_us, mean_us
         confidence = 1.0 if sample_count >= 10 else 0.8
-        return OpCost(float(p50_us), int(workspace_bytes), "profile_db", confidence)
+        return OpCost(
+            float(p50_us),
+            int(workspace_bytes),
+            "profile_db",
+            confidence,
+            hardware_version=self.hardware_version,
+            software_version=self.software_version,
+        )
 
     def lookup_nearest(self, signature: OpSignature) -> OpCost | None:
         target_bytes = max(signature.input_bytes + signature.output_bytes, 1)
@@ -90,7 +99,14 @@ class ProfileDB:
         sample_count, p50_us, workspace_bytes, source_bytes = row
         scale = target_bytes / max(int(source_bytes), 1)
         confidence = 0.8 if sample_count >= 10 else 0.6
-        return OpCost(float(p50_us) * scale, int(workspace_bytes * scale), "profile_db_interpolated", confidence)
+        return OpCost(
+            float(p50_us) * scale,
+            int(workspace_bytes * scale),
+            "profile_db_interpolated",
+            confidence,
+            hardware_version=self.hardware_version,
+            software_version=self.software_version,
+        )
 
     def upsert_profile(self, signature: OpSignature, record: ProfileRecord) -> None:
         signature_hash = _signature_hash(signature)
@@ -140,7 +156,14 @@ class ExactProfileProvider:
         cost = self.db.lookup_exact(signature)
         if cost is None:
             return None
-        return OpCost(cost.estimated_us, cost.memory_bytes, self.source, cost.confidence)
+        return OpCost(
+            cost.estimated_us,
+            cost.memory_bytes,
+            self.source,
+            cost.confidence,
+            hardware_version=cost.hardware_version,
+            software_version=cost.software_version,
+        )
 
 
 class InterpolatedProfileProvider:

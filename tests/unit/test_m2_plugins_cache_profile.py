@@ -13,7 +13,7 @@ from peakaware.cache.executable import (
 from peakaware.cache.keys import build_compiled_artifact_key, build_plan_evaluation_key
 from peakaware.cache.store import CacheEntry, invalidate_downstream, load_cache_entry, store_cache_entry
 from peakaware.contracts import MeasuredExecutable
-from peakaware.cost.base import OpCost, OpSignature, RooflineFallbackProvider
+from peakaware.cost.base import OpCost, OpSignature, RooflineFallbackProvider, StaticCostProvider
 from peakaware.cost.collector import (
     collect_microbenchmark,
     collect_model_trace,
@@ -21,6 +21,7 @@ from peakaware.cost.collector import (
     summarize_samples,
 )
 from peakaware.cost.composite import CompositeCostProvider, build_composite_provider
+from peakaware.cost.legacy_adapter import LegacyCostmodelAdapter
 from peakaware.cost.profile_db import ExactProfileProvider, InterpolatedProfileProvider, ProfileDB, ProfileRecord
 from peakaware.errors import PatchRestoreError, PluginConflictError
 from peakaware.plugins import ServiceKind, build_default_registry
@@ -216,6 +217,8 @@ def test_profile_db_exact_lookup_round_trip(tmp_path):
     assert cost.estimated_us == 3.5
     assert cost.memory_bytes == 64
     assert cost.confidence == 1.0
+    assert cost.hardware_version != "unknown"
+    assert cost.software_version.startswith("torch:")
 
 
 def test_profile_collector_summarizes_samples_and_writes_db(tmp_path):
@@ -269,6 +272,8 @@ def test_profile_db_nearest_interpolates_same_target_and_dtype(tmp_path):
     assert interpolated is not None
     assert interpolated.source == "profile_db_interpolated"
     assert interpolated.estimated_us == 20.0
+    assert interpolated.hardware_version != "unknown"
+    assert interpolated.software_version.startswith("torch:")
     assert db.lookup_nearest(other_dtype) is None
 
 
@@ -294,6 +299,24 @@ def test_composite_cost_provider_uses_exact_then_interpolation_then_fallback(tmp
     assert nearby_cost is not None and nearby_cost.cost.source == "profile_db_interpolated"
     assert missing_cost is not None and missing_cost.cost.source == "roofline_fallback"
     assert missing_cost.cost.estimated_us > 1.0
+    assert exact_cost.cost.hardware_version != "unknown"
+    assert nearby_cost.cost.software_version.startswith("torch:")
+    assert missing_cost.cost.hardware_version != "unknown"
+
+
+def test_builtin_cost_providers_attach_hardware_and_software_provenance():
+    signature = OpSignature("add", "aten.add", 8, 8, "float32")
+    static = StaticCostProvider().estimate(signature)
+    legacy = LegacyCostmodelAdapter().estimate(signature)
+    roofline = RooflineFallbackProvider().estimate(signature)
+
+    assert static.hardware_version == "generic"
+    assert static.software_version.startswith("torch:")
+    assert legacy is not None
+    assert legacy.hardware_version == static.hardware_version
+    assert legacy.software_version == static.software_version
+    assert roofline.hardware_version != "unknown"
+    assert roofline.software_version.startswith("torch:")
 
 
 def test_build_composite_provider_adds_roofline_tail():

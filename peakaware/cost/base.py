@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+import torch
+
 from peakaware.contracts import JointTrainingIR, OpInfo
 
 
@@ -21,6 +23,22 @@ class OpCost:
     memory_bytes: int
     source: str
     confidence: float
+    hardware_version: str = "unknown"
+    software_version: str = "unknown"
+
+
+def current_hardware_version() -> str:
+    if not torch.cuda.is_available():
+        return "cpu"
+    device = torch.cuda.current_device()
+    properties = torch.cuda.get_device_properties(device)
+    capability = ".".join(str(item) for item in torch.cuda.get_device_capability(device))
+    return f"cuda:{properties.name}:sm{capability}"
+
+
+def current_software_version() -> str:
+    cuda = "cpu" if torch.version.cuda is None else f"cuda:{torch.version.cuda}"
+    return f"torch:{torch.__version__};{cuda}"
 
 
 class CostProvider(Protocol):
@@ -48,6 +66,8 @@ class StaticCostProvider:
             memory_bytes=signature.output_bytes,
             source=self.source,
             confidence=0.55,
+            hardware_version="generic",
+            software_version=current_software_version(),
         )
 
 
@@ -66,7 +86,14 @@ class RooflineFallbackProvider:
         tensor_bytes = max(signature.input_bytes + signature.output_bytes, 1)
         latency = self.launch_overhead_us + tensor_bytes / self.bandwidth_bytes_per_us
         workspace = max(0, signature.output_bytes // 8)
-        return OpCost(latency, workspace, self.source, 0.2)
+        return OpCost(
+            latency,
+            workspace,
+            self.source,
+            0.2,
+            hardware_version=current_hardware_version(),
+            software_version=current_software_version(),
+        )
 
 
 def signature_for_op(ir: JointTrainingIR, op: OpInfo) -> OpSignature:

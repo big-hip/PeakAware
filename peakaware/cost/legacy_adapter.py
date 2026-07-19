@@ -24,6 +24,8 @@ class LegacyCostmodelAdapter:
             memory_bytes=result.memory_bytes,
             source="legacy_adapter:static_fallback",
             confidence=min(result.confidence, 0.5),
+            hardware_version=result.hardware_version,
+            software_version=result.software_version,
         )
 
 
