@@ -20,6 +20,7 @@ from peakaware.partition.verifier import (
     compare_multistep_training_with_baseline,
     run_aot_eager_dry_run,
 )
+from peakaware.runtime.executor import build_aot_partition_executable
 from peakaware.search.plan import build_recompute_plan
 
 
@@ -293,6 +294,55 @@ def test_lowered_aot_partition_replay_matches_baseline_gradients():
     )
 
     assert ok, reason
+
+
+def test_lowered_aot_partition_executable_matches_eager_backward():
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 1))
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    args = (torch.randn(2, 4),)
+    request = TrainingRequest(
+        model=model,
+        example_args=args,
+        example_kwargs={},
+        loss_fn=lambda out: out.pow(2).mean(),
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 30,
+        config=PeakAwareConfig(capture_backend="aot"),
+        optimizer_spec=build_optimizer_spec(optimizer, model),
+        hardware=HardwareSpec("cpu", False, None),
+        request_key="partition-executable",
+    )
+    capture = capture_joint_graph(request)
+    ir, report = build_joint_ir(capture)
+    assert report.valid
+    plan = build_recompute_plan(
+        ir,
+        budget_bytes=1 << 30,
+        saved_value_ids=frozenset(value.id for value in ir.values if value.phase == "fw"),
+        label="all_save",
+    )
+    lowered = partition_joint_graph(
+        capture.joint_module,
+        plan,
+        ir,
+        num_fwd_outputs=capture.num_fwd_outputs,
+        static_lifetime_input_indices=capture.static_lifetime_input_indices,
+    )
+    executable = build_aot_partition_executable(lowered, model, num_fwd_outputs=capture.num_fwd_outputs)
+
+    optimizer.zero_grad(set_to_none=True)
+    eager_loss = request.loss_fn(model(*args))
+    eager_loss.backward()
+    eager_grads = tuple(param.grad.detach().clone() for param in model.parameters())
+    optimizer.zero_grad(set_to_none=True)
+    partition_loss = request.loss_fn(executable(*args))
+    partition_loss.backward()
+    partition_grads = tuple(param.grad.detach().clone() for param in model.parameters())
+
+    assert torch.allclose(partition_loss.detach(), eager_loss.detach(), atol=1e-6, rtol=1e-5)
+    for actual, expected in zip(partition_grads, eager_grads):
+        assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
 
 
 def test_lowered_aot_partition_replay_passes_model_buffers_as_primals():

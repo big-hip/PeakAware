@@ -1228,7 +1228,11 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["selected_effective_saved_value_ids"]
     assert stdout_payload[0]["measured_plan_results"]
     assert any(
-        row["plan_id"] != "all_save" and row["phase_metrics"].get("activation_checkpoint") == 1
+        row["plan_id"] != "all_save"
+        and (
+            row["phase_metrics"].get("activation_checkpoint") == 1
+            or row["phase_metrics"].get("aot_partition_runtime") == 1
+        )
         for row in stdout_payload[0]["measured_plan_results"]
     )
     assert stdout_payload[0]["diagnostic_counterfactuals"]

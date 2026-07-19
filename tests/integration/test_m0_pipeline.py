@@ -80,12 +80,17 @@ def test_optimize_training_builds_executor_and_runs_step():
     }.issubset(result.executable.phase_metrics)
     assert len(result.measured_candidates) >= 2
     assert any(
-        candidate.plan_id != "all_save" and candidate.phase_metrics.get("activation_checkpoint") == 1
+        candidate.plan_id != "all_save"
+        and (
+            candidate.phase_metrics.get("activation_checkpoint") == 1
+            or candidate.phase_metrics.get("aot_partition_runtime") == 1
+        )
         for candidate in result.measured_candidates
     )
     assert result.executable.plan_id in {candidate.plan_id for candidate in result.measured_candidates}
     assert result.executor.current_plan_id == result.selected_plan.plan_id
     assert result.executor.activation_checkpoint == bool(result.executable.phase_metrics.get("activation_checkpoint", 0))
+    assert result.executor.aot_partition_runtime == bool(result.executable.phase_metrics.get("aot_partition_runtime", 0))
     assert result.executor.selection_objective == "min_peak_then_time"
     assert result.executor.runtime_peak_threshold_bytes is not None
     assert result.executor.runtime_peak_threshold_bytes <= 1 << 28
@@ -96,6 +101,14 @@ def test_optimize_training_builds_executor_and_runs_step():
     }
     assert result.executor.fallback_activation_checkpoints == {
         plan_id: measured_checkpoint_by_plan[plan_id]
+        for plan_id in result.fallback_plan_ids
+    }
+    measured_aot_runtime_by_plan = {
+        candidate.plan_id: bool(candidate.phase_metrics.get("aot_partition_runtime", 0))
+        for candidate in result.measured_candidates
+    }
+    assert result.executor.fallback_aot_partition_runtimes == {
+        plan_id: measured_aot_runtime_by_plan[plan_id]
         for plan_id in result.fallback_plan_ids
     }
     assert result.dry_run is not None and result.dry_run.gradients_match

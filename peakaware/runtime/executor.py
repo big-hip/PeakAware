@@ -6,7 +6,7 @@ import torch
 from torch import Tensor, nn
 
 from peakaware.config import PeakAwareConfig
-from peakaware.contracts import GuardSpec, MeasuredExecutable, StepResult
+from peakaware.contracts import GuardSpec, LoweredPartition, MeasuredExecutable, StepResult
 from peakaware.runtime.measure import measure_training_step_phases
 
 
@@ -77,6 +77,8 @@ class EagerTrainingStepExecutor:
         selection_objective: str = "unconfigured",
         activation_checkpoint: bool = False,
         fallback_activation_checkpoints: dict[str, bool] | None = None,
+        aot_partition_runtime: bool = False,
+        fallback_aot_partition_runtimes: dict[str, bool] | None = None,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -91,6 +93,8 @@ class EagerTrainingStepExecutor:
         self.selection_objective = selection_objective
         self.activation_checkpoint = activation_checkpoint
         self.fallback_activation_checkpoints = dict(fallback_activation_checkpoints or {})
+        self.aot_partition_runtime = aot_partition_runtime
+        self.fallback_aot_partition_runtimes = dict(fallback_aot_partition_runtimes or {})
 
     def step(self, *args: Any, **kwargs: Any) -> StepResult:
         validate_runtime_guards(self.guards, args, kwargs)
@@ -107,6 +111,7 @@ class EagerTrainingStepExecutor:
             "runtime_peak_bytes": peak_bytes,
             "runtime_peak_threshold_bytes": self.runtime_peak_threshold_bytes,
             "activation_checkpoint": int(self.activation_checkpoint),
+            "aot_partition_runtime": int(self.aot_partition_runtime),
         }
         if self.runtime_peak_threshold_bytes is not None and peak_bytes > self.runtime_peak_threshold_bytes:
             metrics["fallback_reason"] = (
@@ -120,9 +125,11 @@ class EagerTrainingStepExecutor:
                     fallback_executable,
                     plan_id=fallback_plan_id,
                     activation_checkpoint=self.fallback_activation_checkpoints.get(fallback_plan_id),
+                    aot_partition_runtime=self.fallback_aot_partition_runtimes.get(fallback_plan_id),
                 )
                 metrics["fallback_plan_id"] = fallback_plan_id
                 metrics["fallback_activation_checkpoint"] = int(self.activation_checkpoint)
+                metrics["fallback_aot_partition_runtime"] = int(self.aot_partition_runtime)
             else:
                 metrics["fallback_plan_id"] = None
         return StepResult(loss=loss.detach(), optimizer_step_performed=True, metrics=metrics)
@@ -134,6 +141,57 @@ def run_compiled_forward_backward(model: nn.Module, *args: Any, **kwargs: Any) -
 
 def run_eager_optimizer_step(optimizer: torch.optim.Optimizer) -> None:
     optimizer.step()
+
+
+def build_aot_partition_executable(
+    lowered: LoweredPartition,
+    model: nn.Module,
+    *,
+    num_fwd_outputs: int = 1,
+) -> Callable[..., Any]:
+    if num_fwd_outputs != 1:
+        raise ValueError("AOT partition executable currently supports exactly one tensor user output")
+    params = tuple(model.parameters())
+    buffers = tuple(model.buffers())
+    state_input_count = len(params) + len(buffers)
+    total_static_input_count = state_input_count
+
+    class _AOTPartitionFunction(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx: Any, *flat_inputs: Any) -> Tensor:
+            fw_outputs = lowered.fw_graph(*flat_inputs)
+            if not isinstance(fw_outputs, tuple):
+                fw_outputs = (fw_outputs,)
+            if len(fw_outputs) < 1 or not isinstance(fw_outputs[0], Tensor):
+                raise RuntimeError("lowered FW graph must return a tensor user output")
+            saved_for_bw = fw_outputs[1:]
+            if any(not isinstance(value, Tensor) for value in saved_for_bw):
+                raise RuntimeError("lowered FW graph saved values must be tensors")
+            ctx.save_for_backward(*saved_for_bw)
+            ctx.input_count = len(flat_inputs)
+            return fw_outputs[0]
+
+        @staticmethod
+        def backward(ctx: Any, *grad_outputs: Any) -> tuple[Any, ...]:
+            saved_for_bw = ctx.saved_tensors
+            bw_outputs = lowered.bw_graph(*(tuple(saved_for_bw) + tuple(grad_outputs)))
+            if not isinstance(bw_outputs, tuple):
+                bw_outputs = (bw_outputs,)
+            gradients = list(bw_outputs[: ctx.input_count])
+            if len(gradients) < ctx.input_count:
+                gradients.extend([None] * (ctx.input_count - len(gradients)))
+            for index in range(len(params), total_static_input_count):
+                gradients[index] = None
+            return tuple(gradients)
+
+    def executable(*args: Any, **kwargs: Any) -> Any:
+        if kwargs:
+            raise ValueError("AOT partition executable currently supports positional tensor inputs only")
+        if any(not isinstance(arg, Tensor) for arg in args):
+            raise ValueError("AOT partition executable currently supports tensor inputs only")
+        return _AOTPartitionFunction.apply(*(params + buffers + args))
+
+    return executable
 
 
 def _checkpointed_forward(model: nn.Module, *args: Any, **kwargs: Any) -> Any:
@@ -156,10 +214,15 @@ def build_training_step_executor(
     runtime_peak_threshold_bytes: int | None = None,
     selection_objective: str = "unconfigured",
     activation_checkpoint: bool = False,
+    executable_override: Callable[..., Any] | None = None,
+    aot_partition_runtime: bool = False,
+    fallback_aot_partition_runtimes: dict[str, bool] | None = None,
 ) -> EagerTrainingStepExecutor:
     executable: Callable[..., Any]
     base_executable: Callable[..., Any]
-    if activation_checkpoint:
+    if executable_override is not None:
+        base_executable = executable_override
+    elif activation_checkpoint:
         base_executable = lambda *args, **kwargs: _checkpointed_forward(model, *args, **kwargs)
     else:
         base_executable = model
@@ -180,6 +243,8 @@ def build_training_step_executor(
         runtime_peak_threshold_bytes=runtime_peak_threshold_bytes,
         selection_objective=selection_objective,
         activation_checkpoint=activation_checkpoint,
+        aot_partition_runtime=aot_partition_runtime,
+        fallback_aot_partition_runtimes=fallback_aot_partition_runtimes,
     )
 
 
@@ -189,12 +254,15 @@ def replace_executable_on_fallback(
     *,
     plan_id: str | None = None,
     activation_checkpoint: bool | None = None,
+    aot_partition_runtime: bool | None = None,
 ) -> EagerTrainingStepExecutor:
     executor.executable = executable
     if plan_id is not None:
         executor.current_plan_id = plan_id
     if activation_checkpoint is not None:
         executor.activation_checkpoint = activation_checkpoint
+    if aot_partition_runtime is not None:
+        executor.aot_partition_runtime = aot_partition_runtime
     return executor
 
 
@@ -218,6 +286,7 @@ def make_measured_executable(
     )
     phase_metrics = dict(phase_metrics)
     phase_metrics["activation_checkpoint"] = int(executor.activation_checkpoint)
+    phase_metrics["aot_partition_runtime"] = int(executor.aot_partition_runtime)
     measured_peak = int(phase_metrics["overall_peak_bytes"])
     measured_us = float(phase_metrics["step_us"])
     if measured_peak == 0:

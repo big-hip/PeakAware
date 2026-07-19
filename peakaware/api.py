@@ -45,7 +45,11 @@ from peakaware.memory.fixed_frontier import (
 from peakaware.partition.aot import lower_partition_graphs, partition_default_graph
 from peakaware.partition.verifier import run_aot_eager_dry_run
 from peakaware.plugins import ServiceKind, build_default_registry
-from peakaware.runtime.executor import build_training_step_executor, make_measured_executable
+from peakaware.runtime.executor import (
+    build_aot_partition_executable,
+    build_training_step_executor,
+    make_measured_executable,
+)
 from peakaware.runtime.isolation import run_in_worker_process
 from peakaware.search.engine import apply_early_stop_policy, search_plans_with_diagnostics
 
@@ -161,6 +165,8 @@ def _executable_cache_key(
     request: TrainingRequest,
     capture: CapturedJointGraph,
     candidate: EvaluatedPlan,
+    *,
+    runtime_adapter: str = "eager_model",
 ) -> str:
     if request.config.enable_inductor:
         compiler_version = "inductor"
@@ -177,7 +183,7 @@ def _executable_cache_key(
         input_guards=tuple((guard.name, guard.value) for guard in capture.guards),
         device_capability=request.hardware.device,
         torch_version=torch.__version__,
-        compiler_version=compiler_version,
+        compiler_version=f"{compiler_version}:{runtime_adapter}",
         partition_plugin_version="core",
     )
 
@@ -185,6 +191,8 @@ def _executable_cache_key(
 def _executable_cache_provenance(
     request: TrainingRequest,
     candidate: EvaluatedPlan,
+    *,
+    runtime_adapter: str = "eager_model",
 ) -> dict[str, Any]:
     return {
         "torch_version": torch.__version__,
@@ -192,6 +200,7 @@ def _executable_cache_provenance(
         "plan_id": candidate.plan.plan_id,
         "graph_key": candidate.plan.graph_key,
         "correctness_required": True,
+        "runtime_adapter": runtime_adapter,
     }
 
 
@@ -355,6 +364,7 @@ class _CandidateMeasurement:
     measured_step_us: float
     phase_metrics: dict[str, int | float]
     activation_checkpoint: bool = False
+    aot_partition_runtime: bool = False
 
 
 @dataclass(frozen=True)
@@ -362,6 +372,7 @@ class _CandidateValidation:
     dry_run: DryRunResult
     measurement: _CandidateMeasurement | None
     cache_hit: bool = False
+    lowered: LoweredPartition | None = None
 
 
 def _candidate_uses_activation_checkpoint(candidate: EvaluatedPlan) -> bool:
@@ -379,6 +390,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
     config = payload["config"]
     example_args = payload["example_args"]
     example_kwargs = payload["example_kwargs"]
+    can_return_lowered = capture is not None and ir is not None
 
     if capture is None or ir is None:
         capture = capture_joint_graph(request)
@@ -399,6 +411,20 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
     if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
         return _CandidateValidation(dry_run=dry_run, measurement=None)
     activation_checkpoint = _candidate_uses_activation_checkpoint(candidate)
+    executable_override = None
+    aot_partition_runtime = False
+    if can_return_lowered and dry_run.replay_mode == "lowered_aot":
+        try:
+            executable_override = build_aot_partition_executable(
+                lowered,
+                model,
+                num_fwd_outputs=capture.num_fwd_outputs,
+            )
+            activation_checkpoint = False
+            aot_partition_runtime = True
+        except Exception:
+            executable_override = None
+            aot_partition_runtime = False
     executor = build_training_step_executor(
         model,
         optimizer,
@@ -407,10 +433,18 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         capture.guards,
         selection_objective=config.selection_objective,
         activation_checkpoint=activation_checkpoint,
+        executable_override=executable_override,
+        aot_partition_runtime=aot_partition_runtime,
     )
     cache_root = _cache_root(config)
-    executable_key = _executable_cache_key(request, capture, candidate)
-    executable_provenance = _executable_cache_provenance(request, candidate)
+    if aot_partition_runtime:
+        runtime_adapter = "lowered_aot_partition"
+    elif activation_checkpoint:
+        runtime_adapter = "activation_checkpoint"
+    else:
+        runtime_adapter = "eager_model"
+    executable_key = _executable_cache_key(request, capture, candidate, runtime_adapter=runtime_adapter)
+    executable_provenance = _executable_cache_provenance(request, candidate, runtime_adapter=runtime_adapter)
     if cache_root is not None:
         cached = load_executable_measurement_cache(
             cache_root,
@@ -427,8 +461,10 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                     measured_step_us=cached.measured_step_us,
                     phase_metrics=cached.phase_metrics,
                     activation_checkpoint=activation_checkpoint,
+                    aot_partition_runtime=bool(cached.phase_metrics.get("aot_partition_runtime", 0)),
                 ),
                 cache_hit=True,
+                lowered=lowered if aot_partition_runtime else None,
             )
     measured = make_measured_executable(
         candidate.plan.plan_id,
@@ -447,7 +483,9 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
             measured_step_us=measured.measured_step_us,
             phase_metrics=measured.phase_metrics,
             activation_checkpoint=activation_checkpoint,
+            aot_partition_runtime=aot_partition_runtime,
         ),
+        lowered=lowered if aot_partition_runtime else None,
     )
 
 
@@ -480,6 +518,11 @@ def _measure_candidate_for_parent(
     measurement = validation.measurement
     if measurement is None:
         raise ValueError("candidate measurement is unavailable")
+    executable_override = None
+    if measurement.aot_partition_runtime:
+        if validation.lowered is None:
+            raise ValueError("AOT partition runtime measurement is missing lowered graphs")
+        executable_override = build_aot_partition_executable(validation.lowered, executor.model)
     candidate_executor = build_training_step_executor(
         executor.model,
         executor.optimizer,
@@ -488,6 +531,8 @@ def _measure_candidate_for_parent(
         executor.guards,
         selection_objective=executor.selection_objective,
         activation_checkpoint=measurement.activation_checkpoint,
+        executable_override=executable_override,
+        aot_partition_runtime=measurement.aot_partition_runtime,
     )
     return MeasuredExecutable(
         plan_id=measurement.plan_id,
@@ -689,6 +734,7 @@ def optimize_training(
     executor.current_plan_id = selected.plan.plan_id
     executor.executable = measured.forward_backward
     executor.activation_checkpoint = bool(measured.phase_metrics.get("activation_checkpoint", 0))
+    executor.aot_partition_runtime = bool(measured.phase_metrics.get("aot_partition_runtime", 0))
     executor.selection_objective = config.selection_objective
     executor.fallback_executables = tuple(
         (item.plan_id, item.forward_backward)
@@ -697,6 +743,11 @@ def optimize_training(
     )
     executor.fallback_activation_checkpoints = {
         item.plan_id: bool(item.phase_metrics.get("activation_checkpoint", 0))
+        for item in measured_tuple
+        if item.plan_id != selected.plan.plan_id and item.correctness_passed
+    }
+    executor.fallback_aot_partition_runtimes = {
+        item.plan_id: bool(item.phase_metrics.get("aot_partition_runtime", 0))
         for item in measured_tuple
         if item.plan_id != selected.plan.plan_id and item.correctness_passed
     }

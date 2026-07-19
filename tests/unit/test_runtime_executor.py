@@ -179,3 +179,46 @@ def test_executor_fallback_refreshes_activation_checkpoint_marker():
     assert second.metrics["plan_id"] == "all_save"
     assert second.metrics["activation_checkpoint"] == 0
     assert executor.activation_checkpoint is False
+
+
+def test_executor_fallback_refreshes_aot_partition_runtime_marker():
+    torch.manual_seed(0)
+    model = nn.Linear(3, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+    def selected(x):
+        return model(x)
+
+    def fallback(x):
+        return model(x)
+
+    executor = EagerTrainingStepExecutor(
+        model,
+        optimizer,
+        lambda out: out.pow(2).mean(),
+        selected,
+        PeakAwareConfig(enable_compile=False),
+        plan_id="checkpointed",
+        fallback_executables=(("aot_partition", fallback),),
+        runtime_peak_threshold_bytes=5,
+        runtime_peak_observer=lambda: 10,
+        activation_checkpoint=True,
+        aot_partition_runtime=False,
+        fallback_activation_checkpoints={"aot_partition": False},
+        fallback_aot_partition_runtimes={"aot_partition": True},
+    )
+
+    first = executor.step(torch.ones(2, 3))
+    executor.runtime_peak_observer = lambda: 0
+    second = executor.step(torch.ones(2, 3))
+
+    assert first.metrics["activation_checkpoint"] == 1
+    assert first.metrics["aot_partition_runtime"] == 0
+    assert first.metrics["fallback_plan_id"] == "aot_partition"
+    assert first.metrics["fallback_activation_checkpoint"] == 0
+    assert first.metrics["fallback_aot_partition_runtime"] == 1
+    assert second.metrics["plan_id"] == "aot_partition"
+    assert second.metrics["activation_checkpoint"] == 0
+    assert second.metrics["aot_partition_runtime"] == 1
+    assert executor.activation_checkpoint is False
+    assert executor.aot_partition_runtime is True
