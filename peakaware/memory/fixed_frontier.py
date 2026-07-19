@@ -45,8 +45,16 @@ def build_optimizer_spec(optimizer: torch.optim.Optimizer, model: nn.Module) -> 
     parameter_count = sum(1 for _ in model.parameters())
     parameter_bytes = estimate_parameter_bytes(model)
     state_bytes, temporary_bytes = estimate_optimizer_memory(optimizer, parameter_bytes)
+    modes = tuple(
+        flag
+        for flag in ("fused", "foreach", "capturable")
+        if any(group.get(flag) for group in optimizer.param_groups)
+    )
+    name = optimizer.__class__.__name__
+    if modes:
+        name = f"{name}[{','.join(modes)}]"
     return OptimizerSpec(
-        name=optimizer.__class__.__name__,
+        name=name,
         param_group_count=len(optimizer.param_groups),
         parameter_count=parameter_count,
         state_bytes=state_bytes,
