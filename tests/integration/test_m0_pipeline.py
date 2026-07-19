@@ -145,6 +145,76 @@ def test_optimize_training_rejects_mixed_optimizer_state_devices():
         )
 
 
+def test_optimize_training_rejects_non_configured_floating_dtype():
+    model = TinyResidual().double()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    x = torch.randn(4, 8, dtype=torch.float64)
+
+    with pytest.raises(ValueError, match="precision_dtype=float32"):
+        optimize_training(
+            model,
+            (x,),
+            loss_fn=squared_mean_loss,
+            optimizer=optimizer,
+            memory_budget_bytes=1 << 28,
+            config=PeakAwareConfig(enable_compile=False),
+        )
+
+
+def test_optimize_training_rejects_autocast_and_grad_scaler_modes():
+    model = TinyResidual()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    x = torch.randn(4, 8)
+
+    with pytest.raises(ValueError, match="autocast"):
+        optimize_training(
+            model,
+            (x,),
+            loss_fn=squared_mean_loss,
+            optimizer=optimizer,
+            memory_budget_bytes=1 << 28,
+            config=PeakAwareConfig(enable_compile=False, autocast_enabled=True),
+        )
+    with pytest.raises(ValueError, match="GradScaler"):
+        optimize_training(
+            model,
+            (x,),
+            loss_fn=squared_mean_loss,
+            optimizer=optimizer,
+            memory_budget_bytes=1 << 28,
+            config=PeakAwareConfig(enable_compile=False, grad_scaler_enabled=True),
+        )
+
+
+def test_request_key_includes_precision_configuration():
+    model = TinyResidual()
+    x = torch.randn(4, 8)
+
+    default_key = api_module._request_key(
+        model,
+        (x,),
+        {},
+        1 << 28,
+        PeakAwareConfig(enable_compile=False),
+    )
+    double_key = api_module._request_key(
+        model,
+        (x,),
+        {},
+        1 << 28,
+        PeakAwareConfig(enable_compile=False, precision_dtype="float64"),
+    )
+    autocast_key = api_module._request_key(
+        model,
+        (x,),
+        {},
+        1 << 28,
+        PeakAwareConfig(enable_compile=False, autocast_enabled=True),
+    )
+
+    assert len({default_key, double_key, autocast_key}) == 3
+
+
 def test_isolated_candidate_failure_falls_back_to_next_candidate(monkeypatch):
     torch.manual_seed(0)
     model = TinyResidual()

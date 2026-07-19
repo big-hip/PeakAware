@@ -9,7 +9,7 @@ import torch
 from torch import Tensor, nn
 
 from peakaware.capture import capture_joint_graph
-from peakaware.config import PeakAwareConfig
+from peakaware.config import PeakAwareConfig, normalize_float_dtype_name
 from peakaware.contracts import (
     AnalysisBundle,
     CacheStats,
@@ -62,10 +62,17 @@ def _hardware_spec(args: tuple[Any, ...], kwargs: dict[str, Any]) -> HardwareSpe
     return HardwareSpec(device=device, cuda_available=torch.cuda.is_available(), total_memory_bytes=total)
 
 
-def _request_key(model: nn.Module, args: tuple[Any, ...], kwargs: dict[str, Any], budget: int) -> str:
+def _request_key(
+    model: nn.Module,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    budget: int,
+    config: PeakAwareConfig,
+) -> str:
     h = hashlib.sha256()
     h.update(model.__class__.__qualname__.encode("utf-8"))
     h.update(str(budget).encode("utf-8"))
+    h.update(repr(config.precision_fingerprint()).encode("utf-8"))
     for value in list(args) + [kwargs[k] for k in sorted(kwargs)]:
         if isinstance(value, Tensor):
             h.update(str(tuple(value.shape)).encode("utf-8"))
@@ -83,6 +90,7 @@ def _capture_cache_provenance(request: TrainingRequest) -> dict[str, Any]:
         "torch_version": torch.__version__,
         "request_key": request.request_key,
         "capture_backend": request.config.capture_backend,
+        "precision": dict(request.config.precision_fingerprint()),
         "capture_schema_version": CAPTURE_SCHEMA_VERSION,
     }
 
@@ -139,6 +147,7 @@ def _analysis_cache_provenance(
         "safety_margin_ratio": config.safety_margin_ratio,
         "manual_saved_value_ids": [list(sorted(item)) for item in config.manual_saved_value_ids],
         "profile_db_path": str(config.profile_db_path or "none"),
+        "precision": dict(config.precision_fingerprint()),
     }
 
 
@@ -205,6 +214,14 @@ def _tensor_devices(tensors: tuple[Tensor, ...]) -> frozenset[str]:
     return frozenset(str(tensor.device) for tensor in tensors)
 
 
+def _floating_dtype_names(tensors: tuple[Tensor, ...]) -> frozenset[str]:
+    return frozenset(
+        normalize_float_dtype_name(str(tensor.dtype))
+        for tensor in tensors
+        if tensor.is_floating_point()
+    )
+
+
 def _validate_request(
     model: nn.Module,
     example_args: tuple[Any, ...],
@@ -219,6 +236,7 @@ def _validate_request(
         raise ValueError("memory_budget_bytes must be positive")
     if not isinstance(example_args, tuple):
         raise TypeError("example_args must be a tuple")
+    config.validate()
     model_params = {id(p) for p in model.parameters()}
     optim_params = {
         id(param)
@@ -250,7 +268,22 @@ def _validate_request(
     all_devices = frozenset(device for devices in device_sets for device in devices)
     if len(all_devices) > 1:
         raise ValueError(f"M0 expects a single device, got: {sorted(all_devices)}")
-    config.validate()
+    expected_dtype = normalize_float_dtype_name(config.precision_dtype)
+    dtype_sets = [
+        dtypes
+        for dtypes in (
+            _floating_dtype_names(example_tensors),
+            _floating_dtype_names(model_tensors),
+            _floating_dtype_names(optimizer_state_tensors),
+        )
+        if dtypes
+    ]
+    all_dtypes = frozenset(dtype for dtypes in dtype_sets for dtype in dtypes)
+    if any(dtype != expected_dtype for dtype in all_dtypes):
+        raise ValueError(
+            f"M0 expects floating tensors to use precision_dtype={expected_dtype}, "
+            f"got: {sorted(all_dtypes)}"
+        )
 
 
 def _lower_candidate(capture: CapturedJointGraph, candidate: EvaluatedPlan, ir: JointTrainingIR) -> LoweredPartition:
@@ -464,7 +497,7 @@ def optimize_training(
         config=config,
         optimizer_spec=optimizer_spec,
         hardware=_hardware_spec(example_args, example_kwargs),
-        request_key=_request_key(model, example_args, example_kwargs, memory_budget_bytes),
+        request_key=_request_key(model, example_args, example_kwargs, memory_budget_bytes, config),
     )
 
     fixed_timeline, coarse = analyze_coarse_feasibility(model, optimizer, memory_budget_bytes)
