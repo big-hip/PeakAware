@@ -840,6 +840,40 @@ def test_summarize_effect_acceptance_script_merges_records(tmp_path):
     assert summary["speedup_ge_one_count"] == 1
 
 
+def test_collect_profile_smoke_script_writes_nonempty_profile_db(tmp_path):
+    profile_db_path = tmp_path / "profiles.sqlite"
+    output_path = tmp_path / "profile_smoke.json"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/collect_profile_smoke.py",
+            "--profile-db",
+            str(profile_db_path),
+            "--output-json",
+            str(output_path),
+            "--device",
+            "cpu",
+            "--warmup",
+            "0",
+            "--repeats",
+            "1",
+            "--size",
+            "4",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    stdout_payload = json.loads(completed.stdout)
+    output_payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert stdout_payload["profile_db_row_count"] == 2
+    assert output_payload["profile_db_row_count"] == 2
+    assert {row["target"] for row in output_payload["rows"]} == {"aten.add", "aten.matmul"}
+    assert profile_db_path.exists()
+
+
 def test_summarize_experiment_records_script_regenerates_artifacts(tmp_path):
     records_path = tmp_path / "records.json"
     output_dir = tmp_path / "derived"
