@@ -51,6 +51,8 @@ class ExperimentRecord:
     selected_step_time_delta_vs_all_save_us: float | None
     selected_samples_per_second_speedup_vs_all_save: float | None
     measured_step_us: float | None
+    measurement_repeats: int | None
+    measurement_warmup_steps: int | None
     samples_per_second: float | None
     feasibility_status: str | None
     baseline_peak_phase: str | None
@@ -158,6 +160,7 @@ def _record_success(
     exact: dict[str, Any] | None = None,
 ) -> ExperimentRecord:
     measured = summary["measured"]
+    phase_metrics = measured.get("phase_metrics", {})
     diagnostic = summary.get("diagnostic")
     expectation = {} if diagnostic is None else diagnostic.get("expectation", {})
     selected_correction = summary.get("topk_correction", {}).get("selected")
@@ -208,6 +211,12 @@ def _record_success(
         if all_save_step_us is None
         else all_save_step_us / max(step_us, 1.0),
         measured_step_us=step_us,
+        measurement_repeats=None
+        if "measurement_repeats" not in phase_metrics
+        else int(phase_metrics["measurement_repeats"]),
+        measurement_warmup_steps=None
+        if "measurement_warmup_steps" not in phase_metrics
+        else int(phase_metrics["measurement_warmup_steps"]),
         samples_per_second=case.microbatch_size * 1_000_000.0 / max(step_us, 1.0),
         feasibility_status=summary["feasibility"]["status"],
         baseline_peak_phase=None if baseline_peak is None else baseline_peak["phase"],
@@ -273,6 +282,8 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         selected_step_time_delta_vs_all_save_us=None,
         selected_samples_per_second_speedup_vs_all_save=None,
         measured_step_us=None,
+        measurement_repeats=None,
+        measurement_warmup_steps=None,
         samples_per_second=None,
         feasibility_status=None,
         baseline_peak_phase=None,

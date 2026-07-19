@@ -37,9 +37,13 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--isolate", action="store_true")
     parser.add_argument("--diagnostic-hints", choices=("on", "off", "both"), default="on")
+    parser.add_argument("--selection-objective", choices=("min_peak_then_time", "min_time_then_peak"), default="min_peak_then_time")
+    parser.add_argument("--measurement-warmup-steps", type=int, default=0)
+    parser.add_argument("--measurement-repeats", type=int, default=1)
     parser.add_argument("--exact-small-graph", action="store_true")
     parser.add_argument("--exact-max-candidates", type=int, default=12)
     parser.add_argument("--profile-db", type=Path, default=None)
+    parser.add_argument("--cache-root", type=Path, default=None)
     parser.add_argument("--output-json", type=Path, default=None)
     parser.add_argument("--output-csv", type=Path, default=None)
     parser.add_argument("--output-summary-json", type=Path, default=None)
@@ -51,6 +55,10 @@ def main() -> None:
         top_k=args.top_k,
         isolate_candidate_measurement=args.isolate,
         profile_db_path=args.profile_db,
+        cache_root=args.cache_root,
+        measurement_warmup_steps=args.measurement_warmup_steps,
+        measurement_repeats=args.measurement_repeats,
+        selection_objective=args.selection_objective,
     )
     if args.diagnostic_hints == "both":
         variants = (("diagnostic_hints_on", True), ("diagnostic_hints_off", False))

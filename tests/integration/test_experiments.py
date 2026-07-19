@@ -76,6 +76,8 @@ def _minimal_record(
         selected_step_time_delta_vs_all_save_us=2.0 if status == "ok" else None,
         selected_samples_per_second_speedup_vs_all_save=1.2 if status == "ok" else None,
         measured_step_us=10.0 if status == "ok" else None,
+        measurement_repeats=1 if status == "ok" else None,
+        measurement_warmup_steps=0 if status == "ok" else None,
         samples_per_second=samples_per_second,
         feasibility_status="FEASIBLE" if status == "ok" else None,
         baseline_peak_phase="fw" if status == "ok" else None,
@@ -196,6 +198,8 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].selected_peak_phase is not None
     assert hasattr(records[0], "measured_peak_phase")
     assert hasattr(records[0], "selected_peak_phase_match")
+    assert records[0].measurement_repeats == 1
+    assert records[0].measurement_warmup_steps == 0
     assert records[0].simulation_accuracy_candidate_count >= 1
     assert records[0].diagnostic_hints_enabled is True
     assert records[0].diagnostic_hint_count >= 0
@@ -286,6 +290,12 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             "1",
             "--diagnostic-hints",
             "both",
+            "--selection-objective",
+            "min_peak_then_time",
+            "--measurement-repeats",
+            "2",
+            "--cache-root",
+            str(tmp_path / "cache"),
             "--exact-small-graph",
             "--output-json",
             str(json_path),
@@ -320,6 +330,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["selected_estimated_peak_reduction_bytes"] is not None
     assert stdout_payload[0]["selected_measured_peak_reduction_vs_all_save_bytes"] is not None
     assert "selected_peak_phase_match" in stdout_payload[0]
+    assert all(record["measurement_repeats"] == 2 for record in stdout_payload)
     assert stdout_payload[0]["simulation_accuracy_candidate_count"] >= 1
     assert {record["diagnostic_hints_enabled"] for record in stdout_payload} == {True, False}
     assert stdout_payload[0]["cache_total_hits"] == 0
