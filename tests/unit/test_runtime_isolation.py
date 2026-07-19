@@ -17,11 +17,22 @@ def _sleeps(payload):
     return "done"
 
 
+def _large_value(payload):
+    return bytes(payload["size"])
+
+
 def test_worker_process_returns_value():
     result = run_in_worker_process(_double, {"x": 21}, timeout_s=5)
 
     assert result.ok
     assert result.value == 42
+
+
+def test_worker_process_returns_value_larger_than_queue_pipe_buffer():
+    result = run_in_worker_process(_large_value, {"size": 8 << 20}, timeout_s=5)
+
+    assert result.ok
+    assert len(result.value) == 8 << 20
 
 
 def test_worker_process_returns_exception_details():

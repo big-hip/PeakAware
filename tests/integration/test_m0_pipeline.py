@@ -197,6 +197,9 @@ def test_optimize_training_can_isolate_candidate_measurement():
     assert result.dry_run is not None and result.dry_run.gradients_match
     assert result.measured_candidates
     assert result.executable.plan_id in {candidate.plan_id for candidate in result.measured_candidates}
+    assert result.dry_run.replay_mode == "lowered_aot"
+    assert result.executor.aot_partition_runtime is True
+    assert result.executable.phase_metrics["aot_partition_runtime"] == 1
 
 
 def test_optimize_training_uses_aot_partition_runtime_with_tensor_kwargs():
@@ -373,6 +376,8 @@ def test_optimize_training_uses_aot_partition_runtime_with_nested_static_inputs(
             top_k=2,
             safety_margin_bytes=0,
             safety_margin_ratio=0.0,
+            isolate_candidate_measurement=True,
+            candidate_worker_timeout_s=30.0,
         ),
     )
 

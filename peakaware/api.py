@@ -403,7 +403,6 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
     config = payload["config"]
     example_args = payload["example_args"]
     example_kwargs = payload["example_kwargs"]
-    can_return_lowered = capture is not None and ir is not None
     kwarg_names = tuple(example_kwargs)
 
     if capture is None or ir is None:
@@ -411,6 +410,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         ir, ir_report = build_joint_ir(capture)
         if not ir_report.valid:
             raise ValueError(f"invalid worker IR: {ir_report.errors}")
+    can_return_lowered = capture.backend == "aot"
     lowered = _lower_candidate(capture, candidate, ir)
     dry_run = _dry_run_candidate(
         lowered,
