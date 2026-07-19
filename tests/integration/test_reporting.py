@@ -1,8 +1,10 @@
 import json
+from dataclasses import replace
 
 import torch
 
 from peakaware import PeakAwareConfig, optimize_training
+from peakaware.contracts import FailureRecord
 from peakaware.models import TrainingTaskRegistry
 from peakaware.reporting import (
     export_plan_artifact_json,
@@ -37,6 +39,7 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     exported = export_result_json(result, path)
     exported_plan = export_plan_artifact_json(result, plan_path)
 
+    assert result.analysis is not None
     assert summary["selected_plan_id"] == result.selected_plan.plan_id
     assert summary["selected_plan_key"]
     assert summary["graph_key"] == result.selected_plan.graph_key
@@ -45,6 +48,25 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert summary["estimated_peak_bytes"] == result.selected_plan.estimated_peak_bytes
     assert "reserved_peak_bytes" in summary["measured"]
     assert "early_stop" in summary
+    assert summary["capture_failures"] == []
+    failed_result = replace(
+        result,
+        analysis=replace(
+            result.analysis,
+            capture_failures=(
+                FailureRecord(
+                    stage="capture_aot",
+                    error_type="RuntimeError",
+                    message="synthetic aot failure",
+                    recovered=True,
+                    next_fallback="fx",
+                    applied_adapters=("aot_autograd", "default_partition"),
+                    applied_plugins=(),
+                ),
+            ),
+        ),
+    )
+    failed_summary = summarize_result(failed_result)
     diagnostic_by_plan = {item["plan_id"]: item for item in summary["plan_diagnostics"]}
     assert {"all_save", "torch_min_cut", "block_checkpoint"}.issubset(diagnostic_by_plan)
     assert all("expected_saved_reduction" in item for item in diagnostic_by_plan.values())
@@ -71,3 +93,10 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert json.loads(exported_plan)["graph_key"] == result.selected_plan.graph_key
     assert json.loads(plan_path.read_text(encoding="utf-8"))["plan_id"] == result.selected_plan.plan_id
     assert json.loads(path.read_text(encoding="utf-8"))["measured"]["correctness_passed"] is True
+    assert len(failed_summary["capture_failures"]) == 1
+    failure = failed_summary["capture_failures"][0]
+    assert failure["stage"] == "capture_aot"
+    assert failure["recovered"] is True
+    assert failure["next_fallback"] == "fx"
+    assert failure["applied_adapters"] == ("aot_autograd", "default_partition")
+    assert failure["applied_plugins"] == ()

@@ -4,7 +4,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from peakaware.contracts import EvaluatedPlan, FeasibilityReport, MeasuredExecutable, OptimizedTrainingResult
+from peakaware.contracts import (
+    EvaluatedPlan,
+    FailureRecord,
+    FeasibilityReport,
+    MeasuredExecutable,
+    OptimizedTrainingResult,
+)
 from peakaware.diagnostics import PlanDiagnosticReport, diagnose_plan, render_diagnostic_text
 from peakaware.search.plan import plan_identity_key
 
@@ -67,6 +73,18 @@ def _early_stop_row(result: OptimizedTrainingResult) -> dict[str, Any] | None:
             "fixed_peak_lower_bound_bytes": report.evidence.fixed_peak_lower_bound_bytes,
             "budget_bytes": report.evidence.budget_bytes,
         },
+    }
+
+
+def _failure_row(record: FailureRecord) -> dict[str, Any]:
+    return {
+        "stage": record.stage,
+        "error_type": record.error_type,
+        "message": record.message,
+        "recovered": record.recovered,
+        "next_fallback": record.next_fallback,
+        "applied_adapters": record.applied_adapters,
+        "applied_plugins": record.applied_plugins,
     }
 
 
@@ -226,6 +244,9 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "hit_rate": result.cache_stats.hit_rate,
         },
         "plans": [_plan_row(plan) for plan in plans],
+        "capture_failures": []
+        if result.analysis is None
+        else [_failure_row(record) for record in result.analysis.capture_failures],
         "plan_diagnostics": _plan_diagnostic_rows(plans, baseline, result.executable, result.feasibility),
         "early_stop": _early_stop_row(result),
         "diagnostic": None

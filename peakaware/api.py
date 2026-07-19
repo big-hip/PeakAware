@@ -50,7 +50,7 @@ from peakaware.search.engine import apply_early_stop_policy, search_plans
 
 
 CAPTURE_SCHEMA_VERSION = "capture-v2-guarded-graph-key"
-ANALYSIS_SCHEMA_VERSION = "analysis-v1"
+ANALYSIS_SCHEMA_VERSION = "analysis-v2-capture-failures"
 
 
 def _hardware_spec(args: tuple[Any, ...], kwargs: dict[str, Any]) -> HardwareSpec:
@@ -535,7 +535,9 @@ def optimize_training(
     if cached_analysis is not None:
         evaluated = _rebind_evaluated_plans(cached_analysis.baseline_results, ir.graph_key)
         early_stop = getattr(cached_analysis, "early_stop", None)
+        capture_failures = getattr(cached_analysis, "capture_failures", capture.failures)
     else:
+        capture_failures = capture.failures
         safety_margin = max(config.safety_margin_bytes, int(memory_budget_bytes * config.safety_margin_ratio))
         evaluated = search_plans(
             ir,
@@ -559,6 +561,7 @@ def optimize_training(
                     baseline_results=evaluated,
                     analysis_key=analysis_key,
                     early_stop=early_stop,
+                    capture_failures=capture_failures,
                 ),
                 analysis_provenance,
             )
@@ -615,6 +618,7 @@ def optimize_training(
         baseline_results=evaluated,
         analysis_key=analysis_key,
         early_stop=early_stop,
+        capture_failures=capture_failures,
     )
     return OptimizedTrainingResult(
         selected_plan=selected.plan,

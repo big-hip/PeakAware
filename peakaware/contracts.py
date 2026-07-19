@@ -268,6 +268,7 @@ class AnalysisBundle:
     baseline_results: tuple["EvaluatedPlan", ...]
     analysis_key: str
     early_stop: EarlyStopReport | None = None
+    capture_failures: tuple[FailureRecord, ...] = ()
 
 
 @dataclass(frozen=True)
