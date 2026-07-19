@@ -4,15 +4,18 @@ PeakAware 是面向 PyTorch 编译训练的端到端峰值显存约束激活重�
 AOTAutograd FW/BW joint graph，以 storage-aware 方式选择 activation 的 SAVE/RECOMPUTE，并以
 完整训练 step 的物理峰值和执行时间评价方案。
 
-当前仓库保存项目设计规范、实验参考代码以及已有 Costmodel/Optimizer IR 适配来源。核心
-`peakaware/` 包尚未开始实现，后续严格按照 M0 -> M1 -> M2 -> M3 推进，避免提前引入插件、完整
-诊断、持久化缓存和其他非必要模块。
+当前仓库已实现 M0--M2 主线：联合图捕获、storage-aware IR 与峰值仿真、SAVE 集合搜索、AOT
+partition 下发、Top-K dry-run/实测校正、compiled FW/BW + eager optimizer executor、根因诊断、
+三层 cache、ProfileDB、插件与可复现实验报告。M3 的 dynamic shape、MoE 和分布式联合优化仍是
+显式扩展域，不混入当前静态训练 ABI。
 
 ## 目录
 
-- `docs/`：项目范围、算法、执行流程、分期实现契约和实验计划；
-- `Costmodel/`：现有 Costmodel 参考与后续 adapter 来源；
-- `Optim_IR/`：optimizer IR 研究参考，不是 M0/M1 运行时依赖。
+- `peakaware/`：捕获、IR、内存模型、搜索、partition、runtime、诊断与实验核心包；
+- `scripts/`：实验矩阵、离线汇总、baseline、根因和 artifact 验证入口；
+- `tests/`：unit、integration 和 correctness 验证；
+- `docs/`：项目范围、算法、执行流程、实验口径和最终验收矩阵；
+- `Costmodel/`、`Optim_IR/`：研究适配来源，不是核心 runtime 的强依赖。
 
 实现前先阅读：
 
@@ -20,12 +23,14 @@ AOTAutograd FW/BW joint graph，以 storage-aware 方式选择 activation 的 SA
 2. [联合重计算实现计划](docs/01_联合重计算实现计划.md)
 3. [端到端执行流程](docs/02_端到端执行流程.md)
 
-## 当前版本
+## 验证
 
-当前快照为设计基线版本，已明确：
+在项目约定环境中运行：
 
-- M0 最小可运行闭环和支持域；
-- 跨阶段不可变数据契约；
-- 模块依赖 DAG 与职责所有权；
-- compiled FW/BW 与 eager optimizer 的运行期边界；
-- M1/M2/M3 扩展准入规则。
+```bash
+conda run -n torch2.13-gpu python -m pytest tests/unit tests/integration tests/correctness -q
+```
+
+最小端到端入口为 `scripts/run_mvp.py`，批量实验入口为 `scripts/run_experiments.py`。当前效果、
+仿真误差、根因准确率、cache 复用和计划下发证据统一记录在
+[最终验收矩阵](docs/10_最终验收矩阵.md)，该文档同时给出可复现实验命令和结果解释边界。
