@@ -81,6 +81,13 @@ class RootCauseGroundTruth:
 
 
 @dataclass(frozen=True)
+class RootCausePrediction:
+    plan_id: str
+    primary_cause: RootCause | str
+    root_causes: tuple[RootCause | str, ...]
+
+
+@dataclass(frozen=True)
 class RootCauseEvaluation:
     case_count: int
     matched_case_count: int
@@ -96,11 +103,21 @@ def _normalize_cause_name(cause: RootCause | str) -> str:
     return cause.name if isinstance(cause, RootCause) else str(cause)
 
 
+def _root_cause_prediction(report: PlanDiagnosticReport | RootCausePrediction) -> RootCausePrediction:
+    if isinstance(report, RootCausePrediction):
+        return report
+    return RootCausePrediction(
+        plan_id=report.plan_id,
+        primary_cause=report.primary_cause,
+        root_causes=tuple(report.root_causes),
+    )
+
+
 def evaluate_root_cause_predictions(
-    reports: tuple[PlanDiagnosticReport, ...],
+    reports: tuple[PlanDiagnosticReport | RootCausePrediction, ...],
     labels: tuple[RootCauseGroundTruth, ...],
 ) -> RootCauseEvaluation:
-    by_plan = {report.plan_id: report for report in reports}
+    by_plan = {prediction.plan_id: prediction for prediction in (_root_cause_prediction(report) for report in reports)}
     matched = 0
     missing = 0
     unknown = 0
@@ -116,12 +133,13 @@ def evaluate_root_cause_predictions(
             continue
         matched += 1
         expected_primary = _normalize_cause_name(label.primary_cause)
-        predicted_primary = report.primary_cause.name
+        predicted_primary = _normalize_cause_name(report.primary_cause)
         if predicted_primary == expected_primary:
             primary_correct += 1
-        predicted = set(report.root_causes) - {RootCause.UNKNOWN.name}
+        predicted_causes = {_normalize_cause_name(cause) for cause in report.root_causes}
+        predicted = predicted_causes - {RootCause.UNKNOWN.name}
         expected = {_normalize_cause_name(cause) for cause in label.root_causes} - {RootCause.UNKNOWN.name}
-        if not predicted and RootCause.UNKNOWN.name in report.root_causes:
+        if not predicted and RootCause.UNKNOWN.name in predicted_causes:
             unknown += 1
         true_positive += len(predicted & expected)
         predicted_total += len(predicted)

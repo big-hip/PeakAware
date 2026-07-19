@@ -8,6 +8,7 @@ from peakaware.cost.base import StaticCostProvider
 from peakaware.diagnostics import (
     RootCause,
     RootCauseGroundTruth,
+    RootCausePrediction,
     diagnose_plan,
     evaluate_root_cause_predictions,
     export_diagnostic_json,
@@ -291,3 +292,22 @@ def test_root_cause_evaluator_scores_ground_truth_labels():
     if report.root_causes != (RootCause.UNKNOWN.name,):
         assert evaluation.micro_precision == 1.0
         assert evaluation.micro_recall < 1.0
+
+    row_evaluation = evaluate_root_cause_predictions(
+        (
+            RootCausePrediction(
+                plan_id="row",
+                primary_cause=RootCause.REMATERIALIZATION_WAVE,
+                root_causes=(RootCause.REMATERIALIZATION_WAVE,),
+            ),
+        ),
+        (
+            RootCauseGroundTruth(
+                plan_id="row",
+                primary_cause=RootCause.REMATERIALIZATION_WAVE,
+                root_causes=(RootCause.REMATERIALIZATION_WAVE,),
+            ),
+        ),
+    )
+    assert row_evaluation.primary_accuracy == 1.0
+    assert row_evaluation.micro_f1 == 1.0
