@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 import torch
 from torch import Tensor, nn
+from torch.utils import _pytree
 
 from peakaware.config import PeakAwareConfig
 from peakaware.contracts import GuardSpec, LoweredPartition, MeasuredExecutable, StepResult
@@ -149,6 +150,7 @@ def build_aot_partition_executable(
     *,
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] = (),
+    output_tree_spec: Any | None = None,
 ) -> Callable[..., Any]:
     if num_fwd_outputs < 1:
         raise ValueError("AOT partition executable requires at least one tensor user output")
@@ -201,7 +203,11 @@ def build_aot_partition_executable(
         kwarg_values = tuple(kwargs[name] for name in kwarg_names)
         if any(not isinstance(value, Tensor) for value in kwarg_values):
             raise ValueError("AOT partition executable currently supports tensor kwargs only")
-        return _AOTPartitionFunction.apply(*(params + buffers + args + kwarg_values))
+        outputs = _AOTPartitionFunction.apply(*(params + buffers + args + kwarg_values))
+        flat_outputs = (outputs,) if num_fwd_outputs == 1 else tuple(outputs)
+        if output_tree_spec is None:
+            return outputs
+        return _pytree.tree_unflatten(list(flat_outputs), output_tree_spec)
 
     return executable
 

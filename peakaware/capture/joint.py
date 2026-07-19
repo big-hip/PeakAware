@@ -6,6 +6,7 @@ from typing import Any
 import torch
 from torch import fx
 from torch.fx.passes.shape_prop import ShapeProp
+from torch.utils import _pytree
 
 from peakaware.contracts import CapturedJointGraph, FailureRecord, GuardSpec, ParameterBinding, TrainingRequest
 from peakaware.errors import CaptureError
@@ -140,6 +141,7 @@ def _capture_with_aot_autograd(request: TrainingRequest) -> CapturedJointGraph:
     joint = captured.get("joint")
     if joint is None:
         raise CaptureError("AOTAutograd did not invoke partition_fn")
+    flat_outputs, output_tree_spec = _pytree.tree_flatten(output)
     guards = _collect_guards(request)
     capture_key = build_graph_key(joint, request.model, guards)
     return CapturedJointGraph(
@@ -150,8 +152,9 @@ def _capture_with_aot_autograd(request: TrainingRequest) -> CapturedJointGraph:
         fw_module=captured.get("fw"),
         bw_module=captured.get("bw"),
         backend="aot",
-        num_fwd_outputs=int(partition_meta.get("num_fwd_outputs", 1)),
+        num_fwd_outputs=int(partition_meta.get("num_fwd_outputs", len(flat_outputs))),
         static_lifetime_input_indices=tuple(partition_meta.get("static_lifetime_input_indices") or ()),
+        output_tree_spec=output_tree_spec,
     )
 
 

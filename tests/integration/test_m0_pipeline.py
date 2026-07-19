@@ -44,6 +44,16 @@ class TinyMultiOutput(nn.Module):
         return self.left(x), self.right(x).relu()
 
 
+class TinyNestedOutput(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.left = nn.Linear(8, 2)
+        self.right = nn.Linear(8, 2)
+
+    def forward(self, x):
+        return {"left": self.left(x), "right": (self.right(x).relu(),)}
+
+
 def squared_mean_loss(out):
     return out.pow(2).mean()
 
@@ -212,6 +222,42 @@ def test_optimize_training_uses_aot_partition_runtime_with_multiple_tensor_outpu
     def loss_fn(outputs):
         left, right = outputs
         return left.pow(2).mean() + right.pow(2).mean()
+
+    result = optimize_training(
+        model,
+        (x,),
+        loss_fn=loss_fn,
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 28,
+        config=PeakAwareConfig(
+            capture_backend="aot",
+            enable_compile=False,
+            top_k=2,
+            safety_margin_bytes=0,
+            safety_margin_ratio=0.0,
+        ),
+    )
+
+    before = tuple(param.detach().clone() for param in model.parameters())
+    step = result.executor.step(x)
+    after = tuple(param.detach().clone() for param in model.parameters())
+
+    assert step.optimizer_step_performed is True
+    assert step.metrics["aot_partition_runtime"] == 1
+    assert result.dry_run is not None and result.dry_run.replay_mode == "lowered_aot"
+    assert result.executor.aot_partition_runtime is True
+    assert result.executable.phase_metrics["aot_partition_runtime"] == 1
+    assert any(not torch.equal(left, right) for left, right in zip(before, after))
+
+
+def test_optimize_training_uses_aot_partition_runtime_with_nested_tensor_outputs():
+    torch.manual_seed(0)
+    model = TinyNestedOutput()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    x = torch.randn(4, 8)
+
+    def loss_fn(outputs):
+        return outputs["left"].pow(2).mean() + outputs["right"][0].pow(2).mean()
 
     result = optimize_training(
         model,

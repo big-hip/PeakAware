@@ -6,6 +6,7 @@ from typing import Any
 
 import torch
 from torch import Tensor, nn
+from torch.utils import _pytree
 
 from peakaware.contracts import DryRunResult, JointTrainingIR, LoweredPartition
 
@@ -210,7 +211,9 @@ def _as_tuple(value: Any) -> tuple[Any, ...]:
     return value if isinstance(value, tuple) else (value,)
 
 
-def _loss_input_from_user_outputs(outputs: tuple[Any, ...]) -> Any:
+def _loss_input_from_user_outputs(outputs: tuple[Any, ...], output_tree_spec: Any | None = None) -> Any:
+    if output_tree_spec is not None:
+        return _pytree.tree_unflatten(list(outputs), output_tree_spec)
     if len(outputs) != 1:
         return outputs
     return outputs[0]
@@ -223,18 +226,16 @@ def _detach_for_tangent(value: Any) -> Any:
         return tuple(_detach_for_tangent(item) for item in value)
     if isinstance(value, list):
         return [_detach_for_tangent(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _detach_for_tangent(item) for key, item in value.items()}
     raise PartitionReplayUnsupported("lowered partition replay only supports tensor outputs")
 
 
 def _flatten_tensors(value: Any) -> tuple[Tensor, ...]:
-    if isinstance(value, Tensor):
-        return (value,)
-    if isinstance(value, (tuple, list)):
-        tensors: list[Tensor] = []
-        for item in value:
-            tensors.extend(_flatten_tensors(item))
-        return tuple(tensors)
-    raise PartitionReplayUnsupported("lowered partition replay only supports tensor outputs")
+    flat_values, _ = _pytree.tree_flatten(value)
+    if any(not isinstance(item, Tensor) for item in flat_values):
+        raise PartitionReplayUnsupported("lowered partition replay only supports tensor outputs")
+    return tuple(flat_values)
 
 
 def compare_lowered_partition_with_baseline(
@@ -246,6 +247,7 @@ def compare_lowered_partition_with_baseline(
     *,
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] | None = None,
+    output_tree_spec: Any | None = None,
     atol: float,
     rtol: float,
 ) -> tuple[bool, str | None]:
@@ -290,7 +292,7 @@ def compare_lowered_partition_with_baseline(
                 return False, "lowered FW graph returned fewer user outputs than expected"
             user_outputs = fw_outputs[:num_fwd_outputs]
             saved_for_bw = fw_outputs[num_fwd_outputs:]
-            tangent_outputs = _detach_for_tangent(_loss_input_from_user_outputs(user_outputs))
+            tangent_outputs = _detach_for_tangent(_loss_input_from_user_outputs(user_outputs, output_tree_spec))
             candidate_loss = loss_fn(tangent_outputs)
             if candidate_loss.ndim != 0:
                 return False, "loss_fn must return a scalar tensor"
@@ -391,6 +393,7 @@ def run_aot_eager_dry_run(
     ir: JointTrainingIR | None = None,
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] | None = None,
+    output_tree_spec: Any | None = None,
 ) -> DryRunResult:
     if ir is None:
         structure_valid, structure_reason = verify_partition_abi(lowered)
@@ -416,6 +419,7 @@ def run_aot_eager_dry_run(
                 loss_fn,
                 num_fwd_outputs=num_fwd_outputs,
                 kwarg_names=kwarg_names,
+                output_tree_spec=output_tree_spec,
                 atol=atol,
                 rtol=rtol,
             )

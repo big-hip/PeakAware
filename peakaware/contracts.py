@@ -66,6 +66,7 @@ class CapturedJointGraph:
     failures: tuple[FailureRecord, ...] = ()
     num_fwd_outputs: int = 1
     static_lifetime_input_indices: tuple[int, ...] = ()
+    output_tree_spec: Any | None = None
 
 
 @dataclass(frozen=True)

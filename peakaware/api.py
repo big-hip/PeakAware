@@ -324,6 +324,7 @@ def _dry_run_candidate(
     config: PeakAwareConfig,
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] | None = None,
+    output_tree_spec: Any | None = None,
 ) -> DryRunResult:
     return run_aot_eager_dry_run(
         lowered,
@@ -336,6 +337,7 @@ def _dry_run_candidate(
         ir=ir,
         num_fwd_outputs=num_fwd_outputs,
         kwarg_names=kwarg_names,
+        output_tree_spec=output_tree_spec,
     )
 
 
@@ -377,6 +379,7 @@ class _CandidateValidation:
     lowered: LoweredPartition | None = None
     kwarg_names: tuple[str, ...] = ()
     num_fwd_outputs: int = 1
+    output_tree_spec: Any | None = None
 
 
 def _candidate_uses_activation_checkpoint(candidate: EvaluatedPlan) -> bool:
@@ -413,6 +416,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         config=config,
         num_fwd_outputs=capture.num_fwd_outputs,
         kwarg_names=kwarg_names,
+        output_tree_spec=capture.output_tree_spec,
     )
     if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
         return _CandidateValidation(dry_run=dry_run, measurement=None)
@@ -426,6 +430,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                 model,
                 num_fwd_outputs=capture.num_fwd_outputs,
                 kwarg_names=kwarg_names,
+                output_tree_spec=capture.output_tree_spec,
             )
             activation_checkpoint = False
             aot_partition_runtime = True
@@ -474,6 +479,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                 lowered=lowered if aot_partition_runtime else None,
                 kwarg_names=kwarg_names if aot_partition_runtime else (),
                 num_fwd_outputs=capture.num_fwd_outputs,
+                output_tree_spec=capture.output_tree_spec if aot_partition_runtime else None,
             )
     measured = make_measured_executable(
         candidate.plan.plan_id,
@@ -497,6 +503,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         lowered=lowered if aot_partition_runtime else None,
         kwarg_names=kwarg_names if aot_partition_runtime else (),
         num_fwd_outputs=capture.num_fwd_outputs,
+        output_tree_spec=capture.output_tree_spec if aot_partition_runtime else None,
     )
 
 
@@ -538,6 +545,7 @@ def _measure_candidate_for_parent(
             executor.model,
             num_fwd_outputs=validation.num_fwd_outputs,
             kwarg_names=validation.kwarg_names,
+            output_tree_spec=validation.output_tree_spec,
         )
     candidate_executor = build_training_step_executor(
         executor.model,
