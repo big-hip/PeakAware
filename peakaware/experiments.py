@@ -195,6 +195,8 @@ class ExperimentSummary:
     calibrated_simulation_accuracy_within_10_percent_rate: float | None
     phase_classification_count: int
     phase_classification_accuracy: float | None
+    all_save_phase_calibrated_classification_count: int
+    all_save_phase_calibrated_classification_accuracy: float | None
     feasible_classification_count: int
     feasible_classification_accuracy: float | None
     root_cause_counts: dict[str, int]
@@ -275,14 +277,18 @@ def _all_save_peak_residual(summary: dict[str, Any]) -> int | None:
 
 def _calibrate_measured_plan_rows(rows: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], ...]:
     all_save = next((row for row in rows if row.get("plan_id") == "all_save"), None)
-    if all_save is None or all_save.get("estimated_peak_bytes") is None or all_save.get("measured_peak_bytes") is None:
+    if all_save is None:
         return rows
-    residual = int(all_save["measured_peak_bytes"]) - int(all_save["estimated_peak_bytes"])
+    residual = None
+    if all_save.get("estimated_peak_bytes") is not None and all_save.get("measured_peak_bytes") is not None:
+        residual = int(all_save["measured_peak_bytes"]) - int(all_save["estimated_peak_bytes"])
+    all_save_phase = all_save.get("measured_peak_phase")
     calibrated = []
     for row in rows:
         next_row = dict(row)
         if (
-            next_row.get("calibrated_prediction_error_bytes") is None
+            residual is not None
+            and next_row.get("calibrated_prediction_error_bytes") is None
             and next_row.get("estimated_peak_bytes") is not None
             and next_row.get("measured_peak_bytes") is not None
         ):
@@ -291,6 +297,13 @@ def _calibrate_measured_plan_rows(rows: tuple[dict[str, Any], ...]) -> tuple[dic
             next_row["calibrated_estimated_peak_bytes"] = estimated
             next_row["calibrated_prediction_error_bytes"] = error
             next_row["calibrated_prediction_relative_error"] = None if estimated == 0 else error / estimated
+        if next_row.get("all_save_phase_calibrated_estimated_peak_phase") is None:
+            next_row["all_save_phase_calibrated_estimated_peak_phase"] = all_save_phase
+        measured_phase = next_row.get("measured_peak_phase")
+        calibrated_phase = next_row.get("all_save_phase_calibrated_estimated_peak_phase")
+        next_row["all_save_phase_calibrated_phase_match"] = (
+            None if measured_phase is None or calibrated_phase is None else measured_phase == calibrated_phase
+        )
         calibrated.append(next_row)
     return tuple(calibrated)
 
@@ -298,6 +311,8 @@ def _calibrate_measured_plan_rows(rows: tuple[dict[str, Any], ...]) -> tuple[dic
 def _measured_plan_results(summary: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     plans_by_id = {plan["plan_id"]: plan for plan in summary.get("plans", ())}
     all_save_residual = _all_save_peak_residual(summary)
+    all_save_measured = _measured_candidate_by_id(summary, "all_save")
+    all_save_phase = None if all_save_measured is None else all_save_measured.get("peak_phase")
     rows: list[dict[str, Any]] = []
     for measured in summary.get("measured_candidates", ()):
         plan = plans_by_id.get(measured["plan_id"], {})
@@ -320,6 +335,10 @@ def _measured_plan_results(summary: dict[str, Any]) -> tuple[dict[str, Any], ...
                 "measured_peak_bytes": measured_peak,
                 "measured_step_us": measured.get("step_us"),
                 "measured_peak_phase": measured.get("peak_phase"),
+                "all_save_phase_calibrated_estimated_peak_phase": all_save_phase,
+                "all_save_phase_calibrated_phase_match": None
+                if all_save_phase is None or measured.get("peak_phase") is None
+                else all_save_phase == measured.get("peak_phase"),
                 "measured_feasible": prediction.get("measured_feasible"),
                 "phase_metrics": dict(measured.get("phase_metrics") or {}),
                 "prediction_error_bytes": prediction.get("error_bytes"),
@@ -1070,6 +1089,12 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         for record in ok
         if record.selected_peak_phase_match is not None
     ]
+    all_save_phase_calibrated_matches = [
+        bool(row["all_save_phase_calibrated_phase_match"])
+        for record in ok
+        for row in _calibrate_measured_plan_rows(record.measured_plan_results)
+        if row.get("all_save_phase_calibrated_phase_match") is not None
+    ]
     feasible_matches = [
         record.selected_feasibility_prediction_match
         for record in ok
@@ -1262,6 +1287,11 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         phase_classification_accuracy=None
         if not phase_matches
         else sum(1 for matched in phase_matches if matched) / len(phase_matches),
+        all_save_phase_calibrated_classification_count=len(all_save_phase_calibrated_matches),
+        all_save_phase_calibrated_classification_accuracy=None
+        if not all_save_phase_calibrated_matches
+        else sum(1 for matched in all_save_phase_calibrated_matches if matched)
+        / len(all_save_phase_calibrated_matches),
         feasible_classification_count=len(feasible_matches),
         feasible_classification_accuracy=None
         if not feasible_matches

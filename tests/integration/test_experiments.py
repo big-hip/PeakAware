@@ -172,6 +172,7 @@ def _minimal_record(
                 "estimated_peak_bytes": 80,
                 "estimated_step_us": 12.0,
                 "measured_peak_bytes": measured_peak_bytes + 10,
+                "measured_peak_phase": "bw",
                 "measured_step_us": 12.0,
                 "measured_feasible": measured_peak_bytes + 10 <= budget_bytes,
                 "prediction_error_bytes": 8,
@@ -189,6 +190,7 @@ def _minimal_record(
                 "estimated_peak_bytes": 80,
                 "estimated_step_us": 10.0,
                 "measured_peak_bytes": measured_peak_bytes,
+                "measured_peak_phase": "bw",
                 "measured_step_us": 10.0,
                 "measured_feasible": measured_peak_bytes <= budget_bytes,
                 "prediction_error_bytes": 4,
@@ -206,6 +208,7 @@ def _minimal_record(
                 "estimated_peak_bytes": measured_peak_bytes + 5,
                 "estimated_step_us": 11.0,
                 "measured_peak_bytes": measured_peak_bytes + 5,
+                "measured_peak_phase": "bw",
                 "measured_step_us": 11.0,
                 "measured_feasible": measured_peak_bytes + 5 <= budget_bytes,
                 "prediction_error_bytes": None,
@@ -318,6 +321,8 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.mean_simulation_accuracy_within_10_percent_rate == 0.5
     assert summary.phase_classification_count == 2
     assert summary.phase_classification_accuracy == 1.0
+    assert summary.all_save_phase_calibrated_classification_count == 6
+    assert summary.all_save_phase_calibrated_classification_accuracy == 1.0
     assert summary.feasible_classification_count == 2
     assert summary.feasible_classification_accuracy == 1.0
     assert summary.root_cause_counts == {"REMATERIALIZATION_WAVE": 2}
@@ -1324,6 +1329,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert summary_payload["mean_simulation_accuracy_absolute_error_bytes"] is not None
     assert summary_payload["mean_calibrated_simulation_accuracy_absolute_error_bytes"] is not None
     assert summary_payload["calibrated_simulation_accuracy_within_10_percent_rate"] is not None
+    assert "all_save_phase_calibrated_classification_count" in summary_payload
+    assert "all_save_phase_calibrated_classification_accuracy" in summary_payload
     assert summary_payload["p50_simulation_accuracy_absolute_error_bytes"] is not None
     assert summary_payload["p90_simulation_accuracy_absolute_error_bytes"] is not None
     assert "diagnostic_hint_kind_counts" in summary_payload
