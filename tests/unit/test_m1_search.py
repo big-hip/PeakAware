@@ -5,7 +5,13 @@ from peakaware.capture.joint import capture_joint_graph
 from peakaware.config import PeakAwareConfig
 from peakaware.contracts import HardwareSpec, MeasuredExecutable, RepairHint, TrainingRequest
 from peakaware.cost.base import StaticCostProvider
-from peakaware.diagnostics import RootCause, diagnose_plan, export_diagnostic_json
+from peakaware.diagnostics import (
+    RootCause,
+    RootCauseGroundTruth,
+    diagnose_plan,
+    evaluate_root_cause_predictions,
+    export_diagnostic_json,
+)
 from peakaware.ir.builder import build_joint_ir
 from peakaware.memory.fixed_frontier import analyze_coarse_feasibility, build_optimizer_spec
 from peakaware.search.candidates import compute_storage_effect, reject_alias_pinned_gain, select_save_candidates
@@ -239,3 +245,46 @@ def test_diagnostics_marks_workspace_growth_and_cost_misrank_from_runtime_residu
     assert any(item.root_cause == RootCause.WORKSPACE_GROWTH.name for item in report.evidence)
     assert any(item.root_cause == RootCause.COST_MODEL_MISRANK.name for item in report.evidence)
     assert report.compiler_workspace_allocator_change == measured_peak - baseline.simulation.estimated_peak_bytes
+
+
+def test_root_cause_evaluator_scores_ground_truth_labels():
+    ir, fixed = _ir_and_fixed()
+    all_save = build_recompute_plan(
+        ir,
+        budget_bytes=1 << 30,
+        saved_value_ids=frozenset(v.id for v in ir.values if v.phase == "fw"),
+        label="all_save",
+    )
+    mandatory = build_recompute_plan(
+        ir,
+        budget_bytes=1 << 30,
+        saved_value_ids=frozenset(v.id for v in ir.values if v.mandatory_save_reason),
+        label="torch_min_cut",
+    )
+    baseline = evaluate_plan(ir, all_save, fixed)
+    candidate = evaluate_plan(ir, mandatory, fixed)
+    report = diagnose_plan(baseline, candidate)
+
+    evaluation = evaluate_root_cause_predictions(
+        (report,),
+        (
+            RootCauseGroundTruth(
+                plan_id=report.plan_id,
+                primary_cause=report.primary_cause.name,
+                root_causes=report.root_causes,
+            ),
+            RootCauseGroundTruth(
+                plan_id="missing",
+                primary_cause=RootCause.REMATERIALIZATION_WAVE.name,
+                root_causes=(RootCause.REMATERIALIZATION_WAVE.name,),
+            ),
+        ),
+    )
+
+    assert evaluation.case_count == 2
+    assert evaluation.matched_case_count == 1
+    assert evaluation.missing_prediction_count == 1
+    assert evaluation.primary_accuracy == 1.0
+    if report.root_causes != (RootCause.UNKNOWN.name,):
+        assert evaluation.micro_precision == 1.0
+        assert evaluation.micro_recall < 1.0

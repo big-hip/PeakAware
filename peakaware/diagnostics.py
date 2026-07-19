@@ -72,6 +72,76 @@ class PlanDiagnosticReport:
     total_expectation_gap: int | None = None
 
 
+@dataclass(frozen=True)
+class RootCauseGroundTruth:
+    plan_id: str
+    primary_cause: RootCause | str
+    root_causes: tuple[RootCause | str, ...]
+
+
+@dataclass(frozen=True)
+class RootCauseEvaluation:
+    case_count: int
+    matched_case_count: int
+    missing_prediction_count: int
+    unknown_prediction_count: int
+    primary_accuracy: float | None
+    micro_precision: float | None
+    micro_recall: float | None
+    micro_f1: float | None
+
+
+def _normalize_cause_name(cause: RootCause | str) -> str:
+    return cause.name if isinstance(cause, RootCause) else str(cause)
+
+
+def evaluate_root_cause_predictions(
+    reports: tuple[PlanDiagnosticReport, ...],
+    labels: tuple[RootCauseGroundTruth, ...],
+) -> RootCauseEvaluation:
+    by_plan = {report.plan_id: report for report in reports}
+    matched = 0
+    missing = 0
+    unknown = 0
+    primary_correct = 0
+    true_positive = 0
+    predicted_total = 0
+    expected_total = 0
+    for label in labels:
+        report = by_plan.get(label.plan_id)
+        if report is None:
+            missing += 1
+            expected_total += len(set(label.root_causes))
+            continue
+        matched += 1
+        expected_primary = _normalize_cause_name(label.primary_cause)
+        predicted_primary = report.primary_cause.name
+        if predicted_primary == expected_primary:
+            primary_correct += 1
+        predicted = set(report.root_causes) - {RootCause.UNKNOWN.name}
+        expected = {_normalize_cause_name(cause) for cause in label.root_causes} - {RootCause.UNKNOWN.name}
+        if not predicted and RootCause.UNKNOWN.name in report.root_causes:
+            unknown += 1
+        true_positive += len(predicted & expected)
+        predicted_total += len(predicted)
+        expected_total += len(expected)
+    precision = None if predicted_total == 0 else true_positive / predicted_total
+    recall = None if expected_total == 0 else true_positive / expected_total
+    f1 = None
+    if precision is not None and recall is not None and precision + recall > 0:
+        f1 = 2 * precision * recall / (precision + recall)
+    return RootCauseEvaluation(
+        case_count=len(labels),
+        matched_case_count=matched,
+        missing_prediction_count=missing,
+        unknown_prediction_count=unknown,
+        primary_accuracy=None if matched == 0 else primary_correct / matched,
+        micro_precision=precision,
+        micro_recall=recall,
+        micro_f1=f1,
+    )
+
+
 def _snapshot_with_bytes(source: PeakSnapshot, total_bytes: int, confidence: float) -> PeakSnapshot:
     del confidence
     return PeakSnapshot(
