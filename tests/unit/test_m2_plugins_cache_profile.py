@@ -1,6 +1,7 @@
 import math
 
 import pytest
+import torch
 
 from peakaware.cache.executable import (
     load_executable_cache,
@@ -13,6 +14,12 @@ from peakaware.cache.keys import build_compiled_artifact_key, build_plan_evaluat
 from peakaware.cache.store import CacheEntry, invalidate_downstream, load_cache_entry, store_cache_entry
 from peakaware.contracts import MeasuredExecutable
 from peakaware.cost.base import OpCost, OpSignature, RooflineFallbackProvider
+from peakaware.cost.collector import (
+    collect_microbenchmark,
+    collect_model_trace,
+    measure_cuda_events,
+    summarize_samples,
+)
 from peakaware.cost.composite import CompositeCostProvider, build_composite_provider
 from peakaware.cost.profile_db import ExactProfileProvider, InterpolatedProfileProvider, ProfileDB, ProfileRecord
 from peakaware.errors import PluginConflictError
@@ -172,6 +179,45 @@ def test_profile_db_exact_lookup_round_trip(tmp_path):
     assert cost.estimated_us == 3.5
     assert cost.memory_bytes == 64
     assert cost.confidence == 1.0
+
+
+def test_profile_collector_summarizes_samples_and_writes_db(tmp_path):
+    db = ProfileDB(tmp_path / "profiles.sqlite")
+    signature = OpSignature("mul", "aten.mul", 8, 8, "float32")
+
+    record = summarize_samples((3.0, 1.0, 2.0, 4.0), workspace_bytes=16)
+    result = collect_microbenchmark(
+        signature,
+        lambda x: x * 2,
+        (torch.ones(2),),
+        warmup=0,
+        repeats=2,
+        db=db,
+    )
+    cost = db.lookup_exact(signature)
+
+    assert record.sample_count == 4
+    assert record.p50_us == 2.5
+    assert record.p90_us == 4.0
+    assert result.record.sample_count == 2
+    assert result.record.source == "microbenchmark"
+    assert cost is not None
+    assert cost.estimated_us == result.record.p50_us
+
+
+def test_cuda_event_measurement_falls_back_to_wall_time_on_cpu():
+    elapsed_us, workspace = measure_cuda_events(lambda x: x.relu(), (torch.tensor([-1.0, 1.0]),))
+
+    assert elapsed_us >= 0.0
+    assert workspace >= 0
+
+
+def test_collect_model_trace_reports_profiler_events():
+    events = collect_model_trace(lambda x: (x + 1).relu(), (torch.ones(2),))
+
+    assert events
+    assert events == tuple(sorted(events, key=lambda event: (-event.cpu_time_total_us, event.name)))
+    assert any("relu" in event.name.lower() or "add" in event.name.lower() for event in events)
 
 
 def test_profile_db_nearest_interpolates_same_target_and_dtype(tmp_path):
