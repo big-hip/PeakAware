@@ -53,6 +53,7 @@ def _minimal_record(
     samples_per_second: float | None = None,
 ) -> ExperimentRecord:
     return ExperimentRecord(
+        variant_name="diagnostic_hints_on" if status == "ok" else "failed",
         task_name="synthetic",
         microbatch_size=1,
         budget_bytes=budget_bytes,
@@ -114,6 +115,7 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.ok_records == 2
     assert summary.failed_records == 1
     assert summary.success_rate == 2 / 3
+    assert summary.variant_counts == {"diagnostic_hints_on": 2, "failed": 1}
     assert summary.budget_violation_count == 1
     assert summary.budget_violation_rate == 0.5
     assert summary.mean_samples_per_second == 15.0
@@ -163,6 +165,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
 
     assert len(records) == 1
     assert records[0].status == "ok"
+    assert records[0].variant_name == "default"
     assert records[0].selected_plan_key is not None
     assert records[0].graph_key is not None
     assert records[0].selected_saved_value_ids
@@ -180,6 +183,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].candidate_count >= records[0].measured_candidate_count
     assert records[0].cache_total_hits == 0
     assert payload[0]["selected_plan_id"] is not None
+    assert payload[0]["variant_name"] == "default"
     assert payload[0]["selected_plan_key"] == records[0].selected_plan_key
     assert payload[0]["graph_key"] == records[0].graph_key
     assert payload[0]["selected_saved_value_ids"] == list(records[0].selected_saved_value_ids)
@@ -194,6 +198,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert summary.budget_violation_count == 0
     assert summary.max_feasible_microbatch == 1
     assert summary_payload["success_rate"] == 1.0
+    assert summary_payload["variant_counts"] == {"default": 1}
     assert summary_payload["selected_prediction_count"] == 1
     assert summary_payload["simulation_accuracy_candidate_count"] >= 1
     assert summary_payload["root_cause_counts"]
@@ -253,6 +258,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             "1",
             "--top-k",
             "1",
+            "--diagnostic-hints",
+            "both",
             "--exact-small-graph",
             "--output-json",
             str(json_path),
@@ -270,6 +277,12 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     file_payload = json.loads(json_path.read_text(encoding="utf-8"))
     summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
 
+    assert len(stdout_payload) == 2
+    assert {record["variant_name"] for record in stdout_payload} == {
+        "diagnostic_hints_on",
+        "diagnostic_hints_off",
+    }
+    assert all(record["status"] == "ok" for record in stdout_payload)
     assert stdout_payload[0]["status"] == "ok"
     assert stdout_payload[0]["selected_plan_key"]
     assert stdout_payload[0]["exact_plan_key"] is None
@@ -280,14 +293,15 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["selected_prediction_error_bytes"] is not None
     assert stdout_payload[0]["selected_estimated_peak_reduction_bytes"] is not None
     assert stdout_payload[0]["simulation_accuracy_candidate_count"] >= 1
-    assert stdout_payload[0]["diagnostic_hints_enabled"] is True
+    assert {record["diagnostic_hints_enabled"] for record in stdout_payload} == {True, False}
     assert stdout_payload[0]["cache_total_hits"] == 0
     assert file_payload[0]["task_name"] == "tiny_mlp_w8_d3"
     assert file_payload[0]["exact_error_type"] == "PlanValidationError"
-    assert summary_payload["total_records"] == 1
-    assert summary_payload["ok_records"] == 1
-    assert summary_payload["selected_prediction_count"] == 1
+    assert summary_payload["total_records"] == 2
+    assert summary_payload["ok_records"] == 2
+    assert summary_payload["variant_counts"] == {"diagnostic_hints_off": 1, "diagnostic_hints_on": 1}
+    assert summary_payload["selected_prediction_count"] == 2
     assert summary_payload["mean_simulation_accuracy_absolute_error_bytes"] is not None
     assert "diagnostic_hint_kind_counts" in summary_payload
-    assert summary_payload["exact_failure_count"] == 1
-    assert csv_path.read_text(encoding="utf-8").startswith("task_name,microbatch_size,budget_bytes")
+    assert summary_payload["exact_failure_count"] == 2
+    assert csv_path.read_text(encoding="utf-8").startswith("variant_name,task_name,microbatch_size,budget_bytes")

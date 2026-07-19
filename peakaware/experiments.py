@@ -16,6 +16,7 @@ from peakaware.search.plan import plan_identity_key
 
 @dataclass(frozen=True)
 class ExperimentCase:
+    variant_name: str
     task_name: str
     microbatch_size: int
     budget_bytes: int
@@ -23,6 +24,7 @@ class ExperimentCase:
 
 @dataclass(frozen=True)
 class ExperimentRecord:
+    variant_name: str
     task_name: str
     microbatch_size: int
     budget_bytes: int
@@ -85,6 +87,7 @@ class ExperimentSummary:
     ok_records: int
     failed_records: int
     success_rate: float | None
+    variant_counts: dict[str, int]
     budget_violation_count: int
     budget_violation_rate: float | None
     max_feasible_microbatch: int | None
@@ -149,6 +152,7 @@ def _record_success(
     exact = exact or {}
     return ExperimentRecord(
         task_name=case.task_name,
+        variant_name=case.variant_name,
         microbatch_size=case.microbatch_size,
         budget_bytes=case.budget_bytes,
         status="ok",
@@ -208,6 +212,7 @@ def _record_success(
 def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
     return ExperimentRecord(
         task_name=case.task_name,
+        variant_name=case.variant_name,
         microbatch_size=case.microbatch_size,
         budget_bytes=case.budget_bytes,
         status="failed",
@@ -266,6 +271,7 @@ def run_experiment_matrix(
     registry: TrainingTaskRegistry | None = None,
     include_exact_baseline: bool = False,
     exact_max_candidate_count: int = 12,
+    variant_name: str = "default",
 ) -> tuple[ExperimentRecord, ...]:
     if not task_names:
         raise ValueError("task_names must not be empty")
@@ -286,7 +292,7 @@ def run_experiment_matrix(
         task = registry.get(task_name)
         for microbatch_size in microbatch_sizes:
             for budget in budget_bytes:
-                case = ExperimentCase(task_name, microbatch_size, budget)
+                case = ExperimentCase(variant_name, task_name, microbatch_size, budget)
                 model = task.build_model()
                 optimizer = task.build_optimizer(model)
                 args, kwargs = task.build_batch(microbatch_size)
@@ -456,6 +462,7 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         ok_records=len(ok),
         failed_records=failed_count,
         success_rate=None if total == 0 else len(ok) / total,
+        variant_counts=_counts([record.variant_name for record in records]),
         budget_violation_count=len(violations),
         budget_violation_rate=None if not ok else len(violations) / len(ok),
         max_feasible_microbatch=max(feasible_microbatches) if feasible_microbatches else None,

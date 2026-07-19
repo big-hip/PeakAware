@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +36,7 @@ def main() -> None:
     parser.add_argument("--microbatches", default="1")
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--isolate", action="store_true")
+    parser.add_argument("--diagnostic-hints", choices=("on", "off", "both"), default="on")
     parser.add_argument("--exact-small-graph", action="store_true")
     parser.add_argument("--exact-max-candidates", type=int, default=12)
     parser.add_argument("--profile-db", type=Path, default=None)
@@ -43,20 +45,30 @@ def main() -> None:
     parser.add_argument("--output-summary-json", type=Path, default=None)
     args = parser.parse_args()
 
-    config = PeakAwareConfig(
+    base_config = PeakAwareConfig(
         safety_margin_bytes=0,
         safety_margin_ratio=0.0,
         top_k=args.top_k,
         isolate_candidate_measurement=args.isolate,
         profile_db_path=args.profile_db,
     )
-    records = run_experiment_matrix(
-        task_names=_parse_csv_text(args.tasks),
-        microbatch_sizes=_parse_csv_ints(args.microbatches),
-        budget_bytes=tuple(value << 20 for value in _parse_csv_ints(args.budget_mib)),
-        config=config,
-        include_exact_baseline=args.exact_small_graph,
-        exact_max_candidate_count=args.exact_max_candidates,
+    if args.diagnostic_hints == "both":
+        variants = (("diagnostic_hints_on", True), ("diagnostic_hints_off", False))
+    else:
+        enabled = args.diagnostic_hints == "on"
+        variants = ((f"diagnostic_hints_{args.diagnostic_hints}", enabled),)
+    records = tuple(
+        record
+        for variant_name, enabled in variants
+        for record in run_experiment_matrix(
+            task_names=_parse_csv_text(args.tasks),
+            microbatch_sizes=_parse_csv_ints(args.microbatches),
+            budget_bytes=tuple(value << 20 for value in _parse_csv_ints(args.budget_mib)),
+            config=replace(base_config, enable_diagnostic_hints=enabled),
+            include_exact_baseline=args.exact_small_graph,
+            exact_max_candidate_count=args.exact_max_candidates,
+            variant_name=variant_name,
+        )
     )
     if args.output_json is not None:
         write_experiment_json(records, args.output_json)
