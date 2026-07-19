@@ -192,9 +192,9 @@ def _placeholder_names(graph: torch.fx.GraphModule) -> tuple[str, ...]:
 
 
 def _aot_partition_replay_supported(lowered: LoweredPartition, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
-    if kwargs:
-        return False
     if any(not isinstance(arg, Tensor) for arg in args):
+        return False
+    if any(not isinstance(value, Tensor) for value in kwargs.values()):
         return False
     fw_placeholders = _placeholder_names(lowered.fw_graph)
     bw_placeholders = _placeholder_names(lowered.bw_graph)
@@ -245,6 +245,7 @@ def compare_lowered_partition_with_baseline(
     loss_fn: Any,
     *,
     num_fwd_outputs: int = 1,
+    kwarg_names: tuple[str, ...] | None = None,
     atol: float,
     rtol: float,
 ) -> tuple[bool, str | None]:
@@ -259,6 +260,13 @@ def compare_lowered_partition_with_baseline(
     cuda_rng = _cuda_rng_state()
     params = tuple(model.parameters())
     state_inputs = params + tuple(model.buffers())
+    ordered_kwarg_names = tuple(kwargs) if kwarg_names is None else kwarg_names
+    if set(kwargs) != set(ordered_kwarg_names):
+        raise PartitionReplayUnsupported(
+            "lowered partition replay kwargs must match captured kwargs: "
+            f"expected {sorted(ordered_kwarg_names)}, got {sorted(kwargs)}"
+        )
+    flat_user_inputs = args + tuple(kwargs[name] for name in ordered_kwarg_names)
 
     def restore_all() -> None:
         model.load_state_dict(original_model_state)
@@ -277,7 +285,7 @@ def compare_lowered_partition_with_baseline(
 
             restore_all()
             _zero_grads(model)
-            fw_outputs = _as_tuple(lowered.fw_graph(*(state_inputs + args)))
+            fw_outputs = _as_tuple(lowered.fw_graph(*(state_inputs + flat_user_inputs)))
             if len(fw_outputs) < num_fwd_outputs:
                 return False, "lowered FW graph returned fewer user outputs than expected"
             user_outputs = fw_outputs[:num_fwd_outputs]
@@ -382,6 +390,7 @@ def run_aot_eager_dry_run(
     rtol: float,
     ir: JointTrainingIR | None = None,
     num_fwd_outputs: int = 1,
+    kwarg_names: tuple[str, ...] | None = None,
 ) -> DryRunResult:
     if ir is None:
         structure_valid, structure_reason = verify_partition_abi(lowered)
@@ -406,6 +415,7 @@ def run_aot_eager_dry_run(
                 kwargs,
                 loss_fn,
                 num_fwd_outputs=num_fwd_outputs,
+                kwarg_names=kwarg_names,
                 atol=atol,
                 rtol=rtol,
             )

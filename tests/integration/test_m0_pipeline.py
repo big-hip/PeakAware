@@ -23,6 +23,17 @@ class TinyResidual(nn.Module):
         return self.out(hidden + residual)
 
 
+class TinyKwargResidual(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.a = nn.Linear(8, 8)
+        self.out = nn.Linear(8, 1)
+
+    def forward(self, x, scale=None, bias=None):
+        hidden = self.a(x * scale + bias).relu()
+        return self.out(hidden)
+
+
 def squared_mean_loss(out):
     return out.pow(2).mean()
 
@@ -144,6 +155,42 @@ def test_optimize_training_can_isolate_candidate_measurement():
     assert result.dry_run is not None and result.dry_run.gradients_match
     assert result.measured_candidates
     assert result.executable.plan_id in {candidate.plan_id for candidate in result.measured_candidates}
+
+
+def test_optimize_training_uses_aot_partition_runtime_with_tensor_kwargs():
+    torch.manual_seed(0)
+    model = TinyKwargResidual()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    x = torch.randn(4, 8)
+    scale = torch.full((4, 8), 2.0)
+    bias = torch.full((4, 8), -0.5)
+
+    result = optimize_training(
+        model,
+        (x,),
+        example_kwargs={"scale": scale, "bias": bias},
+        loss_fn=squared_mean_loss,
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 28,
+        config=PeakAwareConfig(
+            capture_backend="aot",
+            enable_compile=False,
+            top_k=2,
+            safety_margin_bytes=0,
+            safety_margin_ratio=0.0,
+        ),
+    )
+
+    before = tuple(param.detach().clone() for param in model.parameters())
+    step = result.executor.step(x, bias=bias, scale=scale)
+    after = tuple(param.detach().clone() for param in model.parameters())
+
+    assert step.optimizer_step_performed is True
+    assert step.metrics["aot_partition_runtime"] == 1
+    assert result.dry_run is not None and result.dry_run.replay_mode == "lowered_aot"
+    assert result.executor.aot_partition_runtime is True
+    assert result.executable.phase_metrics["aot_partition_runtime"] == 1
+    assert any(not torch.equal(left, right) for left, right in zip(before, after))
 
 
 def test_optimize_training_rejects_requires_grad_kwargs():

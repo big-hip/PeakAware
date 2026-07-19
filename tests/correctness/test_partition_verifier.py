@@ -345,6 +345,87 @@ def test_lowered_aot_partition_executable_matches_eager_backward():
         assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
 
 
+def test_lowered_aot_partition_executable_supports_tensor_kwargs():
+    torch.manual_seed(0)
+
+    class KwargModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.linear = nn.Linear(4, 1)
+
+        def forward(self, x, scale=None, bias=None):
+            return self.linear(x * scale + bias)
+
+    model = KwargModel()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    args = (torch.randn(2, 4),)
+    kwargs = {
+        "scale": torch.full((2, 4), 2.0),
+        "bias": torch.full((2, 4), 5.0),
+    }
+    request = TrainingRequest(
+        model=model,
+        example_args=args,
+        example_kwargs=kwargs,
+        loss_fn=lambda out: out.pow(2).mean(),
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 30,
+        config=PeakAwareConfig(capture_backend="aot"),
+        optimizer_spec=build_optimizer_spec(optimizer, model),
+        hardware=HardwareSpec("cpu", False, None),
+        request_key="partition-executable-kwargs",
+    )
+    capture = capture_joint_graph(request)
+    ir, report = build_joint_ir(capture)
+    assert report.valid
+    plan = build_recompute_plan(
+        ir,
+        budget_bytes=1 << 30,
+        saved_value_ids=frozenset(value.id for value in ir.values if value.phase == "fw"),
+        label="all_save",
+    )
+    lowered = partition_joint_graph(
+        capture.joint_module,
+        plan,
+        ir,
+        num_fwd_outputs=capture.num_fwd_outputs,
+        static_lifetime_input_indices=capture.static_lifetime_input_indices,
+    )
+    dry_run = run_aot_eager_dry_run(
+        lowered,
+        model=model,
+        args=args,
+        kwargs={"bias": kwargs["bias"], "scale": kwargs["scale"]},
+        loss_fn=request.loss_fn,
+        atol=1e-6,
+        rtol=1e-5,
+        ir=ir,
+        num_fwd_outputs=capture.num_fwd_outputs,
+        kwarg_names=tuple(kwargs),
+    )
+    executable = build_aot_partition_executable(
+        lowered,
+        model,
+        num_fwd_outputs=capture.num_fwd_outputs,
+        kwarg_names=tuple(kwargs),
+    )
+
+    optimizer.zero_grad(set_to_none=True)
+    eager_loss = request.loss_fn(model(*args, **kwargs))
+    eager_loss.backward()
+    eager_grads = tuple(param.grad.detach().clone() for param in model.parameters())
+    optimizer.zero_grad(set_to_none=True)
+    partition_loss = request.loss_fn(executable(*args, bias=kwargs["bias"], scale=kwargs["scale"]))
+    partition_loss.backward()
+    partition_grads = tuple(param.grad.detach().clone() for param in model.parameters())
+
+    assert dry_run.replay_mode == "lowered_aot"
+    assert dry_run.gradients_match
+    assert torch.allclose(partition_loss.detach(), eager_loss.detach(), atol=1e-6, rtol=1e-5)
+    for actual, expected in zip(partition_grads, eager_grads):
+        assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
+
+
 def test_lowered_aot_partition_replay_passes_model_buffers_as_primals():
     torch.manual_seed(0)
     model = nn.Sequential(

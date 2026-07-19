@@ -148,6 +148,7 @@ def build_aot_partition_executable(
     model: nn.Module,
     *,
     num_fwd_outputs: int = 1,
+    kwarg_names: tuple[str, ...] = (),
 ) -> Callable[..., Any]:
     if num_fwd_outputs != 1:
         raise ValueError("AOT partition executable currently supports exactly one tensor user output")
@@ -185,11 +186,17 @@ def build_aot_partition_executable(
             return tuple(gradients)
 
     def executable(*args: Any, **kwargs: Any) -> Any:
-        if kwargs:
-            raise ValueError("AOT partition executable currently supports positional tensor inputs only")
         if any(not isinstance(arg, Tensor) for arg in args):
             raise ValueError("AOT partition executable currently supports tensor inputs only")
-        return _AOTPartitionFunction.apply(*(params + buffers + args))
+        if set(kwargs) != set(kwarg_names):
+            raise ValueError(
+                "AOT partition executable kwargs must match captured kwargs: "
+                f"expected {sorted(kwarg_names)}, got {sorted(kwargs)}"
+            )
+        kwarg_values = tuple(kwargs[name] for name in kwarg_names)
+        if any(not isinstance(value, Tensor) for value in kwarg_values):
+            raise ValueError("AOT partition executable currently supports tensor kwargs only")
+        return _AOTPartitionFunction.apply(*(params + buffers + args + kwarg_values))
 
     return executable
 

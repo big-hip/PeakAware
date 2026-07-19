@@ -323,6 +323,7 @@ def _dry_run_candidate(
     loss_fn: Callable[..., Tensor],
     config: PeakAwareConfig,
     num_fwd_outputs: int = 1,
+    kwarg_names: tuple[str, ...] | None = None,
 ) -> DryRunResult:
     return run_aot_eager_dry_run(
         lowered,
@@ -334,6 +335,7 @@ def _dry_run_candidate(
         rtol=config.rtol,
         ir=ir,
         num_fwd_outputs=num_fwd_outputs,
+        kwarg_names=kwarg_names,
     )
 
 
@@ -373,6 +375,7 @@ class _CandidateValidation:
     measurement: _CandidateMeasurement | None
     cache_hit: bool = False
     lowered: LoweredPartition | None = None
+    kwarg_names: tuple[str, ...] = ()
 
 
 def _candidate_uses_activation_checkpoint(candidate: EvaluatedPlan) -> bool:
@@ -391,6 +394,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
     example_args = payload["example_args"]
     example_kwargs = payload["example_kwargs"]
     can_return_lowered = capture is not None and ir is not None
+    kwarg_names = tuple(example_kwargs)
 
     if capture is None or ir is None:
         capture = capture_joint_graph(request)
@@ -407,6 +411,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         loss_fn=loss_fn,
         config=config,
         num_fwd_outputs=capture.num_fwd_outputs,
+        kwarg_names=kwarg_names,
     )
     if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
         return _CandidateValidation(dry_run=dry_run, measurement=None)
@@ -419,6 +424,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                 lowered,
                 model,
                 num_fwd_outputs=capture.num_fwd_outputs,
+                kwarg_names=kwarg_names,
             )
             activation_checkpoint = False
             aot_partition_runtime = True
@@ -465,6 +471,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                 ),
                 cache_hit=True,
                 lowered=lowered if aot_partition_runtime else None,
+                kwarg_names=kwarg_names if aot_partition_runtime else (),
             )
     measured = make_measured_executable(
         candidate.plan.plan_id,
@@ -486,6 +493,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
             aot_partition_runtime=aot_partition_runtime,
         ),
         lowered=lowered if aot_partition_runtime else None,
+        kwarg_names=kwarg_names if aot_partition_runtime else (),
     )
 
 
@@ -522,7 +530,11 @@ def _measure_candidate_for_parent(
     if measurement.aot_partition_runtime:
         if validation.lowered is None:
             raise ValueError("AOT partition runtime measurement is missing lowered graphs")
-        executable_override = build_aot_partition_executable(validation.lowered, executor.model)
+        executable_override = build_aot_partition_executable(
+            validation.lowered,
+            executor.model,
+            kwarg_names=validation.kwarg_names,
+        )
     candidate_executor = build_training_step_executor(
         executor.model,
         executor.optimizer,
