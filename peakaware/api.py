@@ -326,6 +326,7 @@ def _select_measured_candidate(
     measured: tuple[MeasuredExecutable, ...],
     *,
     memory_budget_bytes: int,
+    selection_objective: str,
 ) -> MeasuredExecutable | None:
     feasible = [
         item
@@ -334,7 +335,10 @@ def _select_measured_candidate(
     ]
     if not feasible:
         return None
-    feasible.sort(key=lambda item: (item.measured_step_us, item.measured_peak_bytes, item.plan_id))
+    if selection_objective == "min_time_then_peak":
+        feasible.sort(key=lambda item: (item.measured_step_us, item.measured_peak_bytes, item.plan_id))
+    else:
+        feasible.sort(key=lambda item: (item.measured_peak_bytes, item.measured_step_us, item.plan_id))
     return feasible[0]
 
 
@@ -382,7 +386,14 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
     )
     if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
         return _CandidateValidation(dry_run=dry_run, measurement=None)
-    executor = build_training_step_executor(model, optimizer, loss_fn, config, capture.guards)
+    executor = build_training_step_executor(
+        model,
+        optimizer,
+        loss_fn,
+        config,
+        capture.guards,
+        selection_objective=config.selection_objective,
+    )
     cache_root = _cache_root(config)
     executable_key = _executable_cache_key(request, capture, candidate)
     executable_provenance = _executable_cache_provenance(request, candidate)
@@ -604,7 +615,11 @@ def optimize_training(
             continue
         measured_candidates.append(_measure_candidate_for_parent(executor, validation))
     measured_tuple = tuple(measured_candidates)
-    selected_measured = _select_measured_candidate(measured_tuple, memory_budget_bytes=memory_budget_bytes)
+    selected_measured = _select_measured_candidate(
+        measured_tuple,
+        memory_budget_bytes=memory_budget_bytes,
+        selection_objective=config.selection_objective,
+    )
     if selected_measured is None:
         details = "; ".join(f"{plan_id}: {reason}" for plan_id, reason in sorted(rejected.items()))
         raise InfeasibleBudgetError(f"no Top-K candidate passed dry-run and measurement: {details}")
@@ -613,6 +628,7 @@ def optimize_training(
     measured = selected_measured
     fallback_ids = tuple(item.plan_id for item in measured_tuple if item.plan_id != selected.plan.plan_id)
     executor.current_plan_id = selected.plan.plan_id
+    executor.selection_objective = config.selection_objective
     executor.fallback_executables = tuple(
         (item.plan_id, item.forward_backward)
         for item in measured_tuple

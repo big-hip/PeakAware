@@ -74,6 +74,7 @@ class EagerTrainingStepExecutor:
         fallback_executables: tuple[tuple[str, Callable[..., Tensor]], ...] = (),
         runtime_peak_threshold_bytes: int | None = None,
         runtime_peak_observer: Callable[[], int] | None = None,
+        selection_objective: str = "unconfigured",
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -85,6 +86,7 @@ class EagerTrainingStepExecutor:
         self.fallback_executables = fallback_executables
         self.runtime_peak_threshold_bytes = runtime_peak_threshold_bytes
         self.runtime_peak_observer = runtime_peak_observer
+        self.selection_objective = selection_objective
 
     def step(self, *args: Any, **kwargs: Any) -> StepResult:
         validate_runtime_guards(self.guards, args, kwargs)
@@ -132,6 +134,7 @@ def build_training_step_executor(
     plan_id: str = "unconfigured",
     fallback_executables: tuple[tuple[str, Callable[..., Tensor]], ...] = (),
     runtime_peak_threshold_bytes: int | None = None,
+    selection_objective: str = "unconfigured",
 ) -> EagerTrainingStepExecutor:
     executable: Callable[..., Tensor]
     if config.enable_compile:
@@ -149,6 +152,7 @@ def build_training_step_executor(
         plan_id=plan_id,
         fallback_executables=fallback_executables,
         runtime_peak_threshold_bytes=runtime_peak_threshold_bytes,
+        selection_objective=selection_objective,
     )
 
 

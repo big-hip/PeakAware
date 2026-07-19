@@ -111,6 +111,34 @@ def _prediction_error_row(plan: EvaluatedPlan | None, peak_bytes: int) -> dict[s
     }
 
 
+def _simulation_accuracy_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {
+            "candidate_count": 0,
+            "mean_absolute_error_bytes": None,
+            "max_absolute_error_bytes": None,
+            "mean_absolute_relative_error": None,
+            "within_10_percent_rate": None,
+        }
+    absolute_errors = [abs(int(row["error_bytes"])) for row in rows]
+    relative_errors = [
+        abs(float(row["relative_error"]))
+        for row in rows
+        if row["relative_error"] is not None
+    ]
+    return {
+        "candidate_count": len(rows),
+        "mean_absolute_error_bytes": sum(absolute_errors) / len(absolute_errors),
+        "max_absolute_error_bytes": max(absolute_errors),
+        "mean_absolute_relative_error": None
+        if not relative_errors
+        else sum(relative_errors) / len(relative_errors),
+        "within_10_percent_rate": None
+        if not relative_errors
+        else sum(1 for error in relative_errors if error <= 0.10) / len(relative_errors),
+    }
+
+
 def _early_stop_row(result: OptimizedTrainingResult) -> dict[str, Any] | None:
     if result.analysis is None or result.analysis.early_stop is None:
         return None
@@ -274,6 +302,7 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
         "selected_effective_saved_value_ids": tuple(sorted(_selected_effective_saved_value_ids(result))),
         "estimated_peak_bytes": result.selected_plan.estimated_peak_bytes,
         "estimated_step_us": result.selected_plan.estimated_step_us,
+        "selection_objective": getattr(result.executor, "selection_objective", "unknown"),
         "fallback_plan_ids": result.fallback_plan_ids,
         "feasibility": {
             "status": result.feasibility.status,
@@ -293,6 +322,7 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
         "topk_correction": {
             "selected": _prediction_error_row(selected_evaluated, result.executable.measured_peak_bytes),
             "candidates": correction_rows,
+            "simulation_accuracy": _simulation_accuracy_row(correction_rows),
         },
         "cache": {
             "layer_hits": result.cache_stats.layer_hits,

@@ -58,6 +58,7 @@ class PeakAwareConfig:
     gradient_accumulation_steps: int = 1
     fsdp_enabled: bool = False
     offload_enabled: bool = False
+    selection_objective: str = "min_peak_then_time"
     rng_seed: int | None = 1337
     atol: float = 1e-5
     rtol: float = 1e-4
@@ -102,6 +103,8 @@ class PeakAwareConfig:
             raise ValueError("M0 does not support FSDP; set fsdp_enabled=False")
         if self.offload_enabled:
             raise ValueError("M0 does not support offload; set offload_enabled=False")
+        if self.selection_objective not in {"min_peak_then_time", "min_time_then_peak"}:
+            raise ValueError("selection_objective must be one of: min_peak_then_time, min_time_then_peak")
         normalize_float_dtype_name(self.precision_dtype)
         if self.autocast_dtype is not None:
             normalize_float_dtype_name(self.autocast_dtype)

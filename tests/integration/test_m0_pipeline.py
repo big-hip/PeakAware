@@ -6,6 +6,7 @@ from torch import nn
 
 import peakaware.api as api_module
 from peakaware import PeakAwareConfig, optimize_training
+from peakaware.contracts import MeasuredExecutable
 from peakaware.runtime.isolation import WorkerResult
 
 
@@ -24,6 +25,25 @@ class TinyResidual(nn.Module):
 
 def squared_mean_loss(out):
     return out.pow(2).mean()
+
+
+def test_measured_candidate_selection_prefers_peak_by_default():
+    fast_high_peak = MeasuredExecutable("fast_high_peak", abs, 200, 1.0, True)
+    slow_low_peak = MeasuredExecutable("slow_low_peak", abs, 100, 10.0, True)
+
+    default_selected = api_module._select_measured_candidate(
+        (fast_high_peak, slow_low_peak),
+        memory_budget_bytes=1 << 20,
+        selection_objective="min_peak_then_time",
+    )
+    time_selected = api_module._select_measured_candidate(
+        (fast_high_peak, slow_low_peak),
+        memory_budget_bytes=1 << 20,
+        selection_objective="min_time_then_peak",
+    )
+
+    assert default_selected is slow_low_peak
+    assert time_selected is fast_high_peak
 
 
 def test_optimize_training_builds_executor_and_runs_step():
@@ -61,6 +81,7 @@ def test_optimize_training_builds_executor_and_runs_step():
     assert len(result.measured_candidates) >= 2
     assert result.executable.plan_id in {candidate.plan_id for candidate in result.measured_candidates}
     assert result.executor.current_plan_id == result.selected_plan.plan_id
+    assert result.executor.selection_objective == "min_peak_then_time"
     assert result.executor.runtime_peak_threshold_bytes is not None
     assert result.executor.runtime_peak_threshold_bytes <= 1 << 28
     assert tuple(plan_id for plan_id, _ in result.executor.fallback_executables) == result.fallback_plan_ids
@@ -197,6 +218,7 @@ def test_optimize_training_rejects_autocast_and_grad_scaler_modes():
         (PeakAwareConfig(enable_compile=False, gradient_accumulation_steps=2), "gradient accumulation"),
         (PeakAwareConfig(enable_compile=False, fsdp_enabled=True), "FSDP"),
         (PeakAwareConfig(enable_compile=False, offload_enabled=True), "offload"),
+        (PeakAwareConfig(enable_compile=False, selection_objective="unknown"), "selection_objective"),
     ),
 )
 def test_optimize_training_rejects_unsupported_execution_modes(config, message):
