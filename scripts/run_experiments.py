@@ -50,6 +50,7 @@ def main() -> None:
     parser.add_argument("--exact-max-candidates", type=int, default=12)
     parser.add_argument("--profile-db", type=Path, default=None)
     parser.add_argument("--cache-root", type=Path, default=None)
+    parser.add_argument("--plan-artifact-dir", type=Path, default=None)
     parser.add_argument("--output-json", type=Path, default=None)
     parser.add_argument("--output-csv", type=Path, default=None)
     parser.add_argument("--output-summary-json", type=Path, default=None)
@@ -88,6 +89,7 @@ def main() -> None:
             exact_max_candidate_count=args.exact_max_candidates,
             variant_name=variant_name,
             device=args.device,
+            plan_artifact_dir=args.plan_artifact_dir,
         )
     )
     if args.output_json is not None:

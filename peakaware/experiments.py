@@ -13,7 +13,7 @@ import torch
 from peakaware.api import optimize_training
 from peakaware.config import PeakAwareConfig
 from peakaware.models import TrainingTaskRegistry
-from peakaware.reporting import summarize_result
+from peakaware.reporting import export_plan_artifact_json, summarize_result
 from peakaware.search.exact import solve_exact_small_graph
 from peakaware.search.plan import plan_identity_key
 
@@ -481,6 +481,7 @@ def run_experiment_matrix(
     exact_max_candidate_count: int = 12,
     variant_name: str = "default",
     device: str = "cpu",
+    plan_artifact_dir: str | Path | None = None,
 ) -> tuple[ExperimentRecord, ...]:
     if not task_names:
         raise ValueError("task_names must not be empty")
@@ -498,6 +499,8 @@ def run_experiment_matrix(
     config = config or PeakAwareConfig()
     resolved_device = _resolve_experiment_device(device)
     config_fingerprint = _config_fingerprint(config, str(resolved_device))
+    if plan_artifact_dir is not None:
+        Path(plan_artifact_dir).mkdir(parents=True, exist_ok=True)
     records: list[ExperimentRecord] = []
     for task_name in task_names:
         task = registry.get(task_name)
@@ -523,6 +526,15 @@ def run_experiment_matrix(
                     records.append(_record_failure(case, exc))
                     continue
                 summary = summarize_result(result)
+                if plan_artifact_dir is not None:
+                    stem = _safe_artifact_stem(
+                        variant_name,
+                        task_name,
+                        f"mb{microbatch_size}",
+                        f"budget{budget}",
+                        summary["selected_plan_key"][:12],
+                    )
+                    export_plan_artifact_json(result, Path(plan_artifact_dir) / f"{stem}.json")
                 exact = None
                 if include_exact_baseline:
                     exact = _run_exact_baseline(case, result, exact_max_candidate_count)
@@ -559,6 +571,11 @@ def _run_exact_baseline(case: ExperimentCase, result: Any, max_candidate_count: 
 
 def experiment_records_to_dicts(records: tuple[ExperimentRecord, ...]) -> list[dict[str, Any]]:
     return [asdict(record) for record in records]
+
+
+def _safe_artifact_stem(*parts: object) -> str:
+    text = "_".join(str(part) for part in parts)
+    return "".join(char if char.isalnum() or char in "._-" else "_" for char in text)
 
 
 def _mean(values: list[float | int]) -> float | None:

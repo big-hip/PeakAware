@@ -25,6 +25,7 @@ from peakaware.experiments import (
     write_experiment_variant_summary_json,
 )
 from peakaware.models import TrainingTaskRegistry
+from peakaware.reporting import load_plan_artifact_json, validate_plan_artifact_identity
 
 
 def _build_linear_model() -> nn.Module:
@@ -489,6 +490,27 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert summary_payload["total_actual_joint_capture_count"] == 1
 
 
+def test_experiment_matrix_can_write_plan_artifacts(tmp_path):
+    artifact_dir = tmp_path / "plans"
+    records = run_experiment_matrix(
+        task_names=("tiny_residual_w8",),
+        microbatch_sizes=(1,),
+        budget_bytes=(1 << 28,),
+        config=PeakAwareConfig(safety_margin_bytes=0, safety_margin_ratio=0.0, top_k=1),
+        plan_artifact_dir=artifact_dir,
+    )
+
+    artifacts = list(artifact_dir.glob("*.json"))
+
+    assert len(records) == 1
+    assert records[0].status == "ok"
+    assert len(artifacts) == 1
+    artifact = load_plan_artifact_json(artifacts[0])
+    validation = validate_plan_artifact_identity(artifact)
+    assert validation["valid"] is True
+    assert artifact["plan_key"] == records[0].selected_plan_key
+
+
 def test_experiment_writers_create_parent_directories(tmp_path):
     records = (_minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80),)
     summary = summarize_experiment_records(records)
@@ -556,6 +578,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     hint_ablation_path = tmp_path / "hint_ablation.json"
     baseline_comparison_path = tmp_path / "baseline_comparison.json"
     layered_accuracy_path = tmp_path / "layered_accuracy.json"
+    plan_artifact_dir = tmp_path / "plan_artifacts"
     sac_baseline_path = tmp_path / "sac_baseline.json"
     sac_baseline_path.write_text(
         json.dumps(
@@ -600,6 +623,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             "2",
             "--cache-root",
             str(tmp_path / "cache"),
+            "--plan-artifact-dir",
+            str(plan_artifact_dir),
             "--exact-small-graph",
             "--output-json",
             str(json_path),
@@ -701,6 +726,9 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert "mean_optimization_amortization_steps" in summary_payload
     assert set(summary_payload["cache_layer_hit_rates"]).issubset({"analysis", "executable"})
     assert summary_payload["total_actual_joint_capture_count"] == 2
+    plan_artifacts = list(plan_artifact_dir.glob("*.json"))
+    assert len(plan_artifacts) == 2
+    assert all(validate_plan_artifact_identity(load_plan_artifact_json(path))["valid"] for path in plan_artifacts)
     assert csv_path.read_text(encoding="utf-8").startswith(
         "variant_name,config_fingerprint,task_name,microbatch_size,budget_bytes"
     )
