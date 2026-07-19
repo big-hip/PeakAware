@@ -48,6 +48,19 @@ def validate_runtime_guards(guards: tuple[GuardSpec, ...], args: tuple[Any, ...]
             raise ValueError(f"runtime guard failed for {guard.name}: expected {guard.value}, got {actual}")
 
 
+def _runtime_peak_bytes() -> int:
+    if not torch.cuda.is_available():
+        return 0
+    torch.cuda.synchronize()
+    return int(torch.cuda.max_memory_allocated())
+
+
+def _reset_runtime_peak_stats() -> None:
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+
+
 class EagerTrainingStepExecutor:
     def __init__(
         self,
@@ -57,6 +70,10 @@ class EagerTrainingStepExecutor:
         executable: Callable[..., Tensor],
         config: PeakAwareConfig,
         guards: tuple[GuardSpec, ...] = (),
+        plan_id: str = "unconfigured",
+        fallback_executables: tuple[tuple[str, Callable[..., Tensor]], ...] = (),
+        runtime_peak_threshold_bytes: int | None = None,
+        runtime_peak_observer: Callable[[], int] | None = None,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -64,16 +81,38 @@ class EagerTrainingStepExecutor:
         self.executable = executable
         self.config = config
         self.guards = guards
+        self.current_plan_id = plan_id
+        self.fallback_executables = fallback_executables
+        self.runtime_peak_threshold_bytes = runtime_peak_threshold_bytes
+        self.runtime_peak_observer = runtime_peak_observer
 
     def step(self, *args: Any, **kwargs: Any) -> StepResult:
         validate_runtime_guards(self.guards, args, kwargs)
+        _reset_runtime_peak_stats()
         self.optimizer.zero_grad(set_to_none=self.config.zero_grad_set_to_none)
         loss = self.loss_fn(self.executable(*args, **kwargs))
         if loss.ndim != 0:
             raise ValueError("loss_fn must return a scalar tensor")
         loss.backward()
         self.optimizer.step()
-        return StepResult(loss=loss.detach(), optimizer_step_performed=True)
+        peak_bytes = self.runtime_peak_observer() if self.runtime_peak_observer is not None else _runtime_peak_bytes()
+        metrics: dict[str, Any] = {
+            "plan_id": self.current_plan_id,
+            "runtime_peak_bytes": peak_bytes,
+            "runtime_peak_threshold_bytes": self.runtime_peak_threshold_bytes,
+        }
+        if self.runtime_peak_threshold_bytes is not None and peak_bytes > self.runtime_peak_threshold_bytes:
+            metrics["fallback_reason"] = (
+                f"runtime peak {peak_bytes} bytes exceeded threshold "
+                f"{self.runtime_peak_threshold_bytes} bytes"
+            )
+            if self.fallback_executables:
+                fallback_plan_id, fallback_executable = self.fallback_executables[0]
+                replace_executable_on_fallback(self, fallback_executable, plan_id=fallback_plan_id)
+                metrics["fallback_plan_id"] = fallback_plan_id
+            else:
+                metrics["fallback_plan_id"] = None
+        return StepResult(loss=loss.detach(), optimizer_step_performed=True, metrics=metrics)
 
 
 def run_compiled_forward_backward(model: nn.Module, *args: Any, **kwargs: Any) -> Tensor:
@@ -90,6 +129,9 @@ def build_training_step_executor(
     loss_fn: Callable[..., Tensor],
     config: PeakAwareConfig,
     guards: tuple[GuardSpec, ...] = (),
+    plan_id: str = "unconfigured",
+    fallback_executables: tuple[tuple[str, Callable[..., Tensor]], ...] = (),
+    runtime_peak_threshold_bytes: int | None = None,
 ) -> EagerTrainingStepExecutor:
     executable: Callable[..., Tensor]
     if config.enable_compile:
@@ -97,14 +139,28 @@ def build_training_step_executor(
         executable = torch.compile(model, backend=backend)
     else:
         executable = model
-    return EagerTrainingStepExecutor(model, optimizer, loss_fn, executable, config, guards)
+    return EagerTrainingStepExecutor(
+        model,
+        optimizer,
+        loss_fn,
+        executable,
+        config,
+        guards,
+        plan_id=plan_id,
+        fallback_executables=fallback_executables,
+        runtime_peak_threshold_bytes=runtime_peak_threshold_bytes,
+    )
 
 
 def replace_executable_on_fallback(
     executor: EagerTrainingStepExecutor,
     executable: Callable[..., Tensor],
+    *,
+    plan_id: str | None = None,
 ) -> EagerTrainingStepExecutor:
     executor.executable = executable
+    if plan_id is not None:
+        executor.current_plan_id = plan_id
     return executor
 
 

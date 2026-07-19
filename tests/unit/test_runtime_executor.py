@@ -4,7 +4,11 @@ from torch import nn
 
 from peakaware import PeakAwareConfig
 from peakaware.contracts import GuardSpec
-from peakaware.runtime.executor import build_training_step_executor, validate_runtime_guards
+from peakaware.runtime.executor import (
+    EagerTrainingStepExecutor,
+    build_training_step_executor,
+    validate_runtime_guards,
+)
 
 
 def test_runtime_guards_validate_positional_and_keyword_tensors():
@@ -49,3 +53,42 @@ def test_executor_rejects_guard_drift_before_zero_grad_or_step():
 
     assert all(torch.equal(before, after) for before, after in zip(params_before, model.parameters()))
     assert all(torch.equal(before, param.grad) for before, param in zip(grads_before, model.parameters()))
+
+
+def test_executor_switches_to_verified_fallback_after_runtime_peak_breach():
+    torch.manual_seed(0)
+    model = nn.Linear(3, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    calls = {"selected": 0, "fallback": 0}
+
+    def selected(x):
+        calls["selected"] += 1
+        return model(x)
+
+    def fallback(x):
+        calls["fallback"] += 1
+        return model(x)
+
+    executor = EagerTrainingStepExecutor(
+        model,
+        optimizer,
+        lambda out: out.pow(2).mean(),
+        selected,
+        PeakAwareConfig(enable_compile=False),
+        plan_id="selected",
+        fallback_executables=(("fallback", fallback),),
+        runtime_peak_threshold_bytes=5,
+        runtime_peak_observer=lambda: 10,
+    )
+    optimizer_id = id(executor.optimizer)
+
+    first = executor.step(torch.ones(2, 3))
+    executor.runtime_peak_observer = lambda: 0
+    second = executor.step(torch.ones(2, 3))
+
+    assert first.metrics["fallback_plan_id"] == "fallback"
+    assert "exceeded threshold" in first.metrics["fallback_reason"]
+    assert executor.current_plan_id == "fallback"
+    assert calls == {"selected": 1, "fallback": 1}
+    assert second.metrics["plan_id"] == "fallback"
+    assert id(executor.optimizer) == optimizer_id

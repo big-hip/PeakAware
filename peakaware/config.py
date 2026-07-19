@@ -52,6 +52,7 @@ class PeakAwareConfig:
     cache_root: str | Path | None = None
     measurement_warmup_steps: int = 0
     measurement_repeats: int = 1
+    runtime_peak_safety_margin_bytes: int = 1 << 20
     rng_seed: int | None = 1337
     atol: float = 1e-5
     rtol: float = 1e-4
@@ -86,6 +87,8 @@ class PeakAwareConfig:
             raise ValueError("measurement_warmup_steps must be non-negative")
         if self.measurement_repeats <= 0:
             raise ValueError("measurement_repeats must be positive")
+        if self.runtime_peak_safety_margin_bytes < 0:
+            raise ValueError("runtime_peak_safety_margin_bytes must be non-negative")
         normalize_float_dtype_name(self.precision_dtype)
         if self.autocast_dtype is not None:
             normalize_float_dtype_name(self.autocast_dtype)

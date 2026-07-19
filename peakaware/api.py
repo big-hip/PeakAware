@@ -612,6 +612,16 @@ def optimize_training(
     dry_run = dry_runs[selected.plan.plan_id]
     measured = selected_measured
     fallback_ids = tuple(item.plan_id for item in measured_tuple if item.plan_id != selected.plan.plan_id)
+    executor.current_plan_id = selected.plan.plan_id
+    executor.fallback_executables = tuple(
+        (item.plan_id, item.forward_backward)
+        for item in measured_tuple
+        if item.plan_id != selected.plan.plan_id and item.correctness_passed
+    )
+    executor.runtime_peak_threshold_bytes = min(
+        memory_budget_bytes,
+        measured.measured_peak_bytes + config.runtime_peak_safety_margin_bytes,
+    )
     analysis = AnalysisBundle(
         ir=ir,
         fixed_timeline=fixed_timeline,
