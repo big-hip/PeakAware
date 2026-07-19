@@ -1017,8 +1017,34 @@ def _baseline_group(plan_id: str) -> str:
     return plan_id
 
 
-def summarize_baseline_comparisons(records: tuple[ExperimentRecord, ...]) -> dict[str, Any]:
+def _sac_rows(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if payload is None:
+        return []
+    if "rows" in payload and isinstance(payload["rows"], list):
+        return [row for row in payload["rows"] if isinstance(row, dict)]
+    return [payload]
+
+
+def _sac_key(row: dict[str, Any]) -> tuple[str, int, str] | None:
+    try:
+        return str(row["task_name"]), int(row["microbatch_size"]), str(row.get("device", "cpu"))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def summarize_baseline_comparisons(
+    records: tuple[ExperimentRecord, ...],
+    sac_baseline: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
+    sac_rows = _sac_rows(sac_baseline)
+    usable_sac_by_key = {}
+    usable_sac_row_count = 0
+    for row in sac_rows:
+        key = _sac_key(row)
+        if key is not None and row.get("status") == "ok" and row.get("performance_result_usable"):
+            usable_sac_row_count += 1
+            usable_sac_by_key[key] = row
     for record in records:
         if record.status != "ok" or record.measured_peak_bytes is None or record.measured_step_us is None:
             continue
@@ -1050,6 +1076,37 @@ def summarize_baseline_comparisons(records: tuple[ExperimentRecord, ...]) -> dic
                 "samples_per_second_speedup_vs_plan": step / max(selected_step, 1.0),
             }
             rows.append(row)
+        sac_row = usable_sac_by_key.get(
+            (
+                record.task_name,
+                record.microbatch_size,
+                str(record.config_fingerprint.get("device", "cpu")),
+            )
+        )
+        if sac_row is not None:
+            peak = float(sac_row["sac_overall_peak_bytes"])
+            step = float(sac_row["sac_step_us"])
+            rows.append(
+                {
+                    "variant_name": record.variant_name,
+                    "task_name": record.task_name,
+                    "microbatch_size": record.microbatch_size,
+                    "budget_bytes": record.budget_bytes,
+                    "plan_id": str(sac_row.get("baseline_id", "pytorch_sac_prefer_recompute")),
+                    "baseline_group": "pytorch_sac",
+                    "selected_plan_id": record.selected_plan_id,
+                    "measured_peak_bytes": int(peak),
+                    "measured_step_us": step,
+                    "measured_feasible": bool(peak <= record.budget_bytes),
+                    "selected_measured_peak_bytes": int(selected_peak),
+                    "selected_measured_step_us": selected_step,
+                    "peak_reduction_vs_plan_bytes": int(peak - selected_peak),
+                    "step_time_delta_vs_plan_us": step - selected_step,
+                    "samples_per_second_speedup_vs_plan": step / max(selected_step, 1.0),
+                    "external_baseline": True,
+                    "correctness_passed": bool(sac_row.get("correctness_passed")),
+                }
+            )
     summaries: dict[str, dict[str, Any]] = {}
     for group in sorted({row["baseline_group"] for row in rows}):
         group_rows = [row for row in rows if row["baseline_group"] == group]
@@ -1069,6 +1126,9 @@ def summarize_baseline_comparisons(records: tuple[ExperimentRecord, ...]) -> dic
     return {
         "baseline_groups": summaries,
         "row_count": len(rows),
+        "external_sac_rows_seen": len(sac_rows),
+        "external_sac_rows_usable": usable_sac_row_count,
+        "external_sac_keys_matched": len(usable_sac_by_key),
         "rows": rows,
     }
 
@@ -1179,8 +1239,12 @@ def write_experiment_hint_ablation_json(records: tuple[ExperimentRecord, ...], p
     _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 
-def write_experiment_baseline_comparison_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
-    text = json.dumps(summarize_baseline_comparisons(records), indent=2, sort_keys=True)
+def write_experiment_baseline_comparison_json(
+    records: tuple[ExperimentRecord, ...],
+    path: str | Path,
+    sac_baseline: dict[str, Any] | None = None,
+) -> None:
+    text = json.dumps(summarize_baseline_comparisons(records, sac_baseline), indent=2, sort_keys=True)
     _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 

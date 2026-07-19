@@ -190,6 +190,61 @@ def run_sac_baseline(
     }
 
 
+def run_sac_baseline_matrix(
+    *,
+    task_names: tuple[str, ...],
+    microbatch_sizes: tuple[int, ...],
+    device: str = "cpu",
+    warmup_steps: int = 0,
+    repeats: int = 1,
+) -> dict[str, Any]:
+    rows = []
+    for task_name in task_names:
+        for microbatch_size in microbatch_sizes:
+            try:
+                row = run_sac_baseline(
+                    task_name=task_name,
+                    microbatch_size=microbatch_size,
+                    device=device,
+                    warmup_steps=warmup_steps,
+                    repeats=repeats,
+                )
+            except Exception as exc:
+                row = {
+                    "task_name": task_name,
+                    "microbatch_size": microbatch_size,
+                    "device": device,
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "performance_result_usable": False,
+                }
+            row.setdefault("task_name", task_name)
+            row.setdefault("microbatch_size", microbatch_size)
+            row.setdefault("device", device)
+            rows.append(row)
+    usable = [row for row in rows if row.get("status") == "ok" and row.get("performance_result_usable")]
+    return {
+        "baseline_id": "pytorch_sac_prefer_recompute",
+        "task_names": list(task_names),
+        "microbatch_sizes": list(microbatch_sizes),
+        "device": device,
+        "measurement_warmup_steps": warmup_steps,
+        "measurement_repeats": repeats,
+        "row_count": len(rows),
+        "ok_count": sum(1 for row in rows if row.get("status") == "ok"),
+        "usable_count": len(usable),
+        "unusable_count": len(rows) - len(usable),
+        "mean_peak_reduction_bytes": None
+        if not usable
+        else sum(float(row["peak_reduction_bytes"]) for row in usable) / len(usable),
+        "mean_samples_per_second_speedup_vs_eager": None
+        if not usable
+        else sum(float(row["samples_per_second_speedup_vs_eager"]) for row in usable) / len(usable),
+        "rows": rows,
+    }
+
+
 def write_sac_baseline_json(payload: dict[str, Any], path: str | Path) -> None:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

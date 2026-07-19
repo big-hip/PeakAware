@@ -56,6 +56,7 @@ def main() -> None:
     parser.add_argument("--output-variant-summary-json", type=Path, default=None)
     parser.add_argument("--output-hint-ablation-json", type=Path, default=None)
     parser.add_argument("--output-baseline-comparison-json", type=Path, default=None)
+    parser.add_argument("--sac-baseline-json", type=Path, default=None)
     parser.add_argument("--output-layered-accuracy-json", type=Path, default=None)
     args = parser.parse_args()
 
@@ -104,7 +105,14 @@ def main() -> None:
     if args.output_hint_ablation_json is not None:
         write_experiment_hint_ablation_json(records, args.output_hint_ablation_json)
     if args.output_baseline_comparison_json is not None:
-        write_experiment_baseline_comparison_json(records, args.output_baseline_comparison_json)
+        sac_baseline = None
+        if args.sac_baseline_json is not None:
+            sac_baseline = json.loads(args.sac_baseline_json.read_text(encoding="utf-8"))
+        write_experiment_baseline_comparison_json(
+            records,
+            args.output_baseline_comparison_json,
+            sac_baseline=sac_baseline,
+        )
     if args.output_layered_accuracy_json is not None:
         write_experiment_layered_accuracy_json(records, args.output_layered_accuracy_json)
     print(json.dumps(experiment_records_to_dicts(records), indent=2, sort_keys=True))

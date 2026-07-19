@@ -337,6 +337,44 @@ def test_baseline_comparison_summary_reports_selected_deltas():
     assert summary["baseline_groups"]["torch_min_cut"]["mean_samples_per_second_speedup_vs_plan"] == 1.0
 
 
+def test_baseline_comparison_summary_can_include_usable_sac_rows():
+    records = (_minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80),)
+    sac_payload = {
+        "rows": [
+            {
+                "task_name": "synthetic",
+                "microbatch_size": 1,
+                "device": "cpu",
+                "status": "ok",
+                "baseline_id": "pytorch_sac_prefer_recompute",
+                "performance_result_usable": True,
+                "correctness_passed": True,
+                "sac_overall_peak_bytes": 95,
+                "sac_step_us": 15.0,
+            },
+            {
+                "task_name": "synthetic",
+                "microbatch_size": 1,
+                "device": "cpu",
+                "status": "ok",
+                "performance_result_usable": False,
+                "sac_overall_peak_bytes": 70,
+                "sac_step_us": 8.0,
+            },
+        ]
+    }
+
+    summary = summarize_baseline_comparisons(records, sac_baseline=sac_payload)
+
+    assert summary["external_sac_rows_seen"] == 2
+    assert summary["external_sac_rows_usable"] == 1
+    assert summary["external_sac_keys_matched"] == 1
+    assert summary["baseline_groups"]["pytorch_sac"]["measured_count"] == 1
+    sac_row = [row for row in summary["rows"] if row["baseline_group"] == "pytorch_sac"][0]
+    assert sac_row["peak_reduction_vs_plan_bytes"] == 15
+    assert sac_row["step_time_delta_vs_plan_us"] == 5.0
+
+
 def test_layered_simulation_accuracy_summarizes_diagnostic_counterfactuals():
     records = (
         _minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80),
@@ -518,6 +556,28 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     hint_ablation_path = tmp_path / "hint_ablation.json"
     baseline_comparison_path = tmp_path / "baseline_comparison.json"
     layered_accuracy_path = tmp_path / "layered_accuracy.json"
+    sac_baseline_path = tmp_path / "sac_baseline.json"
+    sac_baseline_path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "task_name": "tiny_mlp_w8_d3",
+                        "microbatch_size": 1,
+                        "device": "cpu",
+                        "status": "ok",
+                        "baseline_id": "pytorch_sac_prefer_recompute",
+                        "performance_result_usable": True,
+                        "correctness_passed": True,
+                        "sac_overall_peak_bytes": 1 << 20,
+                        "sac_step_us": 100.0,
+                    }
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     completed = subprocess.run(
         [
             sys.executable,
@@ -553,6 +613,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             str(hint_ablation_path),
             "--output-baseline-comparison-json",
             str(baseline_comparison_path),
+            "--sac-baseline-json",
+            str(sac_baseline_path),
             "--output-layered-accuracy-json",
             str(layered_accuracy_path),
         ],
@@ -610,6 +672,9 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert variant_summary_payload["diagnostic_hints_off"]["ok_records"] == 1
     assert hint_ablation_payload["pair_count"] == 1
     assert "all_save" in baseline_comparison_payload["baseline_groups"]
+    assert "pytorch_sac" in baseline_comparison_payload["baseline_groups"]
+    assert baseline_comparison_payload["external_sac_rows_usable"] == 1
+    assert baseline_comparison_payload["external_sac_keys_matched"] == 1
     assert baseline_comparison_payload["row_count"] >= 2
     assert "D5" in layered_accuracy_payload["level_summaries"]
     assert layered_accuracy_payload["row_count"] >= 1
