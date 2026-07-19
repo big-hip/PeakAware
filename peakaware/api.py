@@ -382,7 +382,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
     )
     if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
         return _CandidateValidation(dry_run=dry_run, measurement=None)
-    executor = build_training_step_executor(model, optimizer, loss_fn, config)
+    executor = build_training_step_executor(model, optimizer, loss_fn, config, capture.guards)
     cache_root = _cache_root(config)
     executable_key = _executable_cache_key(request, capture, candidate)
     executable_provenance = _executable_cache_provenance(request, candidate)
@@ -564,7 +564,7 @@ def optimize_training(
             )
     if not evaluated:
         raise InfeasibleBudgetError("no plans were generated")
-    executor = build_training_step_executor(model, optimizer, loss_fn, config)
+    executor = build_training_step_executor(model, optimizer, loss_fn, config, capture.guards)
     measured_candidates: list[MeasuredExecutable] = []
     dry_runs: dict[str, DryRunResult] = {}
     rejected: dict[str, str] = {}

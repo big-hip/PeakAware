@@ -6,8 +6,46 @@ import torch
 from torch import Tensor, nn
 
 from peakaware.config import PeakAwareConfig
-from peakaware.contracts import MeasuredExecutable, StepResult
+from peakaware.contracts import GuardSpec, MeasuredExecutable, StepResult
 from peakaware.runtime.measure import measure_training_step_phases
+
+
+def _runtime_guard_value(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+    if name == "torch_version":
+        return torch.__version__
+    try:
+        root, field = name.split(".", 1)
+    except ValueError as exc:
+        raise ValueError(f"unsupported runtime guard: {name}") from exc
+    if root.startswith("arg"):
+        try:
+            value = args[int(root.removeprefix("arg"))]
+        except (IndexError, ValueError) as exc:
+            raise ValueError(f"runtime guard {name} references a missing positional input") from exc
+    elif root == "kw":
+        try:
+            key, field = field.split(".", 1)
+            value = kwargs[key]
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"runtime guard {name} references a missing keyword input") from exc
+    else:
+        raise ValueError(f"unsupported runtime guard: {name}")
+    if not isinstance(value, Tensor):
+        raise ValueError(f"runtime guard {name} references a non-tensor input")
+    if field == "shape":
+        return str(tuple(value.shape))
+    if field == "dtype":
+        return str(value.dtype)
+    if field == "device":
+        return str(value.device)
+    raise ValueError(f"unsupported runtime guard: {name}")
+
+
+def validate_runtime_guards(guards: tuple[GuardSpec, ...], args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+    for guard in guards:
+        actual = _runtime_guard_value(guard.name, args, kwargs)
+        if actual != guard.value:
+            raise ValueError(f"runtime guard failed for {guard.name}: expected {guard.value}, got {actual}")
 
 
 class EagerTrainingStepExecutor:
@@ -18,14 +56,17 @@ class EagerTrainingStepExecutor:
         loss_fn: Callable[..., Tensor],
         executable: Callable[..., Tensor],
         config: PeakAwareConfig,
+        guards: tuple[GuardSpec, ...] = (),
     ) -> None:
         self.model = model
         self.optimizer = optimizer
         self.loss_fn = loss_fn
         self.executable = executable
         self.config = config
+        self.guards = guards
 
     def step(self, *args: Any, **kwargs: Any) -> StepResult:
+        validate_runtime_guards(self.guards, args, kwargs)
         self.optimizer.zero_grad(set_to_none=self.config.zero_grad_set_to_none)
         loss = self.loss_fn(self.executable(*args, **kwargs))
         if loss.ndim != 0:
@@ -48,6 +89,7 @@ def build_training_step_executor(
     optimizer: torch.optim.Optimizer,
     loss_fn: Callable[..., Tensor],
     config: PeakAwareConfig,
+    guards: tuple[GuardSpec, ...] = (),
 ) -> EagerTrainingStepExecutor:
     executable: Callable[..., Tensor]
     if config.enable_compile:
@@ -55,7 +97,7 @@ def build_training_step_executor(
         executable = torch.compile(model, backend=backend)
     else:
         executable = model
-    return EagerTrainingStepExecutor(model, optimizer, loss_fn, executable, config)
+    return EagerTrainingStepExecutor(model, optimizer, loss_fn, executable, config, guards)
 
 
 def replace_executable_on_fallback(
