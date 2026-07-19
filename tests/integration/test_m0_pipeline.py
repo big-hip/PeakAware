@@ -326,6 +326,36 @@ def test_optimize_training_does_not_advance_user_state_before_executor_step():
     assert optimizer.state_dict()["state"] == optimizer_before["state"]
 
 
+def test_executor_multistep_parameters_match_eager_training():
+    torch.manual_seed(0)
+    eager_model = TinyResidual()
+    peakaware_model = copy.deepcopy(eager_model)
+    eager_optimizer = torch.optim.SGD(eager_model.parameters(), lr=0.01)
+    peakaware_optimizer = torch.optim.SGD(peakaware_model.parameters(), lr=0.01)
+    x = torch.randn(4, 8)
+
+    result = optimize_training(
+        peakaware_model,
+        (x,),
+        loss_fn=squared_mean_loss,
+        optimizer=peakaware_optimizer,
+        memory_budget_bytes=1 << 28,
+        config=PeakAwareConfig(enable_compile=False, top_k=3, safety_margin_bytes=0, safety_margin_ratio=0.0),
+    )
+
+    for _ in range(3):
+        eager_optimizer.zero_grad(set_to_none=True)
+        eager_loss = squared_mean_loss(eager_model(x))
+        eager_loss.backward()
+        eager_optimizer.step()
+
+        step = result.executor.step(x)
+
+        assert torch.allclose(step.loss, eager_loss.detach(), atol=1e-6, rtol=1e-5)
+        for eager_param, peakaware_param in zip(eager_model.parameters(), peakaware_model.parameters()):
+            assert torch.allclose(eager_param, peakaware_param, atol=1e-6, rtol=1e-5)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for Inductor steady-state validation")
 def test_inductor_cuda_executor_runs_step_without_advancing_state_during_optimization():
     torch.manual_seed(0)
