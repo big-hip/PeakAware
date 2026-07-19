@@ -72,6 +72,8 @@ class ExperimentRecord:
     measured_plan_results: tuple[dict[str, Any], ...]
     selected_prediction_error_bytes: int | None
     selected_prediction_relative_error: float | None
+    selected_calibrated_prediction_error_bytes: int | None
+    selected_calibrated_prediction_relative_error: float | None
     selected_feasibility_prediction_match: bool | None
     simulation_accuracy_candidate_count: int
     simulation_accuracy_mean_absolute_error_bytes: float | None
@@ -154,6 +156,12 @@ class ExperimentSummary:
     mean_selected_prediction_absolute_relative_error: float | None
     p50_selected_prediction_absolute_relative_error: float | None
     p90_selected_prediction_absolute_relative_error: float | None
+    mean_selected_calibrated_prediction_absolute_error_bytes: float | None
+    p50_selected_calibrated_prediction_absolute_error_bytes: float | None
+    p90_selected_calibrated_prediction_absolute_error_bytes: float | None
+    mean_selected_calibrated_prediction_absolute_relative_error: float | None
+    p50_selected_calibrated_prediction_absolute_relative_error: float | None
+    p90_selected_calibrated_prediction_absolute_relative_error: float | None
     simulation_accuracy_candidate_count: int
     mean_simulation_accuracy_absolute_error_bytes: float | None
     p50_simulation_accuracy_absolute_error_bytes: float | None
@@ -163,6 +171,14 @@ class ExperimentSummary:
     p50_simulation_accuracy_absolute_relative_error: float | None
     p90_simulation_accuracy_absolute_relative_error: float | None
     mean_simulation_accuracy_within_10_percent_rate: float | None
+    mean_calibrated_simulation_accuracy_absolute_error_bytes: float | None
+    p50_calibrated_simulation_accuracy_absolute_error_bytes: float | None
+    p90_calibrated_simulation_accuracy_absolute_error_bytes: float | None
+    max_calibrated_simulation_accuracy_absolute_error_bytes: int | None
+    mean_calibrated_simulation_accuracy_absolute_relative_error: float | None
+    p50_calibrated_simulation_accuracy_absolute_relative_error: float | None
+    p90_calibrated_simulation_accuracy_absolute_relative_error: float | None
+    calibrated_simulation_accuracy_within_10_percent_rate: float | None
     phase_classification_count: int
     phase_classification_accuracy: float | None
     feasible_classification_count: int
@@ -213,27 +229,74 @@ def _measured_candidate_by_id(summary: dict[str, Any], plan_id: str) -> dict[str
     return next((item for item in summary.get("measured_candidates", ()) if item.get("plan_id") == plan_id), None)
 
 
+def _all_save_peak_residual(summary: dict[str, Any]) -> int | None:
+    all_save_plan = _plan_by_id(summary, "all_save")
+    all_save_measured = _measured_candidate_by_id(summary, "all_save")
+    if all_save_plan is None or all_save_measured is None:
+        return None
+    estimated = all_save_plan.get("estimated_peak_bytes")
+    measured = all_save_measured.get("peak_bytes")
+    if estimated is None or measured is None:
+        return None
+    return int(measured) - int(estimated)
+
+
+def _calibrate_measured_plan_rows(rows: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], ...]:
+    all_save = next((row for row in rows if row.get("plan_id") == "all_save"), None)
+    if all_save is None or all_save.get("estimated_peak_bytes") is None or all_save.get("measured_peak_bytes") is None:
+        return rows
+    residual = int(all_save["measured_peak_bytes"]) - int(all_save["estimated_peak_bytes"])
+    calibrated = []
+    for row in rows:
+        next_row = dict(row)
+        if (
+            next_row.get("calibrated_prediction_error_bytes") is None
+            and next_row.get("estimated_peak_bytes") is not None
+            and next_row.get("measured_peak_bytes") is not None
+        ):
+            estimated = int(next_row["estimated_peak_bytes"]) + residual
+            error = int(next_row["measured_peak_bytes"]) - estimated
+            next_row["calibrated_estimated_peak_bytes"] = estimated
+            next_row["calibrated_prediction_error_bytes"] = error
+            next_row["calibrated_prediction_relative_error"] = None if estimated == 0 else error / estimated
+        calibrated.append(next_row)
+    return tuple(calibrated)
+
+
 def _measured_plan_results(summary: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     plans_by_id = {plan["plan_id"]: plan for plan in summary.get("plans", ())}
+    all_save_residual = _all_save_peak_residual(summary)
     rows: list[dict[str, Any]] = []
     for measured in summary.get("measured_candidates", ()):
         plan = plans_by_id.get(measured["plan_id"], {})
         prediction = measured.get("prediction_error") or {}
+        estimated = plan.get("estimated_peak_bytes")
+        measured_peak = measured.get("peak_bytes")
+        calibrated_estimated = None
+        calibrated_error = None
+        calibrated_relative = None
+        if estimated is not None and measured_peak is not None and all_save_residual is not None:
+            calibrated_estimated = int(estimated) + all_save_residual
+            calibrated_error = int(measured_peak) - calibrated_estimated
+            calibrated_relative = None if calibrated_estimated == 0 else calibrated_error / calibrated_estimated
         rows.append(
             {
                 "plan_id": measured["plan_id"],
-                "estimated_peak_bytes": plan.get("estimated_peak_bytes"),
+                "estimated_peak_bytes": estimated,
                 "estimated_step_us": plan.get("estimated_step_us"),
                 "estimated_feasible": prediction.get("estimated_feasible"),
-                "measured_peak_bytes": measured.get("peak_bytes"),
+                "measured_peak_bytes": measured_peak,
                 "measured_step_us": measured.get("step_us"),
                 "measured_peak_phase": measured.get("peak_phase"),
                 "measured_feasible": prediction.get("measured_feasible"),
                 "prediction_error_bytes": prediction.get("error_bytes"),
+                "calibrated_estimated_peak_bytes": calibrated_estimated,
+                "calibrated_prediction_error_bytes": calibrated_error,
+                "calibrated_prediction_relative_error": calibrated_relative,
                 "correctness_passed": measured.get("correctness_passed"),
             }
         )
-    return tuple(rows)
+    return _calibrate_measured_plan_rows(tuple(rows))
 
 
 def _diagnostic_counterfactuals(summary: dict[str, Any]) -> tuple[dict[str, Any], ...]:
@@ -301,6 +364,11 @@ def _record_success(
     measured_peak_bytes = int(measured["peak_bytes"])
     all_save_peak = None if measured_baseline is None else int(measured_baseline["peak_bytes"])
     all_save_step_us = None if measured_baseline is None else float(measured_baseline["step_us"])
+    measured_plan_results = _measured_plan_results(summary)
+    selected_measured_plan = next(
+        (row for row in measured_plan_results if row.get("plan_id") == summary["selected_plan_id"]),
+        None,
+    )
     exact = exact or {}
     return ExperimentRecord(
         task_name=case.task_name,
@@ -353,9 +421,15 @@ def _record_success(
         diagnostic_total_expectation_gap_bytes=expectation.get("total_expectation_gap"),
         diagnostic_counterfactuals=_diagnostic_counterfactuals(summary),
         measured_candidate_count=len(summary["measured_candidates"]),
-        measured_plan_results=_measured_plan_results(summary),
+        measured_plan_results=measured_plan_results,
         selected_prediction_error_bytes=None if selected_correction is None else selected_correction["error_bytes"],
         selected_prediction_relative_error=None if selected_correction is None else selected_correction["relative_error"],
+        selected_calibrated_prediction_error_bytes=None
+        if selected_measured_plan is None
+        else selected_measured_plan.get("calibrated_prediction_error_bytes"),
+        selected_calibrated_prediction_relative_error=None
+        if selected_measured_plan is None
+        else selected_measured_plan.get("calibrated_prediction_relative_error"),
         selected_feasibility_prediction_match=None
         if selected_correction is None
         else selected_correction["feasibility_match"],
@@ -443,6 +517,8 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         measured_plan_results=(),
         selected_prediction_error_bytes=None,
         selected_prediction_relative_error=None,
+        selected_calibrated_prediction_error_bytes=None,
+        selected_calibrated_prediction_relative_error=None,
         selected_feasibility_prediction_match=None,
         simulation_accuracy_candidate_count=0,
         simulation_accuracy_mean_absolute_error_bytes=None,
@@ -606,9 +682,31 @@ def experiment_records_from_dicts(rows: list[dict[str, Any]]) -> tuple[Experimen
     records = []
     for row in rows:
         normalized = dict(row)
+        normalized.setdefault("selected_calibrated_prediction_error_bytes", None)
+        normalized.setdefault("selected_calibrated_prediction_relative_error", None)
         for field in tuple_fields:
             if field in normalized:
                 normalized[field] = tuple(normalized[field])
+        if "measured_plan_results" in normalized:
+            normalized["measured_plan_results"] = _calibrate_measured_plan_rows(
+                tuple(normalized["measured_plan_results"])
+            )
+        if normalized["selected_calibrated_prediction_error_bytes"] is None:
+            selected_row = next(
+                (
+                    row
+                    for row in normalized.get("measured_plan_results", ())
+                    if row.get("plan_id") == normalized.get("selected_plan_id")
+                ),
+                None,
+            )
+            if selected_row is not None:
+                normalized["selected_calibrated_prediction_error_bytes"] = selected_row.get(
+                    "calibrated_prediction_error_bytes"
+                )
+                normalized["selected_calibrated_prediction_relative_error"] = selected_row.get(
+                    "calibrated_prediction_relative_error"
+                )
         records.append(ExperimentRecord(**normalized))
     return tuple(records)
 
@@ -741,6 +839,16 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         for record in ok
         if record.selected_prediction_relative_error is not None
     ]
+    selected_calibrated_abs_errors = [
+        abs(record.selected_calibrated_prediction_error_bytes)
+        for record in ok
+        if record.selected_calibrated_prediction_error_bytes is not None
+    ]
+    selected_calibrated_abs_relative_errors = [
+        abs(record.selected_calibrated_prediction_relative_error)
+        for record in ok
+        if record.selected_calibrated_prediction_relative_error is not None
+    ]
     simulation_accuracy_abs_errors = [
         abs(int(row["prediction_error_bytes"]))
         for record in ok
@@ -752,6 +860,18 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         for record in ok
         for row in record.measured_plan_results
         if row.get("prediction_error_bytes") is not None and row.get("estimated_peak_bytes")
+    ]
+    calibrated_simulation_accuracy_abs_errors = [
+        abs(int(row["calibrated_prediction_error_bytes"]))
+        for record in ok
+        for row in record.measured_plan_results
+        if row.get("calibrated_prediction_error_bytes") is not None
+    ]
+    calibrated_simulation_accuracy_abs_relative_errors = [
+        abs(float(row["calibrated_prediction_relative_error"]))
+        for record in ok
+        for row in record.measured_plan_results
+        if row.get("calibrated_prediction_relative_error") is not None
     ]
     simulation_accuracy_counts = [
         record.simulation_accuracy_candidate_count
@@ -887,6 +1007,20 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         mean_selected_prediction_absolute_relative_error=_mean(selected_abs_relative_errors),
         p50_selected_prediction_absolute_relative_error=_percentile(selected_abs_relative_errors, 0.50),
         p90_selected_prediction_absolute_relative_error=_percentile(selected_abs_relative_errors, 0.90),
+        mean_selected_calibrated_prediction_absolute_error_bytes=_mean(selected_calibrated_abs_errors),
+        p50_selected_calibrated_prediction_absolute_error_bytes=_percentile(selected_calibrated_abs_errors, 0.50),
+        p90_selected_calibrated_prediction_absolute_error_bytes=_percentile(selected_calibrated_abs_errors, 0.90),
+        mean_selected_calibrated_prediction_absolute_relative_error=_mean(
+            selected_calibrated_abs_relative_errors
+        ),
+        p50_selected_calibrated_prediction_absolute_relative_error=_percentile(
+            selected_calibrated_abs_relative_errors,
+            0.50,
+        ),
+        p90_selected_calibrated_prediction_absolute_relative_error=_percentile(
+            selected_calibrated_abs_relative_errors,
+            0.90,
+        ),
         simulation_accuracy_candidate_count=sum(simulation_accuracy_counts),
         mean_simulation_accuracy_absolute_error_bytes=_mean(simulation_accuracy_abs_errors)
         if simulation_accuracy_abs_errors
@@ -902,6 +1036,35 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         p50_simulation_accuracy_absolute_relative_error=_percentile(simulation_accuracy_abs_relative_errors, 0.50),
         p90_simulation_accuracy_absolute_relative_error=_percentile(simulation_accuracy_abs_relative_errors, 0.90),
         mean_simulation_accuracy_within_10_percent_rate=_mean(simulation_accuracy_within_10),
+        mean_calibrated_simulation_accuracy_absolute_error_bytes=_mean(
+            calibrated_simulation_accuracy_abs_errors
+        ),
+        p50_calibrated_simulation_accuracy_absolute_error_bytes=_percentile(
+            calibrated_simulation_accuracy_abs_errors,
+            0.50,
+        ),
+        p90_calibrated_simulation_accuracy_absolute_error_bytes=_percentile(
+            calibrated_simulation_accuracy_abs_errors,
+            0.90,
+        ),
+        max_calibrated_simulation_accuracy_absolute_error_bytes=None
+        if not calibrated_simulation_accuracy_abs_errors
+        else max(calibrated_simulation_accuracy_abs_errors),
+        mean_calibrated_simulation_accuracy_absolute_relative_error=_mean(
+            calibrated_simulation_accuracy_abs_relative_errors
+        ),
+        p50_calibrated_simulation_accuracy_absolute_relative_error=_percentile(
+            calibrated_simulation_accuracy_abs_relative_errors,
+            0.50,
+        ),
+        p90_calibrated_simulation_accuracy_absolute_relative_error=_percentile(
+            calibrated_simulation_accuracy_abs_relative_errors,
+            0.90,
+        ),
+        calibrated_simulation_accuracy_within_10_percent_rate=None
+        if not calibrated_simulation_accuracy_abs_relative_errors
+        else sum(1 for error in calibrated_simulation_accuracy_abs_relative_errors if error <= 0.10)
+        / len(calibrated_simulation_accuracy_abs_relative_errors),
         phase_classification_count=len(phase_matches),
         phase_classification_accuracy=None
         if not phase_matches

@@ -157,6 +157,9 @@ def _minimal_record(
                 "measured_step_us": 12.0,
                 "measured_feasible": measured_peak_bytes + 10 <= budget_bytes,
                 "prediction_error_bytes": 8,
+                "calibrated_estimated_peak_bytes": measured_peak_bytes + 10,
+                "calibrated_prediction_error_bytes": 0,
+                "calibrated_prediction_relative_error": 0.0,
                 "correctness_passed": True,
             },
             {
@@ -166,6 +169,9 @@ def _minimal_record(
                 "measured_step_us": 10.0,
                 "measured_feasible": measured_peak_bytes <= budget_bytes,
                 "prediction_error_bytes": 4,
+                "calibrated_estimated_peak_bytes": measured_peak_bytes,
+                "calibrated_prediction_error_bytes": 0,
+                "calibrated_prediction_relative_error": 0.0,
                 "correctness_passed": True,
             },
             {
@@ -175,11 +181,16 @@ def _minimal_record(
                 "measured_step_us": 11.0,
                 "measured_feasible": measured_peak_bytes + 5 <= budget_bytes,
                 "prediction_error_bytes": None,
+                "calibrated_estimated_peak_bytes": measured_peak_bytes + 5,
+                "calibrated_prediction_error_bytes": 0,
+                "calibrated_prediction_relative_error": 0.0,
                 "correctness_passed": True,
             },
         ),
         selected_prediction_error_bytes=4 if status == "ok" else None,
         selected_prediction_relative_error=0.05 if status == "ok" else None,
+        selected_calibrated_prediction_error_bytes=0 if status == "ok" else None,
+        selected_calibrated_prediction_relative_error=0.0 if status == "ok" else None,
         selected_feasibility_prediction_match=True if status == "ok" else None,
         simulation_accuracy_candidate_count=2 if status == "ok" else 0,
         simulation_accuracy_mean_absolute_error_bytes=6.0 if status == "ok" else None,
@@ -251,6 +262,8 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.p50_simulation_accuracy_absolute_error_bytes == 8.0
     assert summary.p90_simulation_accuracy_absolute_error_bytes == 8.0
     assert summary.max_simulation_accuracy_absolute_error_bytes == 8
+    assert summary.mean_calibrated_simulation_accuracy_absolute_error_bytes == 0.0
+    assert summary.calibrated_simulation_accuracy_within_10_percent_rate == 1.0
     assert summary.mean_simulation_accuracy_absolute_relative_error == 0.075
     assert summary.p50_simulation_accuracy_absolute_relative_error == 0.1
     assert summary.p90_simulation_accuracy_absolute_relative_error == 0.1
@@ -560,12 +573,20 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
 def test_experiment_records_round_trip_from_json_dicts():
     records = (_minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80),)
     payload = json.loads(json.dumps([record.__dict__ for record in records]))
+    del payload[0]["selected_calibrated_prediction_error_bytes"]
+    del payload[0]["selected_calibrated_prediction_relative_error"]
+    for row in payload[0]["measured_plan_results"]:
+        row.pop("calibrated_estimated_peak_bytes", None)
+        row.pop("calibrated_prediction_error_bytes", None)
+        row.pop("calibrated_prediction_relative_error", None)
 
     restored = experiment_records_from_dicts(payload)
 
-    assert restored == records
+    assert restored[0].selected_plan_id == records[0].selected_plan_id
+    assert restored[0].selected_calibrated_prediction_error_bytes is None
     assert isinstance(restored[0].selected_saved_value_ids, tuple)
     assert isinstance(restored[0].measured_plan_results, tuple)
+    assert restored[0].measured_plan_results[0]["calibrated_prediction_error_bytes"] == 0
 
 
 def test_summarize_baseline_comparison_script_reads_saved_records(tmp_path):
@@ -858,6 +879,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert "phase_classification_count" in summary_payload
     assert "feasible_classification_count" in summary_payload
     assert summary_payload["mean_simulation_accuracy_absolute_error_bytes"] is not None
+    assert summary_payload["mean_calibrated_simulation_accuracy_absolute_error_bytes"] is not None
+    assert summary_payload["calibrated_simulation_accuracy_within_10_percent_rate"] is not None
     assert summary_payload["p50_simulation_accuracy_absolute_error_bytes"] is not None
     assert summary_payload["p90_simulation_accuracy_absolute_error_bytes"] is not None
     assert "diagnostic_hint_kind_counts" in summary_payload
