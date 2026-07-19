@@ -1,5 +1,6 @@
 import copy
 
+import pytest
 import torch
 from torch import nn
 
@@ -91,6 +92,57 @@ def test_optimize_training_can_isolate_candidate_measurement():
     assert result.dry_run is not None and result.dry_run.gradients_match
     assert result.measured_candidates
     assert result.executable.plan_id in {candidate.plan_id for candidate in result.measured_candidates}
+
+
+def test_optimize_training_rejects_requires_grad_kwargs():
+    model = TinyResidual()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    x = torch.randn(4, 8)
+
+    with pytest.raises(ValueError, match="without requires_grad"):
+        optimize_training(
+            model,
+            (x,),
+            example_kwargs={"unused": torch.randn(4, 8, requires_grad=True)},
+            loss_fn=squared_mean_loss,
+            optimizer=optimizer,
+            memory_budget_bytes=1 << 28,
+            config=PeakAwareConfig(enable_compile=False),
+        )
+
+
+def test_optimize_training_rejects_mixed_input_devices():
+    model = TinyResidual()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    x = torch.randn(4, 8)
+
+    with pytest.raises(ValueError, match="single device"):
+        optimize_training(
+            model,
+            (x, {"unused": torch.empty(1, device="meta")}),
+            loss_fn=squared_mean_loss,
+            optimizer=optimizer,
+            memory_budget_bytes=1 << 28,
+            config=PeakAwareConfig(enable_compile=False),
+        )
+
+
+def test_optimize_training_rejects_mixed_optimizer_state_devices():
+    model = TinyResidual()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    first_param = next(model.parameters())
+    optimizer.state[first_param]["offloaded_state"] = torch.empty(1, device="meta")
+    x = torch.randn(4, 8)
+
+    with pytest.raises(ValueError, match="single device"):
+        optimize_training(
+            model,
+            (x,),
+            loss_fn=squared_mean_loss,
+            optimizer=optimizer,
+            memory_budget_bytes=1 << 28,
+            config=PeakAwareConfig(enable_compile=False),
+        )
 
 
 def test_isolated_candidate_failure_falls_back_to_next_candidate(monkeypatch):

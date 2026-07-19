@@ -184,6 +184,27 @@ def _executable_cache_provenance(
     }
 
 
+def _iter_tensors(value: Any) -> tuple[Tensor, ...]:
+    found: list[Tensor] = []
+
+    def collect(item: Any) -> None:
+        if isinstance(item, Tensor):
+            found.append(item)
+        elif isinstance(item, dict):
+            for nested in item.values():
+                collect(nested)
+        elif isinstance(item, (tuple, list)):
+            for nested in item:
+                collect(nested)
+
+    collect(value)
+    return tuple(found)
+
+
+def _tensor_devices(tensors: tuple[Tensor, ...]) -> frozenset[str]:
+    return frozenset(str(tensor.device) for tensor in tensors)
+
+
 def _validate_request(
     model: nn.Module,
     example_args: tuple[Any, ...],
@@ -208,8 +229,27 @@ def _validate_request(
         raise ValueError("optimizer has no parameters")
     if not optim_params.issubset(model_params):
         raise ValueError("optimizer contains parameters that are not owned by model")
-    if any(isinstance(value, Tensor) and value.requires_grad for value in example_args):
+    example_tensors = _iter_tensors(example_args) + _iter_tensors(example_kwargs)
+    if any(value.requires_grad for value in example_tensors):
         raise ValueError("M0 expects training inputs without requires_grad")
+    model_tensors = tuple(model.parameters()) + tuple(model.buffers())
+    optimizer_state_tensors = tuple(
+        tensor
+        for state in optimizer.state.values()
+        for tensor in _iter_tensors(state)
+    )
+    device_sets = [
+        devices
+        for devices in (
+            _tensor_devices(example_tensors),
+            _tensor_devices(model_tensors),
+            _tensor_devices(optimizer_state_tensors),
+        )
+        if devices
+    ]
+    all_devices = frozenset(device for devices in device_sets for device in devices)
+    if len(all_devices) > 1:
+        raise ValueError(f"M0 expects a single device, got: {sorted(all_devices)}")
     config.validate()
 
 
