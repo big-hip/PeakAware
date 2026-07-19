@@ -352,6 +352,7 @@ class _CandidateMeasurement:
     measured_peak_bytes: int
     measured_step_us: float
     phase_metrics: dict[str, int | float]
+    activation_checkpoint: bool = False
 
 
 @dataclass(frozen=True)
@@ -359,6 +360,10 @@ class _CandidateValidation:
     dry_run: DryRunResult
     measurement: _CandidateMeasurement | None
     cache_hit: bool = False
+
+
+def _candidate_uses_activation_checkpoint(candidate: EvaluatedPlan) -> bool:
+    return candidate.plan.plan_id != "all_save"
 
 
 def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValidation:
@@ -390,6 +395,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
     )
     if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
         return _CandidateValidation(dry_run=dry_run, measurement=None)
+    activation_checkpoint = _candidate_uses_activation_checkpoint(candidate)
     executor = build_training_step_executor(
         model,
         optimizer,
@@ -397,6 +403,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         config,
         capture.guards,
         selection_objective=config.selection_objective,
+        activation_checkpoint=activation_checkpoint,
     )
     cache_root = _cache_root(config)
     executable_key = _executable_cache_key(request, capture, candidate)
@@ -416,6 +423,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                     measured_peak_bytes=cached.measured_peak_bytes,
                     measured_step_us=cached.measured_step_us,
                     phase_metrics=cached.phase_metrics,
+                    activation_checkpoint=activation_checkpoint,
                 ),
                 cache_hit=True,
             )
@@ -435,6 +443,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
             measured_peak_bytes=measured.measured_peak_bytes,
             measured_step_us=measured.measured_step_us,
             phase_metrics=measured.phase_metrics,
+            activation_checkpoint=activation_checkpoint,
         ),
     )
 
@@ -468,9 +477,18 @@ def _measure_candidate_for_parent(
     measurement = validation.measurement
     if measurement is None:
         raise ValueError("candidate measurement is unavailable")
+    candidate_executor = build_training_step_executor(
+        executor.model,
+        executor.optimizer,
+        executor.loss_fn,
+        executor.config,
+        executor.guards,
+        selection_objective=executor.selection_objective,
+        activation_checkpoint=measurement.activation_checkpoint,
+    )
     return MeasuredExecutable(
         plan_id=measurement.plan_id,
-        forward_backward=executor.executable,
+        forward_backward=candidate_executor.executable,
         measured_peak_bytes=measurement.measured_peak_bytes,
         measured_step_us=measurement.measured_step_us,
         correctness_passed=True,
@@ -666,6 +684,8 @@ def optimize_training(
     measured = selected_measured
     fallback_ids = tuple(item.plan_id for item in measured_tuple if item.plan_id != selected.plan.plan_id)
     executor.current_plan_id = selected.plan.plan_id
+    executor.executable = measured.forward_backward
+    executor.activation_checkpoint = bool(measured.phase_metrics.get("activation_checkpoint", 0))
     executor.selection_objective = config.selection_objective
     executor.fallback_executables = tuple(
         (item.plan_id, item.forward_backward)

@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
 from torch import nn
@@ -7,6 +9,7 @@ from peakaware.contracts import GuardSpec
 from peakaware.runtime.executor import (
     EagerTrainingStepExecutor,
     build_training_step_executor,
+    make_measured_executable,
     validate_runtime_guards,
 )
 
@@ -53,6 +56,52 @@ def test_executor_rejects_guard_drift_before_zero_grad_or_step():
 
     assert all(torch.equal(before, after) for before, after in zip(params_before, model.parameters()))
     assert all(torch.equal(before, param.grad) for before, param in zip(grads_before, model.parameters()))
+
+
+def test_activation_checkpoint_executor_runs_and_reports_plan_marker():
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(3, 4), nn.ReLU(), nn.Linear(4, 1))
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    executor = build_training_step_executor(
+        model,
+        optimizer,
+        lambda out: out.pow(2).mean(),
+        PeakAwareConfig(enable_compile=False),
+        activation_checkpoint=True,
+    )
+
+    measured = make_measured_executable("checkpointed", executor, (torch.ones(2, 3),), {}, simulated_peak_bytes=1024)
+
+    assert executor.activation_checkpoint is True
+    assert measured.correctness_passed
+    assert measured.phase_metrics["activation_checkpoint"] == 1
+
+
+def test_activation_checkpoint_executor_preserves_object_outputs():
+    torch.manual_seed(0)
+
+    class LogitsModule(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.linear = nn.Linear(3, 2)
+
+        def forward(self, x):
+            return SimpleNamespace(logits=self.linear(x))
+
+    model = LogitsModule()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    executor = build_training_step_executor(
+        model,
+        optimizer,
+        lambda out: out.logits.pow(2).mean(),
+        PeakAwareConfig(enable_compile=False),
+        activation_checkpoint=True,
+    )
+
+    step = executor.step(torch.ones(2, 3))
+
+    assert step.optimizer_step_performed
+    assert executor.activation_checkpoint is True
 
 
 def test_executor_switches_to_verified_fallback_after_runtime_peak_breach():

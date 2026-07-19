@@ -397,6 +397,7 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "peak_phase": _measured_peak_phase(candidate.phase_metrics),
             "step_us": candidate.measured_step_us,
             "correctness_passed": candidate.correctness_passed,
+            "phase_metrics": candidate.phase_metrics,
             "prediction_error": _prediction_error_row(
                 plans_by_id.get(candidate.plan_id),
                 candidate.measured_peak_bytes,

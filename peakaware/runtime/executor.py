@@ -67,14 +67,15 @@ class EagerTrainingStepExecutor:
         model: nn.Module,
         optimizer: torch.optim.Optimizer,
         loss_fn: Callable[..., Tensor],
-        executable: Callable[..., Tensor],
+        executable: Callable[..., Any],
         config: PeakAwareConfig,
         guards: tuple[GuardSpec, ...] = (),
         plan_id: str = "unconfigured",
-        fallback_executables: tuple[tuple[str, Callable[..., Tensor]], ...] = (),
+        fallback_executables: tuple[tuple[str, Callable[..., Any]], ...] = (),
         runtime_peak_threshold_bytes: int | None = None,
         runtime_peak_observer: Callable[[], int] | None = None,
         selection_objective: str = "unconfigured",
+        activation_checkpoint: bool = False,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -87,6 +88,7 @@ class EagerTrainingStepExecutor:
         self.runtime_peak_threshold_bytes = runtime_peak_threshold_bytes
         self.runtime_peak_observer = runtime_peak_observer
         self.selection_objective = selection_objective
+        self.activation_checkpoint = activation_checkpoint
 
     def step(self, *args: Any, **kwargs: Any) -> StepResult:
         validate_runtime_guards(self.guards, args, kwargs)
@@ -125,6 +127,15 @@ def run_eager_optimizer_step(optimizer: torch.optim.Optimizer) -> None:
     optimizer.step()
 
 
+def _checkpointed_forward(model: nn.Module, *args: Any, **kwargs: Any) -> Any:
+    from torch.utils.checkpoint import checkpoint
+
+    def forward(*inner_args: Any) -> Any:
+        return model(*inner_args, **kwargs)
+
+    return checkpoint(forward, *args, use_reentrant=False)
+
+
 def build_training_step_executor(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -132,16 +143,22 @@ def build_training_step_executor(
     config: PeakAwareConfig,
     guards: tuple[GuardSpec, ...] = (),
     plan_id: str = "unconfigured",
-    fallback_executables: tuple[tuple[str, Callable[..., Tensor]], ...] = (),
+    fallback_executables: tuple[tuple[str, Callable[..., Any]], ...] = (),
     runtime_peak_threshold_bytes: int | None = None,
     selection_objective: str = "unconfigured",
+    activation_checkpoint: bool = False,
 ) -> EagerTrainingStepExecutor:
-    executable: Callable[..., Tensor]
+    executable: Callable[..., Any]
+    base_executable: Callable[..., Any]
+    if activation_checkpoint:
+        base_executable = lambda *args, **kwargs: _checkpointed_forward(model, *args, **kwargs)
+    else:
+        base_executable = model
     if config.enable_compile:
         backend = "inductor" if config.enable_inductor else "aot_eager"
-        executable = torch.compile(model, backend=backend)
+        executable = torch.compile(base_executable, backend=backend)
     else:
-        executable = model
+        executable = base_executable
     return EagerTrainingStepExecutor(
         model,
         optimizer,
@@ -153,12 +170,13 @@ def build_training_step_executor(
         fallback_executables=fallback_executables,
         runtime_peak_threshold_bytes=runtime_peak_threshold_bytes,
         selection_objective=selection_objective,
+        activation_checkpoint=activation_checkpoint,
     )
 
 
 def replace_executable_on_fallback(
     executor: EagerTrainingStepExecutor,
-    executable: Callable[..., Tensor],
+    executable: Callable[..., Any],
     *,
     plan_id: str | None = None,
 ) -> EagerTrainingStepExecutor:
@@ -186,6 +204,8 @@ def make_measured_executable(
         warmup_steps=executor.config.measurement_warmup_steps,
         repeat_count=executor.config.measurement_repeats,
     )
+    phase_metrics = dict(phase_metrics)
+    phase_metrics["activation_checkpoint"] = int(executor.activation_checkpoint)
     measured_peak = int(phase_metrics["overall_peak_bytes"])
     measured_us = float(phase_metrics["step_us"])
     if measured_peak == 0:

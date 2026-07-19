@@ -79,8 +79,13 @@ def test_optimize_training_builds_executor_and_runs_step():
         "step_us_p90",
     }.issubset(result.executable.phase_metrics)
     assert len(result.measured_candidates) >= 2
+    assert any(
+        candidate.plan_id != "all_save" and candidate.phase_metrics.get("activation_checkpoint") == 1
+        for candidate in result.measured_candidates
+    )
     assert result.executable.plan_id in {candidate.plan_id for candidate in result.measured_candidates}
     assert result.executor.current_plan_id == result.selected_plan.plan_id
+    assert result.executor.activation_checkpoint == bool(result.executable.phase_metrics.get("activation_checkpoint", 0))
     assert result.executor.selection_objective == "min_peak_then_time"
     assert result.executor.runtime_peak_threshold_bytes is not None
     assert result.executor.runtime_peak_threshold_bytes <= 1 << 28

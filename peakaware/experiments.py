@@ -306,6 +306,7 @@ def _measured_plan_results(summary: dict[str, Any]) -> tuple[dict[str, Any], ...
                 "measured_step_us": measured.get("step_us"),
                 "measured_peak_phase": measured.get("peak_phase"),
                 "measured_feasible": prediction.get("measured_feasible"),
+                "phase_metrics": dict(measured.get("phase_metrics") or {}),
                 "prediction_error_bytes": prediction.get("error_bytes"),
                 "calibrated_estimated_peak_bytes": calibrated_estimated,
                 "calibrated_prediction_error_bytes": calibrated_error,
