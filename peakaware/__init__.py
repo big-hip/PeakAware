@@ -9,6 +9,7 @@ from .experiments import (
     ExperimentSummary,
     run_experiment_matrix,
     summarize_experiment_records,
+    summarize_experiment_records_by_variant,
 )
 from .microbatch import optimize_microbatches
 from .reporting import (
@@ -32,6 +33,7 @@ __all__ = [
     "StepResult",
     "summarize_plan_artifact",
     "summarize_experiment_records",
+    "summarize_experiment_records_by_variant",
     "summarize_result",
     "optimize_microbatches",
     "optimize_training",

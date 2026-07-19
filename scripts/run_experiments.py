@@ -15,9 +15,11 @@ from peakaware.experiments import (
     experiment_records_to_dicts,
     run_experiment_matrix,
     summarize_experiment_records,
+    summarize_experiment_records_by_variant,
     write_experiment_csv,
     write_experiment_json,
     write_experiment_summary_json,
+    write_experiment_variant_summary_json,
 )
 
 
@@ -47,6 +49,7 @@ def main() -> None:
     parser.add_argument("--output-json", type=Path, default=None)
     parser.add_argument("--output-csv", type=Path, default=None)
     parser.add_argument("--output-summary-json", type=Path, default=None)
+    parser.add_argument("--output-variant-summary-json", type=Path, default=None)
     args = parser.parse_args()
 
     base_config = PeakAwareConfig(
@@ -85,6 +88,11 @@ def main() -> None:
     summary = summarize_experiment_records(records)
     if args.output_summary_json is not None:
         write_experiment_summary_json(summary, args.output_summary_json)
+    if args.output_variant_summary_json is not None:
+        write_experiment_variant_summary_json(
+            summarize_experiment_records_by_variant(records),
+            args.output_variant_summary_json,
+        )
     print(json.dumps(experiment_records_to_dicts(records), indent=2, sort_keys=True))
 
 

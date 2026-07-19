@@ -12,9 +12,11 @@ from peakaware.experiments import (
     ExperimentRecord,
     run_experiment_matrix,
     summarize_experiment_records,
+    summarize_experiment_records_by_variant,
     write_experiment_csv,
     write_experiment_json,
     write_experiment_summary_json,
+    write_experiment_variant_summary_json,
 )
 from peakaware.models import TrainingTaskRegistry
 
@@ -157,6 +159,14 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.mean_diagnostic_normalized_saved_reduction_bytes == 32.0
     assert summary.mean_diagnostic_realization_gap_bytes == 12.0
     assert summary.aggregate_cache_hit_rate == 0.5
+    variant_summaries = summarize_experiment_records_by_variant(
+        (
+            _minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80, samples_per_second=10.0),
+            _minimal_record(status="failed", budget_bytes=100, measured_peak_bytes=None),
+        )
+    )
+    assert set(variant_summaries) == {"diagnostic_hints_on", "failed"}
+    assert variant_summaries["diagnostic_hints_on"].ok_records == 1
 
 
 def test_experiment_matrix_writes_json_and_csv(tmp_path):
@@ -169,14 +179,17 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     json_path = tmp_path / "records.json"
     csv_path = tmp_path / "records.csv"
     summary_path = tmp_path / "summary.json"
+    variant_summary_path = tmp_path / "variant_summary.json"
 
     write_experiment_json(records, json_path)
     write_experiment_csv(records, csv_path)
     summary = summarize_experiment_records(records)
     write_experiment_summary_json(summary, summary_path)
+    write_experiment_variant_summary_json(summarize_experiment_records_by_variant(records), variant_summary_path)
 
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    variant_summary_payload = json.loads(variant_summary_path.read_text(encoding="utf-8"))
     with csv_path.open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
 
@@ -226,6 +239,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert "torch_version" in summary_payload["environment_fingerprint"]
     assert "cuda_available" in summary_payload["environment_fingerprint"]
     assert summary_payload["variant_counts"] == {"default": 1}
+    assert variant_summary_payload["default"]["total_records"] == 1
     assert summary_payload["mean_measured_peak_reduction_vs_all_save_bytes"] is not None
     assert "phase_classification_accuracy" in summary_payload
     assert "measured_peak_phase_counts" in summary_payload
@@ -276,6 +290,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     json_path = tmp_path / "records.json"
     csv_path = tmp_path / "records.csv"
     summary_path = tmp_path / "summary.json"
+    variant_summary_path = tmp_path / "variant_summary.json"
     completed = subprocess.run(
         [
             sys.executable,
@@ -303,6 +318,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             str(csv_path),
             "--output-summary-json",
             str(summary_path),
+            "--output-variant-summary-json",
+            str(variant_summary_path),
         ],
         check=True,
         text=True,
@@ -312,6 +329,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     stdout_payload = json.loads(completed.stdout)
     file_payload = json.loads(json_path.read_text(encoding="utf-8"))
     summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    variant_summary_payload = json.loads(variant_summary_path.read_text(encoding="utf-8"))
 
     assert len(stdout_payload) == 2
     assert {record["variant_name"] for record in stdout_payload} == {
@@ -340,6 +358,9 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert summary_payload["ok_records"] == 2
     assert "python_version" in summary_payload["environment_fingerprint"]
     assert summary_payload["variant_counts"] == {"diagnostic_hints_off": 1, "diagnostic_hints_on": 1}
+    assert set(variant_summary_payload) == {"diagnostic_hints_off", "diagnostic_hints_on"}
+    assert variant_summary_payload["diagnostic_hints_on"]["ok_records"] == 1
+    assert variant_summary_payload["diagnostic_hints_off"]["ok_records"] == 1
     assert summary_payload["selected_prediction_count"] == 2
     assert summary_payload["mean_selected_samples_per_second_speedup_vs_all_save"] is not None
     assert "phase_classification_count" in summary_payload

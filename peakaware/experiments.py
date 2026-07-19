@@ -621,6 +621,22 @@ def experiment_summary_to_dict(summary: ExperimentSummary) -> dict[str, Any]:
     return asdict(summary)
 
 
+def summarize_experiment_records_by_variant(records: tuple[ExperimentRecord, ...]) -> dict[str, ExperimentSummary]:
+    grouped: dict[str, list[ExperimentRecord]] = {}
+    for record in records:
+        grouped.setdefault(record.variant_name, []).append(record)
+    return {
+        variant_name: summarize_experiment_records(tuple(variant_records))
+        for variant_name, variant_records in sorted(grouped.items())
+    }
+
+
+def experiment_variant_summaries_to_dict(
+    summaries: dict[str, ExperimentSummary],
+) -> dict[str, dict[str, Any]]:
+    return {variant_name: experiment_summary_to_dict(summary) for variant_name, summary in summaries.items()}
+
+
 def write_experiment_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
     text = json.dumps(experiment_records_to_dicts(records), indent=2, sort_keys=True)
     Path(path).write_text(text + "\n", encoding="utf-8")
@@ -628,6 +644,14 @@ def write_experiment_json(records: tuple[ExperimentRecord, ...], path: str | Pat
 
 def write_experiment_summary_json(summary: ExperimentSummary, path: str | Path) -> None:
     text = json.dumps(experiment_summary_to_dict(summary), indent=2, sort_keys=True)
+    Path(path).write_text(text + "\n", encoding="utf-8")
+
+
+def write_experiment_variant_summary_json(
+    summaries: dict[str, ExperimentSummary],
+    path: str | Path,
+) -> None:
+    text = json.dumps(experiment_variant_summaries_to_dict(summaries), indent=2, sort_keys=True)
     Path(path).write_text(text + "\n", encoding="utf-8")
 
 
