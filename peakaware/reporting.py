@@ -23,6 +23,42 @@ def _selected_effective_saved_value_ids(result: OptimizedTrainingResult) -> froz
     return result.selected_plan.saved_value_ids | result.selected_plan.mandatory_value_ids
 
 
+def _ranking_provenance(plan: EvaluatedPlan | None = None) -> dict[str, Any]:
+    cost_sources = () if plan is None else plan.plan.cost_sources
+    return {
+        "risk_score": {
+            "range": "[0, 1]",
+            "direction": "lower_is_better",
+            "source": "memory.simulator",
+            "components": (
+                "dropped_storage_recompute_wave",
+                "cost_confidence",
+                "workspace_uncertainty",
+            ),
+            "cost_sources": cost_sources,
+        },
+        "confidence": {
+            "range": "[0, 1]",
+            "direction": "higher_is_better",
+            "source": "memory.simulator",
+            "components": (
+                "closure_validity",
+                "storage_alias_confidence",
+                "cost_provider_confidence",
+            ),
+            "cost_sources": cost_sources,
+        },
+        "stable_tie_break": (
+            "feasible_first",
+            "risk_score",
+            "negative_confidence",
+            "estimated_peak_bytes",
+            "estimated_step_us",
+            "plan_id",
+        ),
+    }
+
+
 def _plan_row(plan: EvaluatedPlan) -> dict[str, Any]:
     return {
         "plan_id": plan.plan.plan_id,
@@ -37,6 +73,7 @@ def _plan_row(plan: EvaluatedPlan) -> dict[str, Any]:
         "max_recompute_live_bytes": plan.simulation.max_recompute_live_bytes,
         "risk_score": plan.plan.risk_score,
         "confidence": plan.plan.confidence,
+        "ranking_provenance": _ranking_provenance(plan),
     }
 
 
@@ -264,6 +301,8 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
 
 def summarize_plan_artifact(result: OptimizedTrainingResult) -> dict[str, Any]:
     dry_run = result.dry_run
+    plans = result.analysis.baseline_results if result.analysis is not None else ()
+    selected_evaluated = next((plan for plan in plans if plan.plan.plan_id == result.selected_plan.plan_id), None)
     return {
         "plan_id": result.selected_plan.plan_id,
         "plan_key": plan_identity_key(
@@ -282,6 +321,7 @@ def summarize_plan_artifact(result: OptimizedTrainingResult) -> dict[str, Any]:
         "recompute_span_ops": result.selected_plan.recompute_span_ops,
         "risk_score": result.selected_plan.risk_score,
         "confidence": result.selected_plan.confidence,
+        "ranking_provenance": _ranking_provenance(selected_evaluated),
         "measured_peak_bytes": result.executable.measured_peak_bytes,
         "measured_step_us": result.executable.measured_step_us,
         "correctness": None

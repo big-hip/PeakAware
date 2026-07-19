@@ -48,6 +48,9 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert summary["estimated_peak_bytes"] == result.selected_plan.estimated_peak_bytes
     assert "reserved_peak_bytes" in summary["measured"]
     assert "early_stop" in summary
+    assert all(item["ranking_provenance"]["risk_score"]["range"] == "[0, 1]" for item in summary["plans"])
+    assert all(item["ranking_provenance"]["confidence"]["direction"] == "higher_is_better" for item in summary["plans"])
+    assert all("plan_id" in item["ranking_provenance"]["stable_tie_break"] for item in summary["plans"])
     assert summary["capture_failures"] == []
     failed_result = replace(
         result,
@@ -86,6 +89,7 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert plan_artifact["plan_key"] == summary["selected_plan_key"]
     assert plan_artifact["saved_value_ids"] == tuple(sorted(result.selected_plan.saved_value_ids))
     assert plan_artifact["effective_saved_value_ids"] == summary["selected_effective_saved_value_ids"]
+    assert plan_artifact["ranking_provenance"]["risk_score"]["direction"] == "lower_is_better"
     assert plan_artifact["correctness"]["gradients_match"] is True
     assert "Selected plan:" in text
     assert json.loads(exported)["selected_plan_id"] == result.selected_plan.plan_id
