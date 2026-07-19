@@ -181,6 +181,8 @@ def _minimal_record(
         cache_total_hits=1,
         cache_total_misses=1,
         cache_hit_rate=0.5,
+        cache_layer_hits={"analysis": 1} if status == "ok" else {},
+        cache_layer_misses={"capture": 1} if status == "ok" else {},
         optimization_total_us=100.0 if status == "ok" else None,
         optimization_capture_us=10.0 if status == "ok" else None,
         optimization_ir_build_us=20.0 if status == "ok" else None,
@@ -258,6 +260,9 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.mean_diagnostic_normalized_saved_reduction_bytes == 32.0
     assert summary.mean_diagnostic_realization_gap_bytes == 12.0
     assert summary.aggregate_cache_hit_rate == 0.5
+    assert summary.cache_layer_hits == {"analysis": 2}
+    assert summary.cache_layer_misses == {"capture": 2}
+    assert summary.cache_layer_hit_rates == {"analysis": 1.0, "capture": 0.0}
     assert summary.mean_optimization_total_us == 100.0
     assert summary.mean_optimization_capture_us == 10.0
     assert summary.mean_optimization_ir_build_us == 20.0
@@ -403,6 +408,8 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].selected_prediction_error_bytes is not None
     assert records[0].candidate_count >= records[0].measured_candidate_count
     assert records[0].cache_total_hits == 0
+    assert isinstance(records[0].cache_layer_hits, dict)
+    assert isinstance(records[0].cache_layer_misses, dict)
     assert payload[0]["selected_plan_id"] is not None
     assert payload[0]["variant_name"] == "default"
     assert payload[0]["config_fingerprint"]["top_k"] == 1
@@ -440,6 +447,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert "diagnostic_hint_count" in summary_payload
     assert "repair_success_rate" in summary_payload
     assert "mean_optimization_total_us" in summary_payload
+    assert "cache_layer_hit_rates" in summary_payload
     assert summary_payload["total_actual_joint_capture_count"] == 1
 
 
@@ -589,6 +597,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["simulation_accuracy_candidate_count"] >= 1
     assert {record["diagnostic_hints_enabled"] for record in stdout_payload} == {True, False}
     assert stdout_payload[0]["cache_total_hits"] == 0
+    assert "cache_layer_hits" in stdout_payload[0]
+    assert "cache_layer_misses" in stdout_payload[0]
     assert file_payload[0]["task_name"] == "tiny_mlp_w8_d3"
     assert file_payload[0]["exact_error_type"] == "PlanValidationError"
     assert summary_payload["total_records"] == 2
@@ -624,6 +634,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert "diagnostic_hint_kind_counts" in summary_payload
     assert summary_payload["exact_failure_count"] == 2
     assert "mean_optimization_amortization_steps" in summary_payload
+    assert set(summary_payload["cache_layer_hit_rates"]).issubset({"analysis", "executable"})
     assert summary_payload["total_actual_joint_capture_count"] == 2
     assert csv_path.read_text(encoding="utf-8").startswith(
         "variant_name,config_fingerprint,task_name,microbatch_size,budget_bytes"

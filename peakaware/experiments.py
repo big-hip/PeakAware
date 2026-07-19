@@ -79,6 +79,8 @@ class ExperimentRecord:
     cache_total_hits: int
     cache_total_misses: int
     cache_hit_rate: float | None
+    cache_layer_hits: dict[str, int]
+    cache_layer_misses: dict[str, int]
     optimization_total_us: float | None
     optimization_capture_us: float | None
     optimization_ir_build_us: float | None
@@ -129,6 +131,9 @@ class ExperimentSummary:
     aggregate_cache_hit_rate: float | None
     total_cache_hits: int
     total_cache_misses: int
+    cache_layer_hits: dict[str, int]
+    cache_layer_misses: dict[str, int]
+    cache_layer_hit_rates: dict[str, float | None]
     mean_optimization_total_us: float | None
     mean_optimization_capture_us: float | None
     mean_optimization_ir_build_us: float | None
@@ -358,6 +363,8 @@ def _record_success(
         cache_total_hits=int(cache.get("total_hits", 0)),
         cache_total_misses=int(cache.get("total_misses", 0)),
         cache_hit_rate=cache.get("hit_rate"),
+        cache_layer_hits={str(layer): int(count) for layer, count in cache.get("layer_hits", {}).items()},
+        cache_layer_misses={str(layer): int(count) for layer, count in cache.get("layer_misses", {}).items()},
         optimization_total_us=optimization_cost.get("total_optimization_us"),
         optimization_capture_us=optimization_cost.get("capture_us"),
         optimization_ir_build_us=optimization_cost.get("ir_build_us"),
@@ -439,6 +446,8 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         cache_total_hits=0,
         cache_total_misses=0,
         cache_hit_rate=None,
+        cache_layer_hits={},
+        cache_layer_misses={},
         optimization_total_us=None,
         optimization_capture_us=None,
         optimization_ir_build_us=None,
@@ -579,6 +588,23 @@ def _tuple_counts(values: list[tuple[str, ...]]) -> dict[str, int]:
         for item in items:
             counts[item] = counts.get(item, 0) + 1
     return dict(sorted(counts.items()))
+
+
+def _sum_layer_counts(records: list[ExperimentRecord], field_name: str) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for record in records:
+        counts = getattr(record, field_name)
+        for layer, count in counts.items():
+            totals[layer] = totals.get(layer, 0) + int(count)
+    return dict(sorted(totals.items()))
+
+
+def _layer_hit_rates(hits: dict[str, int], misses: dict[str, int]) -> dict[str, float | None]:
+    rates: dict[str, float | None] = {}
+    for layer in sorted(set(hits) | set(misses)):
+        total = hits.get(layer, 0) + misses.get(layer, 0)
+        rates[layer] = None if total == 0 else hits.get(layer, 0) / total
+    return rates
 
 
 def _environment_fingerprint() -> dict[str, Any]:
@@ -722,6 +748,8 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
     ]
     total_hits = sum(record.cache_total_hits for record in records)
     total_misses = sum(record.cache_total_misses for record in records)
+    layer_hits = _sum_layer_counts(records, "cache_layer_hits")
+    layer_misses = _sum_layer_counts(records, "cache_layer_misses")
     optimization_totals = [record.optimization_total_us for record in ok if record.optimization_total_us is not None]
     optimization_captures = [
         record.optimization_capture_us
@@ -783,6 +811,9 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         aggregate_cache_hit_rate=None if total_hits + total_misses == 0 else total_hits / (total_hits + total_misses),
         total_cache_hits=total_hits,
         total_cache_misses=total_misses,
+        cache_layer_hits=layer_hits,
+        cache_layer_misses=layer_misses,
+        cache_layer_hit_rates=_layer_hit_rates(layer_hits, layer_misses),
         mean_optimization_total_us=_mean(optimization_totals),
         mean_optimization_capture_us=_mean(optimization_captures),
         mean_optimization_ir_build_us=_mean(optimization_ir_builds),
