@@ -83,5 +83,7 @@ def test_run_mvp_script_writes_report_json(tmp_path):
     assert stdout_payload["mode"] == "microbatch"
     assert file_payload["selected_report"]["diagnostic"]["counterfactuals"]
     assert plan_payload["plan_id"] == file_payload["selected_report"]["selected_plan_id"]
+    assert plan_payload["plan_key"] == file_payload["selected_report"]["selected_plan_key"]
     assert plan_payload["saved_value_ids"]
+    assert plan_payload["effective_saved_value_ids"]
     assert plan_payload["correctness"]["gradients_match"] is True

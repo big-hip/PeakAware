@@ -21,11 +21,11 @@ class SearchResult:
     early_stop_reason: str | None
 
 
-def _plan_id(graph_key: str, saved_value_ids: frozenset[int], budget: int) -> str:
+def plan_identity_key(graph_key: str, saved_value_ids: frozenset[int], budget_bytes: int) -> str:
     h = hashlib.sha256()
     h.update(graph_key.encode("utf-8"))
     h.update(str(sorted(saved_value_ids)).encode("utf-8"))
-    h.update(str(budget).encode("utf-8"))
+    h.update(str(budget_bytes).encode("utf-8"))
     return h.hexdigest()[:12]
 
 
@@ -75,7 +75,7 @@ def build_recompute_plan(
 ) -> RecomputePlan:
     validate_plan_identity(ir, saved_value_ids)
     mandatory = frozenset(v.id for v in ir.values if v.mandatory_save_reason)
-    plan_id = label or _plan_id(ir.graph_key, saved_value_ids | mandatory, budget_bytes)
+    plan_id = label or plan_identity_key(ir.graph_key, saved_value_ids | mandatory, budget_bytes)
     return RecomputePlan(
         graph_key=ir.graph_key,
         budget_bytes=budget_bytes,

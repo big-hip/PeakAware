@@ -26,8 +26,10 @@ class ExperimentRecord:
     budget_bytes: int
     status: str
     selected_plan_id: str | None
+    selected_plan_key: str | None
     graph_key: str | None
     selected_saved_value_ids: tuple[int, ...]
+    selected_effective_saved_value_ids: tuple[int, ...]
     selected_estimated_peak_bytes: int | None
     measured_peak_bytes: int | None
     measured_peak_reserved_bytes: int | None
@@ -59,8 +61,10 @@ def _record_success(case: ExperimentCase, summary: dict[str, Any]) -> Experiment
         budget_bytes=case.budget_bytes,
         status="ok",
         selected_plan_id=summary["selected_plan_id"],
+        selected_plan_key=summary["selected_plan_key"],
         graph_key=summary["graph_key"],
         selected_saved_value_ids=tuple(summary["selected_saved_value_ids"]),
+        selected_effective_saved_value_ids=tuple(summary["selected_effective_saved_value_ids"]),
         selected_estimated_peak_bytes=int(summary["estimated_peak_bytes"]),
         measured_peak_bytes=int(measured["peak_bytes"]),
         measured_peak_reserved_bytes=int(measured.get("reserved_peak_bytes", 0)),
@@ -86,8 +90,10 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         budget_bytes=case.budget_bytes,
         status="failed",
         selected_plan_id=None,
+        selected_plan_key=None,
         graph_key=None,
         selected_saved_value_ids=(),
+        selected_effective_saved_value_ids=(),
         selected_estimated_peak_bytes=None,
         measured_peak_bytes=None,
         measured_peak_reserved_bytes=None,

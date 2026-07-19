@@ -6,11 +6,22 @@ from typing import Any
 
 from peakaware.contracts import EvaluatedPlan, FeasibilityReport, MeasuredExecutable, OptimizedTrainingResult
 from peakaware.diagnostics import PlanDiagnosticReport, diagnose_plan, render_diagnostic_text
+from peakaware.search.plan import plan_identity_key
+
+
+def _effective_saved_value_ids(plan: EvaluatedPlan) -> frozenset[int]:
+    return plan.plan.saved_value_ids | plan.plan.mandatory_value_ids
+
+
+def _selected_effective_saved_value_ids(result: OptimizedTrainingResult) -> frozenset[int]:
+    return result.selected_plan.saved_value_ids | result.selected_plan.mandatory_value_ids
 
 
 def _plan_row(plan: EvaluatedPlan) -> dict[str, Any]:
     return {
         "plan_id": plan.plan.plan_id,
+        "plan_key": plan_identity_key(plan.plan.graph_key, _effective_saved_value_ids(plan), plan.plan.budget_bytes),
+        "effective_saved_value_ids": tuple(sorted(_effective_saved_value_ids(plan))),
         "feasible": plan.feasible,
         "rejection_reason": plan.rejection_reason,
         "estimated_peak_bytes": plan.simulation.estimated_peak_bytes,
@@ -164,8 +175,14 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
     ]
     return {
         "selected_plan_id": result.selected_plan.plan_id,
+        "selected_plan_key": plan_identity_key(
+            result.selected_plan.graph_key,
+            _selected_effective_saved_value_ids(result),
+            result.selected_plan.budget_bytes,
+        ),
         "graph_key": result.selected_plan.graph_key,
         "selected_saved_value_ids": tuple(sorted(result.selected_plan.saved_value_ids)),
+        "selected_effective_saved_value_ids": tuple(sorted(_selected_effective_saved_value_ids(result))),
         "estimated_peak_bytes": result.selected_plan.estimated_peak_bytes,
         "estimated_step_us": result.selected_plan.estimated_step_us,
         "fallback_plan_ids": result.fallback_plan_ids,
@@ -214,8 +231,14 @@ def summarize_plan_artifact(result: OptimizedTrainingResult) -> dict[str, Any]:
     dry_run = result.dry_run
     return {
         "plan_id": result.selected_plan.plan_id,
+        "plan_key": plan_identity_key(
+            result.selected_plan.graph_key,
+            _selected_effective_saved_value_ids(result),
+            result.selected_plan.budget_bytes,
+        ),
         "graph_key": result.selected_plan.graph_key,
         "saved_value_ids": tuple(sorted(result.selected_plan.saved_value_ids)),
+        "effective_saved_value_ids": tuple(sorted(_selected_effective_saved_value_ids(result))),
         "budget_bytes": result.selected_plan.budget_bytes,
         "safety_margin_bytes": result.selected_plan.safety_margin_bytes,
         "estimated_peak_bytes": result.selected_plan.estimated_peak_bytes,

@@ -38,8 +38,10 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     exported_plan = export_plan_artifact_json(result, plan_path)
 
     assert summary["selected_plan_id"] == result.selected_plan.plan_id
+    assert summary["selected_plan_key"]
     assert summary["graph_key"] == result.selected_plan.graph_key
     assert summary["selected_saved_value_ids"] == tuple(sorted(result.selected_plan.saved_value_ids))
+    assert set(summary["selected_saved_value_ids"]).issubset(summary["selected_effective_saved_value_ids"])
     assert summary["estimated_peak_bytes"] == result.selected_plan.estimated_peak_bytes
     assert "reserved_peak_bytes" in summary["measured"]
     assert "early_stop" in summary
@@ -55,10 +57,13 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert "error_bytes" in summary["measured_candidates"][0]["prediction_error"]
     assert summary["cache"]["total_hits"] == result.cache_stats.total_hits
     assert plan_artifact["plan_id"] == result.selected_plan.plan_id
+    assert plan_artifact["plan_key"] == summary["selected_plan_key"]
     assert plan_artifact["saved_value_ids"] == tuple(sorted(result.selected_plan.saved_value_ids))
+    assert plan_artifact["effective_saved_value_ids"] == summary["selected_effective_saved_value_ids"]
     assert plan_artifact["correctness"]["gradients_match"] is True
     assert "Selected plan:" in text
     assert json.loads(exported)["selected_plan_id"] == result.selected_plan.plan_id
+    assert json.loads(exported)["selected_plan_key"] == summary["selected_plan_key"]
     assert json.loads(exported_plan)["graph_key"] == result.selected_plan.graph_key
     assert json.loads(plan_path.read_text(encoding="utf-8"))["plan_id"] == result.selected_plan.plan_id
     assert json.loads(path.read_text(encoding="utf-8"))["measured"]["correctness_passed"] is True
