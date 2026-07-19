@@ -2,7 +2,13 @@ import math
 
 import pytest
 
-from peakaware.cache.executable import load_executable_cache, select_cached_executable, store_executable_cache
+from peakaware.cache.executable import (
+    load_executable_cache,
+    load_executable_measurement_cache,
+    select_cached_executable,
+    store_executable_cache,
+    store_executable_measurement_cache,
+)
 from peakaware.cache.keys import build_compiled_artifact_key, build_plan_evaluation_key
 from peakaware.cache.store import CacheEntry, invalidate_downstream, load_cache_entry, store_cache_entry
 from peakaware.contracts import MeasuredExecutable
@@ -133,6 +139,17 @@ def test_executable_cache_round_trip_and_selection(tmp_path):
     assert loaded is not None
     assert loaded.plan_id == "fast"
     assert selected is fast
+
+
+def test_executable_measurement_cache_rebinds_callable(tmp_path):
+    executable = MeasuredExecutable("plan", abs, 10, 2.0, True, {"step_us": 2.0})
+
+    store_executable_measurement_cache(tmp_path, "plan-key", executable, {"compiler": "none"})
+    loaded = load_executable_measurement_cache(tmp_path, "plan-key", round, {"compiler": "none"})
+
+    assert loaded is not None
+    assert loaded.forward_backward is round
+    assert loaded.measured_peak_bytes == 10
 
 
 def test_profile_db_exact_lookup_round_trip(tmp_path):

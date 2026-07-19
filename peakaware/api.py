@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Callable
 
 import torch
@@ -20,6 +21,16 @@ from peakaware.contracts import (
     MeasuredExecutable,
     OptimizedTrainingResult,
     TrainingRequest,
+)
+from peakaware.cache import (
+    build_compiled_artifact_key,
+    build_plan_evaluation_key,
+    load_analysis_cache,
+    load_capture_cache,
+    load_executable_measurement_cache,
+    store_analysis_cache,
+    store_capture_cache,
+    store_executable_measurement_cache,
 )
 from peakaware.cost.composite import build_composite_provider
 from peakaware.errors import InfeasibleBudgetError
@@ -56,6 +67,99 @@ def _request_key(model: nn.Module, args: tuple[Any, ...], kwargs: dict[str, Any]
             h.update(str(value.dtype).encode("utf-8"))
             h.update(str(value.device).encode("utf-8"))
     return h.hexdigest()[:16]
+
+
+def _cache_root(config: PeakAwareConfig) -> Path | None:
+    return None if config.cache_root is None else Path(config.cache_root)
+
+
+def _capture_cache_provenance(request: TrainingRequest) -> dict[str, Any]:
+    return {
+        "torch_version": torch.__version__,
+        "request_key": request.request_key,
+        "capture_backend": request.config.capture_backend,
+    }
+
+
+def _can_cache_capture(config: PeakAwareConfig) -> bool:
+    # PyTorch 2.13 AOT GraphModules can become invalid after pickle round-trips.
+    return config.capture_backend == "fx"
+
+
+def _analysis_cache_key(
+    request: TrainingRequest,
+    optimizer_name: str,
+    memory_budget_bytes: int,
+    config: PeakAwareConfig,
+) -> str:
+    return build_plan_evaluation_key(
+        analysis_key=request.request_key,
+        optimizer_mode=optimizer_name,
+        cost_database_version=str(config.profile_db_path or "none"),
+        search_policy_version=f"peakaware-topk{config.top_k}",
+        budget_bucket=memory_budget_bytes,
+    )
+
+
+def _analysis_cache_provenance(
+    request: TrainingRequest,
+    optimizer_name: str,
+    memory_budget_bytes: int,
+    config: PeakAwareConfig,
+) -> dict[str, Any]:
+    return {
+        "torch_version": torch.__version__,
+        "request_key": request.request_key,
+        "optimizer": optimizer_name,
+        "budget_bytes": memory_budget_bytes,
+        "top_k": config.top_k,
+        "safety_margin_bytes": config.safety_margin_bytes,
+        "safety_margin_ratio": config.safety_margin_ratio,
+        "manual_saved_value_ids": [list(sorted(item)) for item in config.manual_saved_value_ids],
+        "profile_db_path": str(config.profile_db_path or "none"),
+    }
+
+
+def _rebind_evaluated_plans(evaluated: tuple[EvaluatedPlan, ...], graph_key: str) -> tuple[EvaluatedPlan, ...]:
+    return tuple(replace(item, plan=replace(item.plan, graph_key=graph_key)) for item in evaluated)
+
+
+def _executable_cache_key(
+    request: TrainingRequest,
+    capture: CapturedJointGraph,
+    candidate: EvaluatedPlan,
+) -> str:
+    if request.config.enable_inductor:
+        compiler_version = "inductor"
+    elif request.config.enable_compile:
+        compiler_version = "aot_eager"
+    else:
+        compiler_version = "eager"
+    return build_compiled_artifact_key(
+        lowered_plan_fingerprint=(
+            f"{candidate.plan.graph_key}:{candidate.plan.plan_id}:"
+            f"{tuple(sorted(candidate.plan.saved_value_ids))}"
+        ),
+        state_signature=request.request_key,
+        input_guards=tuple((guard.name, guard.value) for guard in capture.guards),
+        device_capability=request.hardware.device,
+        torch_version=torch.__version__,
+        compiler_version=compiler_version,
+        partition_plugin_version="core",
+    )
+
+
+def _executable_cache_provenance(
+    request: TrainingRequest,
+    candidate: EvaluatedPlan,
+) -> dict[str, Any]:
+    return {
+        "torch_version": torch.__version__,
+        "request_key": request.request_key,
+        "plan_id": candidate.plan.plan_id,
+        "graph_key": candidate.plan.graph_key,
+        "correctness_required": True,
+    }
 
 
 def _validate_request(
@@ -183,6 +287,26 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
     if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
         return _CandidateValidation(dry_run=dry_run, measurement=None)
     executor = build_training_step_executor(model, optimizer, loss_fn, config)
+    cache_root = _cache_root(config)
+    executable_key = _executable_cache_key(request, capture, candidate)
+    executable_provenance = _executable_cache_provenance(request, candidate)
+    if cache_root is not None:
+        cached = load_executable_measurement_cache(
+            cache_root,
+            executable_key,
+            executor.executable,
+            executable_provenance,
+        )
+        if cached is not None and cached.correctness_passed:
+            return _CandidateValidation(
+                dry_run=dry_run,
+                measurement=_CandidateMeasurement(
+                    plan_id=cached.plan_id,
+                    measured_peak_bytes=cached.measured_peak_bytes,
+                    measured_step_us=cached.measured_step_us,
+                    phase_metrics=cached.phase_metrics,
+                ),
+            )
     measured = make_measured_executable(
         candidate.plan.plan_id,
         executor,
@@ -190,6 +314,8 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         example_kwargs,
         candidate.simulation.estimated_peak_bytes,
     )
+    if cache_root is not None:
+        store_executable_measurement_cache(cache_root, executable_key, measured, executable_provenance)
     return _CandidateValidation(
         dry_run=dry_run,
         measurement=_CandidateMeasurement(
@@ -255,6 +381,7 @@ def optimize_training(
     _validate_request(model, example_args, example_kwargs, loss_fn, optimizer, memory_budget_bytes, config)
     model.train()
     registry = build_default_registry(profile_db_path=config.profile_db_path)
+    cache_root = _cache_root(config)
 
     optimizer_spec = build_optimizer_spec(optimizer, model)
     request = TrainingRequest(
@@ -274,7 +401,13 @@ def optimize_training(
     if coarse.status == "INFEASIBLE_BY_ACTIVATION_ONLY":
         raise InfeasibleBudgetError(coarse.explanations[0])
 
-    capture = capture_joint_graph(request)
+    capture_provenance = _capture_cache_provenance(request)
+    use_capture_cache = cache_root is not None and _can_cache_capture(config)
+    capture = None if not use_capture_cache else load_capture_cache(cache_root, request.request_key, capture_provenance)
+    if capture is None:
+        capture = capture_joint_graph(request)
+        if use_capture_cache:
+            store_capture_cache(cache_root, request.request_key, capture, capture_provenance)
     ir, ir_report = build_joint_ir(capture)
     if not ir_report.valid:
         raise ValueError(f"invalid IR: {ir_report.errors}")
@@ -283,18 +416,36 @@ def optimize_training(
     if feasibility.status == "INFEASIBLE_BY_ACTIVATION_ONLY":
         raise InfeasibleBudgetError(feasibility.explanations[0])
 
-    safety_margin = max(config.safety_margin_bytes, int(memory_budget_bytes * config.safety_margin_ratio))
-    evaluated = search_plans(
-        ir,
-        fixed_timeline,
-        budget_bytes=memory_budget_bytes,
-        safety_margin_bytes=safety_margin,
-        manual_saved_value_ids=config.manual_saved_value_ids,
-        cost_provider=build_composite_provider(
-            tuple(record.service for record in registry.services_for(ServiceKind.COST_PROVIDER))
-        ),
-        top_k=config.top_k,
-    )
+    analysis_key = _analysis_cache_key(request, optimizer_spec.name, memory_budget_bytes, config)
+    analysis_provenance = _analysis_cache_provenance(request, optimizer_spec.name, memory_budget_bytes, config)
+    cached_analysis = None if cache_root is None else load_analysis_cache(cache_root, analysis_key, analysis_provenance)
+    if cached_analysis is not None:
+        evaluated = _rebind_evaluated_plans(cached_analysis.baseline_results, ir.graph_key)
+    else:
+        safety_margin = max(config.safety_margin_bytes, int(memory_budget_bytes * config.safety_margin_ratio))
+        evaluated = search_plans(
+            ir,
+            fixed_timeline,
+            budget_bytes=memory_budget_bytes,
+            safety_margin_bytes=safety_margin,
+            manual_saved_value_ids=config.manual_saved_value_ids,
+            cost_provider=build_composite_provider(
+                tuple(record.service for record in registry.services_for(ServiceKind.COST_PROVIDER))
+            ),
+            top_k=config.top_k,
+        )
+        if cache_root is not None:
+            store_analysis_cache(
+                cache_root,
+                analysis_key,
+                AnalysisBundle(
+                    ir=ir,
+                    fixed_timeline=fixed_timeline,
+                    baseline_results=evaluated,
+                    analysis_key=analysis_key,
+                ),
+                analysis_provenance,
+            )
     if not evaluated:
         raise InfeasibleBudgetError("no plans were generated")
     executor = build_training_step_executor(model, optimizer, loss_fn, config)
@@ -344,7 +495,7 @@ def optimize_training(
         ir=ir,
         fixed_timeline=fixed_timeline,
         baseline_results=evaluated,
-        analysis_key=f"{capture.capture_key}:{optimizer_spec.name}:{memory_budget_bytes}",
+        analysis_key=analysis_key,
     )
     return OptimizedTrainingResult(
         selected_plan=selected.plan,

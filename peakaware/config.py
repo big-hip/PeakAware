@@ -22,6 +22,7 @@ class PeakAwareConfig:
     isolate_candidate_measurement: bool = False
     candidate_worker_timeout_s: float = 60.0
     profile_db_path: str | Path | None = None
+    cache_root: str | Path | None = None
     rng_seed: int | None = 1337
     atol: float = 1e-5
     rtol: float = 1e-4
