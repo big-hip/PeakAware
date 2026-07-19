@@ -323,6 +323,7 @@ class DryRunResult:
     gradients_match: bool
     rng_match: bool
     failure_reason: str | None
+    replay_mode: str = "unknown"
 
 
 @dataclass(frozen=True)

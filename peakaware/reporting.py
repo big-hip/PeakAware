@@ -465,6 +465,16 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "total_misses": result.cache_stats.total_misses,
             "hit_rate": result.cache_stats.hit_rate,
         },
+        "dry_run": None
+        if result.dry_run is None
+        else {
+            "abi_valid": result.dry_run.abi_valid,
+            "outputs_match": result.dry_run.outputs_match,
+            "gradients_match": result.dry_run.gradients_match,
+            "rng_match": result.dry_run.rng_match,
+            "failure_reason": result.dry_run.failure_reason,
+            "replay_mode": result.dry_run.replay_mode,
+        },
         "plans": [_plan_row(plan) for plan in plans],
         "capture_failures": []
         if result.analysis is None
@@ -523,6 +533,7 @@ def summarize_plan_artifact(result: OptimizedTrainingResult) -> dict[str, Any]:
             "gradients_match": dry_run.gradients_match,
             "rng_match": dry_run.rng_match,
             "failure_reason": dry_run.failure_reason,
+            "replay_mode": dry_run.replay_mode,
         },
         "fallback_plan_ids": result.fallback_plan_ids,
     }

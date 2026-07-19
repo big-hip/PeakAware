@@ -76,6 +76,7 @@ def test_dry_run_compares_loss_and_gradients():
     assert result.abi_valid
     assert result.outputs_match
     assert result.gradients_match
+    assert result.replay_mode == "lowered_aot"
 
 
 def test_dry_run_handles_tied_shared_weights():
@@ -120,6 +121,7 @@ def test_dry_run_handles_tied_shared_weights():
     assert result.abi_valid
     assert result.outputs_match
     assert result.gradients_match
+    assert result.replay_mode == "lowered_aot"
 
 
 def test_multistep_correctness_handles_dropout_and_restores_state():
@@ -457,6 +459,7 @@ def test_dry_run_rejects_unknown_partition_abi_value():
     )
 
     assert not result.abi_valid
+    assert result.replay_mode == "not_run"
     assert "unknown IR value ids" in result.failure_reason
 
 
@@ -525,4 +528,5 @@ def test_dry_run_rejects_dropped_non_recomputable_forward_value():
     )
 
     assert not result.abi_valid
+    assert result.replay_mode == "not_run"
     assert "non-recomputable or mandatory" in result.failure_reason

@@ -710,6 +710,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].measured_optimizer_us is not None
     assert records[0].simulation_accuracy_candidate_count >= 1
     assert records[0].measured_plan_results
+    assert records[0].dry_run_replay_mode in {"lowered_aot", "eager_baseline"}
     assert records[0].diagnostic_counterfactuals
     assert records[0].diagnostic_hints_enabled is True
     assert records[0].diagnostic_hint_count >= 0

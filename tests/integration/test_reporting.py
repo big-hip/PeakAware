@@ -133,6 +133,8 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert plan_artifact["peak_snapshot"]["live_bytes"] == summary["estimated_peak_bytes"]
     assert "recomputed_bytes" in plan_artifact["peak_snapshot"]
     assert plan_artifact["correctness"]["gradients_match"] is True
+    assert summary["dry_run"]["replay_mode"] in {"lowered_aot", "eager_baseline"}
+    assert plan_artifact["correctness"]["replay_mode"] == summary["dry_run"]["replay_mode"]
     loaded_plan = load_plan_artifact_json(plan_path)
     validation = validate_plan_artifact_identity(loaded_plan)
     assert validation["valid"] is True

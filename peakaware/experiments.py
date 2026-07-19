@@ -101,6 +101,7 @@ class ExperimentRecord:
     actual_joint_capture_count: int
     candidate_count: int
     fallback_plan_ids: tuple[str, ...]
+    dry_run_replay_mode: str | None = None
     diagnostic_hints_enabled: bool | None = None
     diagnostic_hint_count: int = 0
     diagnostic_hint_kinds: tuple[str, ...] = ()
@@ -492,6 +493,7 @@ def _record_success(
         actual_joint_capture_count=int(optimization_cost.get("actual_joint_capture_count", 0)),
         candidate_count=len(summary["plans"]),
         fallback_plan_ids=tuple(summary["fallback_plan_ids"]),
+        dry_run_replay_mode=(summary.get("dry_run") or {}).get("replay_mode"),
         diagnostic_hints_enabled=search_diagnostics.get("diagnostic_hints_enabled"),
         diagnostic_hint_count=int(search_diagnostics.get("diagnostic_hint_count", 0)),
         diagnostic_hint_kinds=tuple(search_diagnostics.get("diagnostic_hint_kinds", ())),

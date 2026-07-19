@@ -390,12 +390,13 @@ def run_aot_eager_dry_run(
         if structure_valid:
             structure_valid, structure_reason = verify_recomputed_nodes(lowered, ir)
     if not structure_valid:
-        return DryRunResult(lowered.plan_id, False, False, False, False, structure_reason)
+        return DryRunResult(lowered.plan_id, False, False, False, False, structure_reason, "not_run")
     rng_valid, rng_reason = verify_rng_and_tangents(lowered)
     if not rng_valid:
-        return DryRunResult(lowered.plan_id, False, False, False, False, rng_reason)
+        return DryRunResult(lowered.plan_id, False, False, False, False, rng_reason, "not_run")
     cpu_rng = torch.get_rng_state()
     cuda_rng = _cuda_rng_state()
+    replay_mode = "lowered_aot"
     try:
         try:
             ok, reason = compare_lowered_partition_with_baseline(
@@ -409,10 +410,11 @@ def run_aot_eager_dry_run(
                 rtol=rtol,
             )
         except PartitionReplayUnsupported:
+            replay_mode = "eager_baseline"
             ok, reason = compare_dry_run_with_baseline(model, args, kwargs, loss_fn, atol=atol, rtol=rtol)
     except Exception as exc:
         _restore_rng(cpu_rng, cuda_rng)
-        return DryRunResult(lowered.plan_id, True, False, False, False, str(exc))
+        return DryRunResult(lowered.plan_id, True, False, False, False, str(exc), replay_mode)
     rng_match = torch.equal(cpu_rng, torch.get_rng_state())
     if cuda_rng is not None:
         rng_match = rng_match and all(
@@ -427,8 +429,9 @@ def run_aot_eager_dry_run(
         gradients_match=ok,
         rng_match=rng_match or ok,
         failure_reason=reason,
+        replay_mode=replay_mode,
     )
 
 
 def record_partition_abi_failure(plan_id: str, reason: str) -> DryRunResult:
-    return DryRunResult(plan_id, False, False, False, False, reason)
+    return DryRunResult(plan_id, False, False, False, False, reason, "not_run")
