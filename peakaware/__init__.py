@@ -18,6 +18,7 @@ from .experiments import (
     summarize_experiment_records,
     summarize_experiment_records_by_variant,
 )
+from .hint_benchmark import run_synthetic_hint_effectiveness_benchmark
 from .microbatch import optimize_microbatches
 from .external_baselines import summarize_external_baseline_capabilities
 from .reporting import (
@@ -60,6 +61,7 @@ __all__ = [
     "optimize_microbatches",
     "optimize_training",
     "run_experiment_matrix",
+    "run_synthetic_hint_effectiveness_benchmark",
     "run_sac_baseline",
     "run_sac_baseline_matrix",
     "run_synthetic_root_cause_benchmark",
