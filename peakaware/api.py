@@ -578,7 +578,14 @@ def optimize_training(
             )
     if not evaluated:
         raise InfeasibleBudgetError("no plans were generated")
-    executor = build_training_step_executor(model, optimizer, loss_fn, config, capture.guards)
+    executor = build_training_step_executor(
+        model,
+        optimizer,
+        loss_fn,
+        config,
+        capture.guards,
+        selection_objective=config.selection_objective,
+    )
     measured_candidates: list[MeasuredExecutable] = []
     dry_runs: dict[str, DryRunResult] = {}
     rejected: dict[str, str] = {}
