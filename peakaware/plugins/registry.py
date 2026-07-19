@@ -38,6 +38,11 @@ class RegistrySnapshot:
         matches.sort(key=lambda record: (-record.priority, record.order))
         return matches[0].service
 
+    def services_for(self, kind: str) -> tuple[ServiceRecord, ...]:
+        records = [record for record in self.services if record.kind == kind]
+        records.sort(key=lambda record: (-record.priority, record.order))
+        return tuple(records)
+
     def hooks_for(self, event: str) -> tuple[HookRecord, ...]:
         records = [record for record in self.hooks if record.event == event]
         records.sort(key=lambda record: (-record.priority, record.order))

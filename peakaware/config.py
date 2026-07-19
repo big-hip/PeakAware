@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class PeakAwareConfig:
     capture_backend: str = "auto"
     isolate_candidate_measurement: bool = False
     candidate_worker_timeout_s: float = 60.0
+    profile_db_path: str | Path | None = None
     rng_seed: int | None = 1337
     atol: float = 1e-5
     rtol: float = 1e-4

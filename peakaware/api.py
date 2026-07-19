@@ -21,6 +21,7 @@ from peakaware.contracts import (
     OptimizedTrainingResult,
     TrainingRequest,
 )
+from peakaware.cost.composite import build_composite_provider
 from peakaware.errors import InfeasibleBudgetError
 from peakaware.ir import build_joint_ir
 from peakaware.memory.fixed_frontier import (
@@ -30,6 +31,7 @@ from peakaware.memory.fixed_frontier import (
 )
 from peakaware.partition.aot import lower_partition_graphs
 from peakaware.partition.verifier import run_aot_eager_dry_run
+from peakaware.plugins import ServiceKind, build_default_registry
 from peakaware.runtime.executor import build_training_step_executor, make_measured_executable
 from peakaware.runtime.isolation import run_in_worker_process
 from peakaware.search.engine import search_plans
@@ -249,6 +251,7 @@ def optimize_training(
     example_kwargs = dict(example_kwargs or {})
     _validate_request(model, example_args, example_kwargs, loss_fn, optimizer, memory_budget_bytes, config)
     model.train()
+    registry = build_default_registry(profile_db_path=config.profile_db_path)
 
     optimizer_spec = build_optimizer_spec(optimizer, model)
     request = TrainingRequest(
@@ -284,6 +287,9 @@ def optimize_training(
         budget_bytes=memory_budget_bytes,
         safety_margin_bytes=safety_margin,
         manual_saved_value_ids=config.manual_saved_value_ids,
+        cost_provider=build_composite_provider(
+            tuple(record.service for record in registry.services_for(ServiceKind.COST_PROVIDER))
+        ),
         top_k=config.top_k,
     )
     if not evaluated:

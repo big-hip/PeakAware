@@ -10,6 +10,7 @@ from peakaware.cost.base import OpCost, OpSignature, RooflineFallbackProvider
 from peakaware.cost.composite import CompositeCostProvider, build_composite_provider
 from peakaware.cost.profile_db import ExactProfileProvider, InterpolatedProfileProvider, ProfileDB, ProfileRecord
 from peakaware.errors import PluginConflictError
+from peakaware.plugins import ServiceKind, build_default_registry
 from peakaware.plugins.patching import PatchSession, PatchSpec
 from peakaware.plugins.registry import PluginRegistry
 
@@ -24,6 +25,7 @@ def test_registry_resolves_highest_priority_and_freezes():
     snapshot = registry.freeze()
 
     assert snapshot.resolve("cost_provider") is high
+    assert snapshot.services_for("cost_provider")[0].service is high
     assert len(snapshot.hooks_for("after_search")) == 1
     with pytest.raises(PluginConflictError):
         registry.register_service("cost_provider", "late", object())
@@ -209,3 +211,33 @@ def test_build_composite_provider_adds_roofline_tail():
 
     assert isinstance(cost, OpCost)
     assert cost.source == "roofline_fallback"
+
+
+def test_default_builtin_registry_exposes_core_m2_services(tmp_path):
+    snapshot = build_default_registry(profile_db_path=tmp_path / "profiles.sqlite")
+
+    assert snapshot.resolve(ServiceKind.CAPTURE_BACKEND, "aot_or_fx") is not None
+    assert snapshot.resolve(ServiceKind.PLAN_DIAGNOSTIC, "diagnose_plan") is not None
+    assert snapshot.resolve(ServiceKind.CANDIDATE_POLICY, "min_cut_seed") == "torch_default_partition_seed"
+    correction = snapshot.resolve(ServiceKind.RUNTIME_VALIDATOR, "inductor_correction")({})
+    cost_names = tuple(record.name for record in snapshot.services_for(ServiceKind.COST_PROVIDER))
+
+    assert correction.status == "unavailable"
+    assert "Top-K measurement" in correction.reason
+    assert cost_names[:3] == ("profile_db_exact", "profile_db_interpolated", "static_fallback")
+    assert snapshot.resolve("profile_db", "default") is not None
+
+
+def test_default_registry_cost_providers_feed_composite_provider(tmp_path):
+    profile_path = tmp_path / "profiles.sqlite"
+    snapshot = build_default_registry(profile_db_path=profile_path)
+    db = snapshot.resolve("profile_db", "default")
+    signature = OpSignature("mm", "aten.mm", 8, 8, "float32")
+    db.upsert_profile(signature, ProfileRecord("ignored", 10, 2.0, 3.0, 2.5, 16))
+    provider = build_composite_provider(tuple(record.service for record in snapshot.services_for(ServiceKind.COST_PROVIDER)))
+
+    cost = provider.estimate(signature)
+
+    assert cost is not None
+    assert cost.source == "profile_db_exact"
+    assert cost.estimated_us == 2.0
