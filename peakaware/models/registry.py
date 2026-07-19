@@ -6,7 +6,38 @@ from functools import partial
 import torch
 from torch import nn
 
-from peakaware.contracts import TrainingTaskSpec
+from peakaware.contracts import TrainingTaskSpec, WorkloadSpec
+
+
+WORKLOAD_SCHEMA_VERSION = "1.0"
+
+
+def _workload_spec(
+    *,
+    registry_key: str,
+    display_name: str,
+    model_family: str,
+    implementation: str,
+    model_config: dict[str, object],
+    input_config: dict[str, object],
+    optimizer_config: dict[str, object],
+    loss_config: dict[str, object],
+    compute_dtype: str,
+    parameter_dtype: str,
+) -> WorkloadSpec:
+    return WorkloadSpec(
+        schema_version=WORKLOAD_SCHEMA_VERSION,
+        registry_key=registry_key,
+        display_name=display_name,
+        model_family=model_family,
+        implementation=implementation,
+        model_config=model_config,
+        input_config=input_config,
+        optimizer_config=optimizer_config,
+        loss_config=loss_config,
+        compute_dtype=compute_dtype,
+        parameter_dtype=parameter_dtype,
+    )
 
 
 class TinyResidual(nn.Module):
@@ -220,35 +251,122 @@ def build_gpt2_model(
 
 
 def build_tiny_residual_task(width: int = 8) -> TrainingTaskSpec:
+    registry_key = f"tiny_residual_w{width}"
     return TrainingTaskSpec(
-        name=f"tiny_residual_w{width}",
+        name=registry_key,
         build_model=partial(TinyResidual, width),
         build_batch=DenseBatchBuilder(width),
         loss_fn=squared_mean_loss,
         build_optimizer=build_sgd_optimizer,
         dynamic_shapes=None,
+        workload=_workload_spec(
+            registry_key=registry_key,
+            display_name=f"TinyResidual-W{width}",
+            model_family="synthetic_residual_mlp",
+            implementation="peakaware.models.registry.TinyResidual",
+            model_config={"width": width, "output_width": 1},
+            input_config={
+                "kind": "dense",
+                "shape_without_batch": [width],
+                "dtype": "torch.float32",
+                "distribution": {"name": "normal", "mean": 0.0, "std": 1.0},
+            },
+            optimizer_config={
+                "name": "SGD",
+                "lr": 0.01,
+                "momentum": 0.0,
+                "dampening": 0.0,
+                "weight_decay": 0.0,
+                "nesterov": False,
+                "maximize": False,
+                "foreach": None,
+                "differentiable": False,
+                "fused": None,
+            },
+            loss_config={"name": "squared_mean", "reduction": "mean"},
+            compute_dtype="torch.float32",
+            parameter_dtype="torch.float32",
+        ),
     )
 
 
 def build_tiny_mlp_task(width: int = 8, depth: int = 3) -> TrainingTaskSpec:
+    registry_key = f"tiny_mlp_w{width}_d{depth}"
     return TrainingTaskSpec(
-        name=f"tiny_mlp_w{width}_d{depth}",
+        name=registry_key,
         build_model=partial(TinyMLP, width, depth),
         build_batch=DenseBatchBuilder(width),
         loss_fn=squared_mean_loss,
         build_optimizer=build_sgd_optimizer,
         dynamic_shapes=None,
+        workload=_workload_spec(
+            registry_key=registry_key,
+            display_name=f"TinyMLP-W{width}-D{depth}",
+            model_family="synthetic_mlp",
+            implementation="peakaware.models.registry.TinyMLP",
+            model_config={"width": width, "depth": depth, "output_width": 1},
+            input_config={
+                "kind": "dense",
+                "shape_without_batch": [width],
+                "dtype": "torch.float32",
+                "distribution": {"name": "normal", "mean": 0.0, "std": 1.0},
+            },
+            optimizer_config={
+                "name": "SGD",
+                "lr": 0.01,
+                "momentum": 0.0,
+                "dampening": 0.0,
+                "weight_decay": 0.0,
+                "nesterov": False,
+                "maximize": False,
+                "foreach": None,
+                "differentiable": False,
+                "fused": None,
+            },
+            loss_config={"name": "squared_mean", "reduction": "mean"},
+            compute_dtype="torch.float32",
+            parameter_dtype="torch.float32",
+        ),
     )
 
 
 def build_tiny_attention_task(width: int = 8, sequence_length: int = 4) -> TrainingTaskSpec:
+    registry_key = f"tiny_attention_w{width}_s{sequence_length}"
     return TrainingTaskSpec(
-        name=f"tiny_attention_w{width}_s{sequence_length}",
+        name=registry_key,
         build_model=partial(TinyAttentionBlock, width),
         build_batch=SequenceBatchBuilder(sequence_length, width),
         loss_fn=squared_mean_loss,
         build_optimizer=build_sgd_optimizer,
         dynamic_shapes=None,
+        workload=_workload_spec(
+            registry_key=registry_key,
+            display_name=f"TinyAttention-W{width}-S{sequence_length}",
+            model_family="synthetic_attention",
+            implementation="peakaware.models.registry.TinyAttentionBlock",
+            model_config={"width": width, "output_width": 1},
+            input_config={
+                "kind": "dense_sequence",
+                "shape_without_batch": [sequence_length, width],
+                "dtype": "torch.float32",
+                "distribution": {"name": "normal", "mean": 0.0, "std": 1.0},
+            },
+            optimizer_config={
+                "name": "SGD",
+                "lr": 0.01,
+                "momentum": 0.0,
+                "dampening": 0.0,
+                "weight_decay": 0.0,
+                "nesterov": False,
+                "maximize": False,
+                "foreach": None,
+                "differentiable": False,
+                "fused": None,
+            },
+            loss_config={"name": "squared_mean", "reduction": "mean"},
+            compute_dtype="torch.float32",
+            parameter_dtype="torch.float32",
+        ),
     )
 
 
@@ -260,6 +378,45 @@ def build_resnet50_task(image_size: int = 224, num_classes: int = 10) -> Trainin
         loss_fn=logits_squared_mean_loss,
         build_optimizer=build_sgd_optimizer,
         dynamic_shapes=None,
+        workload=_workload_spec(
+            registry_key="resnet50",
+            display_name="ResNet-50",
+            model_family="convolutional_neural_network",
+            implementation="torchvision.models.resnet50",
+            model_config={
+                "architecture": "ResNet",
+                "block": "Bottleneck",
+                "block_counts": [3, 4, 6, 3],
+                "num_classes": num_classes,
+                "weights": None,
+                "zero_init_residual": False,
+                "groups": 1,
+                "width_per_group": 64,
+                "replace_stride_with_dilation": [False, False, False],
+                "norm_layer": "torch.nn.BatchNorm2d",
+            },
+            input_config={
+                "kind": "image",
+                "shape_without_batch": [3, image_size, image_size],
+                "dtype": "torch.float32",
+                "distribution": {"name": "normal", "mean": 0.0, "std": 1.0},
+            },
+            optimizer_config={
+                "name": "SGD",
+                "lr": 0.01,
+                "momentum": 0.0,
+                "dampening": 0.0,
+                "weight_decay": 0.0,
+                "nesterov": False,
+                "maximize": False,
+                "foreach": None,
+                "differentiable": False,
+                "fused": None,
+            },
+            loss_config={"name": "logits_squared_mean", "reduction": "mean"},
+            compute_dtype="torch.float32",
+            parameter_dtype="torch.float32",
+        ),
     )
 
 
@@ -271,6 +428,50 @@ def build_vit_b16_task(image_size: int = 224, num_classes: int = 10) -> Training
         loss_fn=logits_squared_mean_loss,
         build_optimizer=build_adamw_optimizer,
         dynamic_shapes=None,
+        workload=_workload_spec(
+            registry_key="vit_b_16",
+            display_name="ViT-B/16",
+            model_family="vision_transformer",
+            implementation="torchvision.models.vit_b_16",
+            model_config={
+                "architecture": "VisionTransformer",
+                "patch_size": 16,
+                "num_layers": 12,
+                "num_heads": 12,
+                "hidden_dim": 768,
+                "mlp_dim": 3072,
+                "image_size": image_size,
+                "num_classes": num_classes,
+                "weights": None,
+                "dropout": 0.0,
+                "attention_dropout": 0.0,
+                "norm_layer": "partial(torch.nn.LayerNorm, eps=1e-06)",
+                "representation_size": None,
+            },
+            input_config={
+                "kind": "image",
+                "shape_without_batch": [3, image_size, image_size],
+                "dtype": "torch.float32",
+                "distribution": {"name": "normal", "mean": 0.0, "std": 1.0},
+            },
+            optimizer_config={
+                "name": "AdamW",
+                "lr": 0.0001,
+                "betas": [0.9, 0.999],
+                "eps": 1e-8,
+                "weight_decay": 0.01,
+                "amsgrad": False,
+                "maximize": False,
+                "foreach": None,
+                "capturable": False,
+                "differentiable": False,
+                "fused": None,
+                "decoupled_weight_decay": True,
+            },
+            loss_config={"name": "logits_squared_mean", "reduction": "mean"},
+            compute_dtype="torch.float32",
+            parameter_dtype="torch.float32",
+        ),
     )
 
 
@@ -282,6 +483,7 @@ def build_bert_base_task(
     num_attention_heads: int = 4,
     intermediate_size: int = 256,
 ) -> TrainingTaskSpec:
+    display_name = f"BERT-like-{num_hidden_layers}L-{hidden_size}H"
     return TrainingTaskSpec(
         name="bert_base",
         build_model=partial(
@@ -297,6 +499,53 @@ def build_bert_base_task(
         loss_fn=logits_squared_mean_loss,
         build_optimizer=build_adamw_optimizer,
         dynamic_shapes=None,
+        workload=_workload_spec(
+            registry_key="bert_base",
+            display_name=display_name,
+            model_family="transformer_encoder",
+            implementation="transformers.BertForSequenceClassification",
+            model_config={
+                "architecture": "BertForSequenceClassification",
+                "vocab_size": vocab_size,
+                "hidden_size": hidden_size,
+                "num_hidden_layers": num_hidden_layers,
+                "num_attention_heads": num_attention_heads,
+                "intermediate_size": intermediate_size,
+                "num_labels": 2,
+                "hidden_act": "gelu",
+                "hidden_dropout_prob": 0.1,
+                "attention_probs_dropout_prob": 0.1,
+                "max_position_embeddings": 512,
+                "type_vocab_size": 2,
+                "layer_norm_eps": 1e-12,
+                "classifier_dropout": None,
+                "pad_token_id": 0,
+            },
+            input_config={
+                "kind": "token_ids",
+                "shape_without_batch": [sequence_length],
+                "dtype": "torch.int64",
+                "vocab_size": vocab_size,
+                "distribution": {"name": "randint", "low": 0, "high_exclusive": vocab_size},
+            },
+            optimizer_config={
+                "name": "AdamW",
+                "lr": 0.0001,
+                "betas": [0.9, 0.999],
+                "eps": 1e-8,
+                "weight_decay": 0.01,
+                "amsgrad": False,
+                "maximize": False,
+                "foreach": None,
+                "capturable": False,
+                "differentiable": False,
+                "fused": None,
+                "decoupled_weight_decay": True,
+            },
+            loss_config={"name": "logits_squared_mean", "reduction": "mean"},
+            compute_dtype="torch.float32",
+            parameter_dtype="torch.float32",
+        ),
     )
 
 
@@ -307,6 +556,7 @@ def build_gpt2_task(
     n_layer: int = 2,
     n_head: int = 4,
 ) -> TrainingTaskSpec:
+    display_name = f"GPT2-like-{n_layer}L-{n_embd}H"
     return TrainingTaskSpec(
         name="gpt2",
         build_model=partial(
@@ -321,6 +571,47 @@ def build_gpt2_task(
         loss_fn=logits_squared_mean_loss,
         build_optimizer=build_adamw_optimizer,
         dynamic_shapes=None,
+        workload=_workload_spec(
+            registry_key="gpt2",
+            display_name=display_name,
+            model_family="causal_transformer_decoder",
+            implementation="peakaware.models.registry.GPT2Like",
+            model_config={
+                "architecture": "GPT2Like",
+                "vocab_size": vocab_size,
+                "sequence_length": sequence_length,
+                "width": n_embd,
+                "num_layers": n_layer,
+                "num_heads": n_head,
+                "mlp_ratio": 4,
+                "lm_head_bias": False,
+                "tie_word_embeddings": False,
+            },
+            input_config={
+                "kind": "token_ids",
+                "shape_without_batch": [sequence_length],
+                "dtype": "torch.int64",
+                "vocab_size": vocab_size,
+                "distribution": {"name": "randint", "low": 0, "high_exclusive": vocab_size},
+            },
+            optimizer_config={
+                "name": "AdamW",
+                "lr": 0.0001,
+                "betas": [0.9, 0.999],
+                "eps": 1e-8,
+                "weight_decay": 0.01,
+                "amsgrad": False,
+                "maximize": False,
+                "foreach": None,
+                "capturable": False,
+                "differentiable": False,
+                "fused": None,
+                "decoupled_weight_decay": True,
+            },
+            loss_config={"name": "logits_squared_mean", "reduction": "mean"},
+            compute_dtype="torch.float32",
+            parameter_dtype="torch.float32",
+        ),
     )
 
 

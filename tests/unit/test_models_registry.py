@@ -72,8 +72,19 @@ def test_main_model_task_specs_are_picklable_without_downloads():
         args, kwargs = restored.build_batch(2)
 
         assert restored.name == name
+        assert restored.workload is not None
+        assert restored.workload.registry_key == name
         assert args[0].shape[0] == 2
         assert kwargs == {}
+
+
+def test_main_model_display_names_match_actual_default_configurations():
+    registry = TrainingTaskRegistry.with_defaults()
+
+    assert registry.get("resnet50").workload.display_name == "ResNet-50"
+    assert registry.get("vit_b_16").workload.display_name == "ViT-B/16"
+    assert registry.get("bert_base").workload.display_name == "BERT-like-2L-64H"
+    assert registry.get("gpt2").workload.display_name == "GPT2-like-2L-64H"
 
 
 def test_main_model_tasks_build_fixed_shape_training_losses():

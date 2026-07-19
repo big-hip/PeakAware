@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -407,6 +408,119 @@ class OptimizedTrainingResult:
 
 
 @dataclass(frozen=True)
+class FrozenConfig(Mapping[str, Any]):
+    """Pickle-safe, recursively immutable configuration mapping."""
+
+    entries: tuple[tuple[str, Any], ...] = ()
+
+    def __init__(self, values: Mapping[str, Any] | None = None) -> None:
+        values = values or {}
+        if not all(isinstance(key, str) for key in values):
+            raise TypeError("configuration mapping keys must be strings")
+        frozen_entries = tuple(
+            (key, _freeze_config_value(value))
+            for key, value in sorted(values.items())
+        )
+        object.__setattr__(self, "entries", frozen_entries)
+
+    def __getitem__(self, key: str) -> Any:
+        for candidate, value in self.entries:
+            if candidate == key:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return (key for key, _ in self.entries)
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+
+def _freeze_config_value(value: Any) -> Any:
+    if isinstance(value, FrozenConfig):
+        return value
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("configuration mapping keys must be strings")
+        return FrozenConfig(value)
+    if isinstance(value, (tuple, list)):
+        return tuple(_freeze_config_value(item) for item in value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"unsupported configuration value: {type(value).__name__}")
+
+
+@dataclass(frozen=True)
+class WorkloadSpec:
+    schema_version: str
+    registry_key: str
+    display_name: str
+    model_family: str
+    implementation: str
+    model_config: FrozenConfig
+    input_config: FrozenConfig
+    optimizer_config: FrozenConfig
+    loss_config: FrozenConfig
+    compute_dtype: str = "torch.float32"
+    parameter_dtype: str = "torch.float32"
+
+    def __post_init__(self) -> None:
+        for field_name in ("model_config", "input_config", "optimizer_config", "loss_config"):
+            value = getattr(self, field_name)
+            if not isinstance(value, FrozenConfig):
+                object.__setattr__(self, field_name, FrozenConfig(value))
+        for field_name in (
+            "schema_version",
+            "registry_key",
+            "display_name",
+            "model_family",
+            "implementation",
+            "compute_dtype",
+            "parameter_dtype",
+        ):
+            if not getattr(self, field_name):
+                raise ValueError(f"{field_name} must not be empty")
+
+    @property
+    def model(self) -> FrozenConfig:
+        return self.model_config
+
+    @property
+    def input(self) -> FrozenConfig:
+        return self.input_config
+
+    @property
+    def optimizer(self) -> FrozenConfig:
+        return self.optimizer_config
+
+    @property
+    def loss(self) -> FrozenConfig:
+        return self.loss_config
+
+
+@dataclass(frozen=True)
+class ExecutionSpec:
+    schema_version: str
+    backend: str
+    device: str
+    compiler_protocol: str
+    precision_protocol: str
+    measurement_protocol: str
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "schema_version",
+            "backend",
+            "device",
+            "compiler_protocol",
+            "precision_protocol",
+            "measurement_protocol",
+        ):
+            if not getattr(self, field_name):
+                raise ValueError(f"{field_name} must not be empty")
+
+
+@dataclass(frozen=True)
 class TrainingTaskSpec:
     name: str
     build_model: Callable[[], nn.Module]
@@ -414,6 +528,7 @@ class TrainingTaskSpec:
     loss_fn: Callable[..., Tensor]
     build_optimizer: Callable[[nn.Module], torch.optim.Optimizer]
     dynamic_shapes: dict[str, Any] | None = None
+    workload: WorkloadSpec | None = None
 
 
 @dataclass(frozen=True)
