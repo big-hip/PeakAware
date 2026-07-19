@@ -1548,6 +1548,150 @@ def summarize_layered_simulation_accuracy(records: tuple[ExperimentRecord, ...])
     }
 
 
+def _counterfactual_by_level(record: ExperimentRecord) -> dict[str, dict[str, Any]]:
+    return {
+        str(item["level"]): item
+        for item in record.diagnostic_counterfactuals
+        if item.get("level") is not None
+    }
+
+
+def _counterfactual_peak(levels: dict[str, dict[str, Any]], level: str) -> int | None:
+    item = levels.get(level)
+    if item is None or item.get("candidate_peak_bytes") is None:
+        return None
+    return int(item["candidate_peak_bytes"])
+
+
+def _counterfactual_phase(levels: dict[str, dict[str, Any]], level: str) -> str | None:
+    item = levels.get(level)
+    if item is None or item.get("candidate_peak_phase") is None:
+        return None
+    return str(item["candidate_peak_phase"])
+
+
+def _simulation_error_sources(record: ExperimentRecord, d3_to_d5_delta: int | None) -> tuple[str, ...]:
+    sources: list[str] = []
+    if record.measured_peak_phase == "optimizer":
+        sources.append("optimizer_fixed_frontier_offset")
+    if (
+        record.selected_peak_phase is not None
+        and record.measured_peak_phase is not None
+        and record.selected_peak_phase != record.measured_peak_phase
+    ):
+        sources.append("peak_phase_mismatch")
+    raw_error = record.selected_prediction_error_bytes
+    if raw_error is not None and d3_to_d5_delta is not None and abs(d3_to_d5_delta) >= 0.5 * abs(raw_error):
+        sources.append("compiler_runtime_offset")
+    if record.diagnostic_primary_cause:
+        sources.append(f"diagnostic:{record.diagnostic_primary_cause}")
+    return tuple(dict.fromkeys(sources or ["unclassified"]))
+
+
+def summarize_simulation_error_root_causes(
+    records: tuple[ExperimentRecord, ...],
+    *,
+    top_k: int = 10,
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if record.status != "ok" or record.selected_prediction_error_bytes is None:
+            continue
+        levels = _counterfactual_by_level(record)
+        d0_peak = _counterfactual_peak(levels, "D0")
+        d3_peak = _counterfactual_peak(levels, "D3")
+        d5_peak = _counterfactual_peak(levels, "D5")
+        d0_to_d3_delta = None if d0_peak is None or d3_peak is None else d3_peak - d0_peak
+        d3_to_d5_delta = None if d3_peak is None or d5_peak is None else d5_peak - d3_peak
+        calibrated_error = record.selected_calibrated_prediction_error_bytes
+        row = {
+            "variant_name": record.variant_name,
+            "task_name": record.task_name,
+            "microbatch_size": record.microbatch_size,
+            "budget_bytes": record.budget_bytes,
+            "selected_plan_id": record.selected_plan_id,
+            "selected_estimated_peak_bytes": record.selected_estimated_peak_bytes,
+            "measured_peak_bytes": record.measured_peak_bytes,
+            "selected_prediction_error_bytes": record.selected_prediction_error_bytes,
+            "selected_prediction_absolute_relative_error": None
+            if record.selected_prediction_relative_error is None
+            else abs(record.selected_prediction_relative_error),
+            "selected_calibrated_prediction_error_bytes": calibrated_error,
+            "selected_calibrated_absolute_relative_error": None
+            if record.selected_calibrated_prediction_relative_error is None
+            else abs(record.selected_calibrated_prediction_relative_error),
+            "d0_candidate_peak_bytes": d0_peak,
+            "d3_candidate_peak_bytes": d3_peak,
+            "d5_candidate_peak_bytes": d5_peak,
+            "d0_to_d3_delta_bytes": d0_to_d3_delta,
+            "d3_to_d5_delta_bytes": d3_to_d5_delta,
+            "selected_peak_phase": record.selected_peak_phase,
+            "d3_peak_phase": _counterfactual_phase(levels, "D3"),
+            "d5_peak_phase": _counterfactual_phase(levels, "D5"),
+            "measured_peak_phase": record.measured_peak_phase,
+            "phase_mismatch": (
+                record.selected_peak_phase is not None
+                and record.measured_peak_phase is not None
+                and record.selected_peak_phase != record.measured_peak_phase
+            ),
+            "diagnostic_primary_cause": record.diagnostic_primary_cause,
+            "error_sources": _simulation_error_sources(record, d3_to_d5_delta),
+        }
+        rows.append(row)
+
+    task_summaries: dict[str, dict[str, Any]] = {}
+    for task_name in sorted({row["task_name"] for row in rows}):
+        task_rows = [row for row in rows if row["task_name"] == task_name]
+        raw_rel = [
+            row["selected_prediction_absolute_relative_error"]
+            for row in task_rows
+            if row["selected_prediction_absolute_relative_error"] is not None
+        ]
+        calibrated_rel = [
+            row["selected_calibrated_absolute_relative_error"]
+            for row in task_rows
+            if row["selected_calibrated_absolute_relative_error"] is not None
+        ]
+        d0_to_d3 = [
+            abs(row["d0_to_d3_delta_bytes"])
+            for row in task_rows
+            if row["d0_to_d3_delta_bytes"] is not None
+        ]
+        d3_to_d5 = [
+            abs(row["d3_to_d5_delta_bytes"])
+            for row in task_rows
+            if row["d3_to_d5_delta_bytes"] is not None
+        ]
+        task_summaries[task_name] = {
+            "row_count": len(task_rows),
+            "mean_raw_absolute_relative_error": _mean(raw_rel),
+            "max_raw_absolute_relative_error": None if not raw_rel else max(raw_rel),
+            "mean_calibrated_absolute_relative_error": _mean(calibrated_rel),
+            "max_calibrated_absolute_relative_error": None if not calibrated_rel else max(calibrated_rel),
+            "phase_mismatch_count": sum(1 for row in task_rows if row["phase_mismatch"]),
+            "measured_peak_phase_counts": _counts([row["measured_peak_phase"] for row in task_rows]),
+            "diagnostic_primary_cause_counts": _counts([row["diagnostic_primary_cause"] for row in task_rows]),
+            "error_source_counts": _tuple_counts([tuple(row["error_sources"]) for row in task_rows]),
+            "mean_abs_d0_to_d3_delta_bytes": _mean(d0_to_d3),
+            "mean_abs_d3_to_d5_delta_bytes": _mean(d3_to_d5),
+        }
+
+    outliers = sorted(
+        rows,
+        key=lambda row: (
+            row["selected_prediction_absolute_relative_error"] is None,
+            -(row["selected_prediction_absolute_relative_error"] or 0.0),
+            row["task_name"],
+            row["budget_bytes"],
+        ),
+    )[:top_k]
+    return {
+        "row_count": len(rows),
+        "task_summaries": task_summaries,
+        "top_outliers": outliers,
+    }
+
+
 def _ensure_parent_dir(path: str | Path) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1593,6 +1737,16 @@ def write_experiment_baseline_comparison_json(
 
 def write_experiment_layered_accuracy_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
     text = json.dumps(summarize_layered_simulation_accuracy(records), indent=2, sort_keys=True)
+    _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
+
+
+def write_experiment_simulation_error_json(
+    records: tuple[ExperimentRecord, ...],
+    path: str | Path,
+    *,
+    top_k: int = 10,
+) -> None:
+    text = json.dumps(summarize_simulation_error_root_causes(records, top_k=top_k), indent=2, sort_keys=True)
     _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 

@@ -13,6 +13,7 @@ from .experiments import (
     summarize_cache_reuse,
     summarize_hint_ablation,
     summarize_layered_simulation_accuracy,
+    summarize_simulation_error_root_causes,
     summarize_experiment_records,
     summarize_experiment_records_by_variant,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "summarize_external_baseline_capabilities",
     "summarize_hint_ablation",
     "summarize_layered_simulation_accuracy",
+    "summarize_simulation_error_root_causes",
     "summarize_experiment_records",
     "summarize_experiment_records_by_variant",
     "summarize_result",

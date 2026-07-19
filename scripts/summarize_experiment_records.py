@@ -17,6 +17,7 @@ from peakaware.experiments import (
     write_experiment_cache_reuse_json,
     write_experiment_hint_ablation_json,
     write_experiment_layered_accuracy_json,
+    write_experiment_simulation_error_json,
     write_experiment_summary_json,
     write_experiment_variant_summary_json,
 )
@@ -32,6 +33,7 @@ def main() -> None:
     parser.add_argument("--output-cache-reuse-json", type=Path, default=None)
     parser.add_argument("--output-baseline-comparison-json", type=Path, default=None)
     parser.add_argument("--output-layered-accuracy-json", type=Path, default=None)
+    parser.add_argument("--output-simulation-error-json", type=Path, default=None)
     args = parser.parse_args()
 
     records_payload = json.loads(args.records_json.read_text(encoding="utf-8"))
@@ -66,6 +68,9 @@ def main() -> None:
     if args.output_layered_accuracy_json is not None:
         write_experiment_layered_accuracy_json(records, args.output_layered_accuracy_json)
         written_paths.append(str(args.output_layered_accuracy_json))
+    if args.output_simulation_error_json is not None:
+        write_experiment_simulation_error_json(records, args.output_simulation_error_json)
+        written_paths.append(str(args.output_simulation_error_json))
 
     print(json.dumps({"record_count": len(records), "written_paths": written_paths}, indent=2, sort_keys=True))
 

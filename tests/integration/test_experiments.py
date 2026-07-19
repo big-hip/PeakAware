@@ -2,6 +2,7 @@ import csv
 import json
 import subprocess
 import sys
+from dataclasses import replace
 
 import torch
 from torch import nn
@@ -16,6 +17,7 @@ from peakaware.experiments import (
     summarize_cache_reuse,
     summarize_hint_ablation,
     summarize_layered_simulation_accuracy,
+    summarize_simulation_error_root_causes,
     summarize_experiment_records,
     summarize_experiment_records_by_variant,
     write_experiment_csv,
@@ -24,6 +26,7 @@ from peakaware.experiments import (
     write_experiment_hint_ablation_json,
     write_experiment_json,
     write_experiment_layered_accuracy_json,
+    write_experiment_simulation_error_json,
     write_experiment_summary_json,
     write_experiment_variant_summary_json,
 )
@@ -530,6 +533,33 @@ def test_layered_simulation_accuracy_summarizes_diagnostic_counterfactuals():
     assert summary["level_summaries"]["D5"]["phase_classification_accuracy"] == 1.0
 
 
+def test_simulation_error_root_cause_summary_explains_optimizer_offset():
+    record = replace(
+        _minimal_record(
+            status="ok",
+            budget_bytes=100,
+            measured_peak_bytes=80,
+            variant_name="diagnostic_hints_on",
+            diagnostic_hints_enabled=True,
+        ),
+        measured_peak_phase="optimizer",
+        selected_peak_phase_match=False,
+    )
+
+    summary = summarize_simulation_error_root_causes((record,))
+    task_summary = summary["task_summaries"]["synthetic"]
+    outlier = summary["top_outliers"][0]
+
+    assert summary["row_count"] == 1
+    assert task_summary["error_source_counts"]["optimizer_fixed_frontier_offset"] == 1
+    assert task_summary["error_source_counts"]["compiler_runtime_offset"] == 1
+    assert task_summary["phase_mismatch_count"] == 1
+    assert task_summary["mean_abs_d3_to_d5_delta_bytes"] == 4.0
+    assert outlier["selected_prediction_error_bytes"] == 4
+    assert outlier["selected_calibrated_absolute_relative_error"] == 0.0
+    assert "diagnostic:REMATERIALIZATION_WAVE" in outlier["error_sources"]
+
+
 def test_experiment_matrix_writes_json_and_csv(tmp_path):
     records = run_experiment_matrix(
         task_names=("tiny_residual_w8",),
@@ -705,6 +735,7 @@ def test_summarize_experiment_records_script_regenerates_artifacts(tmp_path):
     cache_reuse_path = output_dir / "cache_reuse.json"
     baseline_comparison_path = output_dir / "baseline_comparison.json"
     layered_accuracy_path = output_dir / "layered_accuracy.json"
+    simulation_error_path = output_dir / "simulation_error.json"
     sac_path = tmp_path / "sac.json"
     records = (
         _minimal_record(
@@ -775,6 +806,8 @@ def test_summarize_experiment_records_script_regenerates_artifacts(tmp_path):
             str(baseline_comparison_path),
             "--output-layered-accuracy-json",
             str(layered_accuracy_path),
+            "--output-simulation-error-json",
+            str(simulation_error_path),
         ],
         check=True,
         text=True,
@@ -793,6 +826,7 @@ def test_summarize_experiment_records_script_regenerates_artifacts(tmp_path):
         str(cache_reuse_path),
         str(baseline_comparison_path),
         str(layered_accuracy_path),
+        str(simulation_error_path),
     }
     assert json.loads(summary_path.read_text(encoding="utf-8"))["total_records"] == 2
     assert "diagnostic_hints_on" in json.loads(variant_summary_path.read_text(encoding="utf-8"))
@@ -800,6 +834,7 @@ def test_summarize_experiment_records_script_regenerates_artifacts(tmp_path):
     assert cache_reuse_payload["mean_warm_capture_cache_hit_rate"] == 1.0
     assert "pytorch_sac" in baseline_comparison_payload["baseline_groups"]
     assert "D5" in json.loads(layered_accuracy_path.read_text(encoding="utf-8"))["level_summaries"]
+    assert json.loads(simulation_error_path.read_text(encoding="utf-8"))["row_count"] == 2
 
 
 def test_experiment_matrix_can_write_plan_artifacts(tmp_path):
@@ -836,6 +871,7 @@ def test_experiment_writers_create_parent_directories(tmp_path):
     write_experiment_hint_ablation_json(records, base / "hint_ablation.json")
     write_experiment_baseline_comparison_json(records, base / "baseline_comparison.json")
     write_experiment_layered_accuracy_json(records, base / "layered_accuracy.json")
+    write_experiment_simulation_error_json(records, base / "simulation_error.json")
 
     assert (base / "records.json").exists()
     assert (base / "records.csv").exists()
@@ -844,6 +880,7 @@ def test_experiment_writers_create_parent_directories(tmp_path):
     assert (base / "hint_ablation.json").exists()
     assert (base / "baseline_comparison.json").exists()
     assert (base / "layered_accuracy.json").exists()
+    assert (base / "simulation_error.json").exists()
 
 
 def test_experiment_matrix_can_include_exact_small_graph_baseline():
@@ -891,6 +928,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     cache_reuse_path = tmp_path / "cache_reuse.json"
     baseline_comparison_path = tmp_path / "baseline_comparison.json"
     layered_accuracy_path = tmp_path / "layered_accuracy.json"
+    simulation_error_path = tmp_path / "simulation_error.json"
     plan_artifact_dir = tmp_path / "plan_artifacts"
     sac_baseline_path = tmp_path / "sac_baseline.json"
     sac_baseline_path.write_text(
@@ -959,6 +997,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             str(sac_baseline_path),
             "--output-layered-accuracy-json",
             str(layered_accuracy_path),
+            "--output-simulation-error-json",
+            str(simulation_error_path),
         ],
         check=True,
         text=True,
@@ -973,6 +1013,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     cache_reuse_payload = json.loads(cache_reuse_path.read_text(encoding="utf-8"))
     baseline_comparison_payload = json.loads(baseline_comparison_path.read_text(encoding="utf-8"))
     layered_accuracy_payload = json.loads(layered_accuracy_path.read_text(encoding="utf-8"))
+    simulation_error_payload = json.loads(simulation_error_path.read_text(encoding="utf-8"))
 
     assert len(stdout_payload) == 4
     assert {record["variant_name"] for record in stdout_payload} == {
@@ -1026,6 +1067,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert baseline_comparison_payload["row_count"] >= 2
     assert "D5" in layered_accuracy_payload["level_summaries"]
     assert layered_accuracy_payload["row_count"] >= 1
+    assert simulation_error_payload["row_count"] == 4
+    assert "tiny_mlp_w8_d3" in simulation_error_payload["task_summaries"]
     assert hint_ablation_payload["rows"][0]["conclusion"] in {
         "improved_budget",
         "improved_search",
