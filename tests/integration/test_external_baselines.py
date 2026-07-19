@@ -13,11 +13,17 @@ def test_external_baseline_capabilities_report_current_torch_apis():
     assert set(baselines) == {
         "aot_min_cut_proxy",
         "inductor_memory_budget",
+        "pytorch_aot_min_cut",
         "selective_activation_checkpointing",
     }
     assert baselines["aot_min_cut_proxy"]["status"] == "proxy"
+    assert "mandatory-save-only proxy" in baselines["aot_min_cut_proxy"]["provenance"]["strategy"]
     assert baselines["selective_activation_checkpointing"]["status"] in {"available", "unavailable"}
+    assert baselines["pytorch_aot_min_cut"]["status"] in {"available", "unavailable"}
     assert baselines["inductor_memory_budget"]["status"] in {"available", "unavailable"}
+    if baselines["pytorch_aot_min_cut"]["status"] == "available":
+        assert baselines["pytorch_aot_min_cut"]["provenance"]["partitioner_callable"]
+        assert baselines["pytorch_aot_min_cut"]["provenance"]["activation_memory_budget"] is not None
     if baselines["inductor_memory_budget"]["status"] == "unavailable":
         assert baselines["inductor_memory_budget"]["unavailable_reason"]
 

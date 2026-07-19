@@ -1,25 +1,25 @@
 from __future__ import annotations
 
-import importlib
 from typing import Any
 
 import torch
 import torch.utils.checkpoint as checkpoint
 
 
-def _module_attrs(module_name: str, needles: tuple[str, ...]) -> list[str]:
+def _safe_attr(module_name: str, attribute: str) -> tuple[bool, Any]:
     try:
-        module = importlib.import_module(module_name)
-    except Exception:
-        return []
-    return sorted(name for name in dir(module) if any(needle in name.lower() for needle in needles))
+        module = __import__(module_name, fromlist=(attribute,))
+        return True, getattr(module, attribute)
+    except (ImportError, AttributeError):
+        return False, None
 
 
 def summarize_external_baseline_capabilities() -> dict[str, Any]:
     sac_available = hasattr(checkpoint, "create_selective_checkpoint_contexts")
-    functorch_memory_attrs = _module_attrs("torch._functorch.config", ("memory", "budget"))
-    inductor_memory_attrs = _module_attrs("torch._inductor.config", ("memory", "budget"))
-    memory_budget_attrs = tuple(functorch_memory_attrs + inductor_memory_attrs)
+    budget_available, budget_value = _safe_attr("torch._functorch.config", "activation_memory_budget")
+    min_cut_available, min_cut_api = _safe_attr(
+        "torch._functorch.partitioners", "min_cut_rematerialization_partition"
+    )
     return {
         "environment": {
             "torch_version": torch.__version__,
@@ -46,16 +46,28 @@ def summarize_external_baseline_capabilities() -> dict[str, Any]:
                 },
                 "unavailable_reason": None,
             },
-            "inductor_memory_budget": {
-                "status": "available" if memory_budget_attrs else "unavailable",
-                "api": None if not memory_budget_attrs else memory_budget_attrs,
+            "pytorch_aot_min_cut": {
+                "status": "available" if min_cut_available and budget_available else "unavailable",
+                "api": "torch._functorch.partitioners.min_cut_rematerialization_partition",
                 "provenance": {
-                    "functorch_memory_attrs": functorch_memory_attrs,
-                    "inductor_memory_attrs": inductor_memory_attrs,
+                    "activation_memory_budget": budget_value if budget_available else None,
+                    "config_api": "torch._functorch.config.patch",
+                    "partitioner_callable": getattr(min_cut_api, "__name__", None),
                 },
                 "unavailable_reason": None
-                if memory_budget_attrs
-                else "No activation memory-budget config attribute was found in torch._functorch.config or torch._inductor.config",
+                if min_cut_available and budget_available
+                else "Native min-cut partitioner or activation_memory_budget config is unavailable",
+            },
+            "inductor_memory_budget": {
+                "status": "available" if budget_available else "unavailable",
+                "api": "torch._functorch.config.activation_memory_budget",
+                "provenance": {
+                    "activation_memory_budget": budget_value if budget_available else None,
+                    "config_api": "torch._functorch.config.patch",
+                },
+                "unavailable_reason": None
+                if budget_available
+                else "torch._functorch.config.activation_memory_budget is unavailable",
             },
         },
     }
