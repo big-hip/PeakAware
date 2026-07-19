@@ -33,6 +33,8 @@ def main() -> None:
     parser.add_argument("--microbatches", default="1")
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--isolate", action="store_true")
+    parser.add_argument("--exact-small-graph", action="store_true")
+    parser.add_argument("--exact-max-candidates", type=int, default=12)
     parser.add_argument("--profile-db", type=Path, default=None)
     parser.add_argument("--output-json", type=Path, default=None)
     parser.add_argument("--output-csv", type=Path, default=None)
@@ -50,6 +52,8 @@ def main() -> None:
         microbatch_sizes=_parse_csv_ints(args.microbatches),
         budget_bytes=tuple(value << 20 for value in _parse_csv_ints(args.budget_mib)),
         config=config,
+        include_exact_baseline=args.exact_small_graph,
+        exact_max_candidate_count=args.exact_max_candidates,
     )
     if args.output_json is not None:
         write_experiment_json(records, args.output_json)

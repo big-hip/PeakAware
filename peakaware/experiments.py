@@ -10,6 +10,8 @@ from peakaware.api import optimize_training
 from peakaware.config import PeakAwareConfig
 from peakaware.models import TrainingTaskRegistry
 from peakaware.reporting import summarize_result
+from peakaware.search.exact import solve_exact_small_graph
+from peakaware.search.plan import plan_identity_key
 
 
 @dataclass(frozen=True)
@@ -45,16 +47,28 @@ class ExperimentRecord:
     cache_hit_rate: float | None
     candidate_count: int
     fallback_plan_ids: tuple[str, ...]
+    exact_plan_id: str | None = None
+    exact_plan_key: str | None = None
+    exact_estimated_peak_bytes: int | None = None
+    exact_estimated_step_us: float | None = None
+    selected_exact_peak_gap_bytes: int | None = None
+    exact_error_type: str | None = None
+    exact_error_message: str | None = None
     error_type: str | None = None
     error_message: str | None = None
 
 
-def _record_success(case: ExperimentCase, summary: dict[str, Any]) -> ExperimentRecord:
+def _record_success(
+    case: ExperimentCase,
+    summary: dict[str, Any],
+    exact: dict[str, Any] | None = None,
+) -> ExperimentRecord:
     measured = summary["measured"]
     diagnostic = summary.get("diagnostic")
     selected_correction = summary.get("topk_correction", {}).get("selected")
     cache = summary.get("cache", {})
     step_us = float(measured["step_us"])
+    exact = exact or {}
     return ExperimentRecord(
         task_name=case.task_name,
         microbatch_size=case.microbatch_size,
@@ -80,6 +94,13 @@ def _record_success(case: ExperimentCase, summary: dict[str, Any]) -> Experiment
         cache_hit_rate=cache.get("hit_rate"),
         candidate_count=len(summary["plans"]),
         fallback_plan_ids=tuple(summary["fallback_plan_ids"]),
+        exact_plan_id=exact.get("plan_id"),
+        exact_plan_key=exact.get("plan_key"),
+        exact_estimated_peak_bytes=exact.get("estimated_peak_bytes"),
+        exact_estimated_step_us=exact.get("estimated_step_us"),
+        selected_exact_peak_gap_bytes=exact.get("selected_peak_gap_bytes"),
+        exact_error_type=exact.get("error_type"),
+        exact_error_message=exact.get("error_message"),
     )
 
 
@@ -121,6 +142,8 @@ def run_experiment_matrix(
     budget_bytes: tuple[int, ...],
     config: PeakAwareConfig | None = None,
     registry: TrainingTaskRegistry | None = None,
+    include_exact_baseline: bool = False,
+    exact_max_candidate_count: int = 12,
 ) -> tuple[ExperimentRecord, ...]:
     if not task_names:
         raise ValueError("task_names must not be empty")
@@ -132,6 +155,8 @@ def run_experiment_matrix(
         raise ValueError("microbatch_sizes must be positive")
     if any(value <= 0 for value in budget_bytes):
         raise ValueError("budget_bytes must be positive")
+    if exact_max_candidate_count < 0:
+        raise ValueError("exact_max_candidate_count must be non-negative")
     registry = registry or TrainingTaskRegistry.with_defaults()
     config = config or PeakAwareConfig()
     records: list[ExperimentRecord] = []
@@ -156,8 +181,39 @@ def run_experiment_matrix(
                 except Exception as exc:
                     records.append(_record_failure(case, exc))
                     continue
-                records.append(_record_success(case, summarize_result(result)))
+                summary = summarize_result(result)
+                exact = None
+                if include_exact_baseline:
+                    exact = _run_exact_baseline(case, result, exact_max_candidate_count)
+                records.append(_record_success(case, summary, exact))
     return tuple(records)
+
+
+def _run_exact_baseline(case: ExperimentCase, result: Any, max_candidate_count: int = 12) -> dict[str, Any]:
+    if result.analysis is None:
+        return {"error_type": "MissingAnalysis", "error_message": "result did not include analysis"}
+    try:
+        exact = solve_exact_small_graph(
+            result.analysis.ir,
+            result.analysis.fixed_timeline,
+            budget_bytes=case.budget_bytes,
+            safety_margin_bytes=result.selected_plan.safety_margin_bytes,
+            max_candidate_count=max_candidate_count,
+        )
+    except Exception as exc:
+        return {"error_type": type(exc).__name__, "error_message": str(exc)}
+    exact_key = plan_identity_key(
+        exact.plan.graph_key,
+        exact.plan.saved_value_ids | exact.plan.mandatory_value_ids,
+        exact.plan.budget_bytes,
+    )
+    return {
+        "plan_id": exact.plan.plan_id,
+        "plan_key": exact_key,
+        "estimated_peak_bytes": exact.simulation.estimated_peak_bytes,
+        "estimated_step_us": exact.simulation.estimated_step_us,
+        "selected_peak_gap_bytes": result.selected_plan.estimated_peak_bytes - exact.simulation.estimated_peak_bytes,
+    }
 
 
 def experiment_records_to_dicts(records: tuple[ExperimentRecord, ...]) -> list[dict[str, Any]]:
