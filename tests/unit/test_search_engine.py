@@ -120,9 +120,15 @@ def test_search_reports_diagnostic_hint_trace():
     assert diagnostics.diagnostic_hints_enabled is True
     assert diagnostics.greedy_plan_count >= 1
     assert diagnostics.feasible_after_repair_count >= diagnostics.feasible_before_repair_count
+    assert diagnostics.diagnostic_hint_candidate_match_count >= 0
+    assert isinstance(diagnostics.diagnostic_hint_order_changed, bool)
+    assert diagnostics.diagnostic_hint_order_delta_count >= 0
     assert disabled.diagnostic_hints_enabled is False
     assert disabled.diagnostic_hint_count == 0
     assert disabled.diagnostic_hint_kinds == ()
+    assert disabled.diagnostic_hint_candidate_match_count == 0
+    assert disabled.diagnostic_hint_order_changed is False
+    assert disabled.diagnostic_hint_order_delta_count == 0
 
 
 def test_plan_identity_key_is_determined_by_save_set_not_label():

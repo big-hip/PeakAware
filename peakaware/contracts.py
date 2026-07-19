@@ -269,6 +269,9 @@ class SearchDiagnostics:
     manual_hint_count: int
     diagnostic_hint_count: int
     diagnostic_hint_kinds: tuple[str, ...]
+    diagnostic_hint_candidate_match_count: int
+    diagnostic_hint_order_changed: bool
+    diagnostic_hint_order_delta_count: int
     greedy_plan_count: int
     feasible_before_repair_count: int
     repaired_candidate_count: int

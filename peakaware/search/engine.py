@@ -16,7 +16,7 @@ from peakaware.cost.base import CostProvider
 from peakaware.diagnostics import diagnose_plan
 from peakaware.memory.simulator import simulate_plan
 
-from .candidates import select_save_candidates
+from .candidates import SaveCandidate, select_save_candidates
 from .closure import derive_recompute_closure, validate_closure
 from .pareto import select_pareto_topk
 from .plan import build_recompute_plan
@@ -115,6 +115,19 @@ def _greedy_seed_plans(
     return tuple(plans)
 
 
+def _candidate_order(candidates: tuple[SaveCandidate, ...]) -> tuple[int, ...]:
+    return tuple(candidate.storage_id for candidate in candidates)
+
+
+def _order_delta_count(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+    shared_positions = sum(
+        1
+        for index, storage_id in enumerate(left)
+        if index < len(right) and right[index] == storage_id
+    )
+    return max(len(left), len(right)) - shared_positions
+
+
 def search_plans(
     ir: JointTrainingIR,
     fixed_timeline: FixedTimeline,
@@ -175,6 +188,12 @@ def search_plans_with_diagnostics(
             for hint in diagnose_plan(baseline, candidate).repair_hints
         )
     hints = repair_hints + diagnostic_hints
+    base_candidates = select_save_candidates(ir, cost_provider=cost_provider, hints=repair_hints)
+    hinted_candidates = select_save_candidates(ir, cost_provider=cost_provider, hints=hints)
+    base_order = _candidate_order(base_candidates)
+    hinted_order = _candidate_order(hinted_candidates)
+    diagnostic_hint_targets = {target for hint in diagnostic_hints for target in hint.target_ids}
+    candidate_storage_ids = {candidate.storage_id for candidate in base_candidates}
     plans.extend(_greedy_seed_plans(ir, budget_bytes, safety_margin_bytes, cost_provider, hints))
     searched = [
         evaluate_plan(ir, plan, fixed_timeline)
@@ -192,6 +211,9 @@ def search_plans_with_diagnostics(
         manual_hint_count=len(repair_hints),
         diagnostic_hint_count=len(diagnostic_hints),
         diagnostic_hint_kinds=tuple(sorted({hint.kind for hint in diagnostic_hints})),
+        diagnostic_hint_candidate_match_count=len(diagnostic_hint_targets & candidate_storage_ids),
+        diagnostic_hint_order_changed=base_order != hinted_order,
+        diagnostic_hint_order_delta_count=_order_delta_count(base_order, hinted_order),
         greedy_plan_count=len(searched),
         feasible_before_repair_count=sum(1 for plan in searched if plan.feasible),
         repaired_candidate_count=len(repaired),

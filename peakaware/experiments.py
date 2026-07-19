@@ -98,6 +98,9 @@ class ExperimentRecord:
     diagnostic_hints_enabled: bool | None = None
     diagnostic_hint_count: int = 0
     diagnostic_hint_kinds: tuple[str, ...] = ()
+    diagnostic_hint_candidate_match_count: int = 0
+    diagnostic_hint_order_changed: bool = False
+    diagnostic_hint_order_delta_count: int = 0
     repaired_candidate_count: int = 0
     repair_success_count: int = 0
     feasible_before_repair_count: int = 0
@@ -189,6 +192,9 @@ class ExperimentSummary:
     diagnostic_hints_enabled_count: int
     diagnostic_hint_count: int
     diagnostic_hint_kind_counts: dict[str, int]
+    diagnostic_hint_candidate_match_count: int
+    diagnostic_hint_order_changed_count: int
+    diagnostic_hint_order_delta_count: int
     repaired_candidate_count: int
     repair_success_count: int
     repair_success_rate: float | None
@@ -458,6 +464,11 @@ def _record_success(
         diagnostic_hints_enabled=search_diagnostics.get("diagnostic_hints_enabled"),
         diagnostic_hint_count=int(search_diagnostics.get("diagnostic_hint_count", 0)),
         diagnostic_hint_kinds=tuple(search_diagnostics.get("diagnostic_hint_kinds", ())),
+        diagnostic_hint_candidate_match_count=int(
+            search_diagnostics.get("diagnostic_hint_candidate_match_count", 0)
+        ),
+        diagnostic_hint_order_changed=bool(search_diagnostics.get("diagnostic_hint_order_changed", False)),
+        diagnostic_hint_order_delta_count=int(search_diagnostics.get("diagnostic_hint_order_delta_count", 0)),
         repaired_candidate_count=int(search_diagnostics.get("repaired_candidate_count", 0)),
         repair_success_count=int(search_diagnostics.get("repair_success_count", 0)),
         feasible_before_repair_count=int(search_diagnostics.get("feasible_before_repair_count", 0)),
@@ -684,6 +695,9 @@ def experiment_records_from_dicts(rows: list[dict[str, Any]]) -> tuple[Experimen
         normalized = dict(row)
         normalized.setdefault("selected_calibrated_prediction_error_bytes", None)
         normalized.setdefault("selected_calibrated_prediction_relative_error", None)
+        normalized.setdefault("diagnostic_hint_candidate_match_count", 0)
+        normalized.setdefault("diagnostic_hint_order_changed", False)
+        normalized.setdefault("diagnostic_hint_order_delta_count", 0)
         for field in tuple_fields:
             if field in normalized:
                 normalized[field] = tuple(normalized[field])
@@ -1079,6 +1093,9 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         diagnostic_hints_enabled_count=sum(1 for record in ok if record.diagnostic_hints_enabled),
         diagnostic_hint_count=sum(record.diagnostic_hint_count for record in ok),
         diagnostic_hint_kind_counts=_tuple_counts([record.diagnostic_hint_kinds for record in ok]),
+        diagnostic_hint_candidate_match_count=sum(record.diagnostic_hint_candidate_match_count for record in ok),
+        diagnostic_hint_order_changed_count=sum(1 for record in ok if record.diagnostic_hint_order_changed),
+        diagnostic_hint_order_delta_count=sum(record.diagnostic_hint_order_delta_count for record in ok),
         repaired_candidate_count=repaired_candidate_count,
         repair_success_count=repair_success_count,
         repair_success_rate=None
@@ -1140,18 +1157,26 @@ def _hint_pair_conclusion(row: dict[str, Any]) -> str:
     violation_delta = row["budget_violation_delta"]
     throughput_delta = row["samples_per_second_delta"]
     candidate_delta = row["candidate_count_delta"]
+    measured_candidate_delta = row["measured_candidate_count_delta"]
+    order_delta = row["diagnostic_hint_order_delta_count_delta"]
     if violation_delta is not None and violation_delta < 0:
         return "improved_budget"
     if throughput_delta is not None and throughput_delta > 0:
         return "improved_throughput"
+    if measured_candidate_delta is not None and measured_candidate_delta < 0:
+        return "improved_search"
     if candidate_delta is not None and candidate_delta < 0:
         return "improved_search"
     if violation_delta is not None and violation_delta > 0:
         return "regressed_budget"
     if throughput_delta is not None and throughput_delta < 0:
         return "regressed_throughput"
+    if measured_candidate_delta is not None and measured_candidate_delta > 0:
+        return "regressed_search"
     if candidate_delta is not None and candidate_delta > 0:
         return "regressed_search"
+    if order_delta is not None and order_delta > 0:
+        return "changed_search_order"
     return "neutral"
 
 
@@ -1160,14 +1185,17 @@ def _hint_ablation_verdict(conclusion_counts: dict[str, int]) -> str:
         return "no_pairs"
     improved = sum(count for kind, count in conclusion_counts.items() if kind.startswith("improved_"))
     regressed = sum(count for kind, count in conclusion_counts.items() if kind.startswith("regressed_"))
+    changed_order = conclusion_counts.get("changed_search_order", 0)
     inconclusive = conclusion_counts.get("inconclusive", 0)
     neutral = conclusion_counts.get("neutral", 0)
     if improved and not regressed:
-        return "improved" if improved > neutral + inconclusive else "mixed"
+        return "improved" if improved > neutral + inconclusive + changed_order else "mixed"
     if regressed and not improved:
-        return "regressed" if regressed > neutral + inconclusive else "mixed"
+        return "regressed" if regressed > neutral + inconclusive + changed_order else "mixed"
     if improved and regressed:
         return "mixed"
+    if changed_order:
+        return "changed_search_order" if changed_order > neutral + inconclusive else "mixed"
     if neutral:
         return "neutral"
     return "inconclusive"
@@ -1220,12 +1248,25 @@ def summarize_hint_ablation(records: tuple[ExperimentRecord, ...]) -> dict[str, 
                 on_record.diagnostic_hint_count,
                 off_record.diagnostic_hint_count,
             ),
+            "diagnostic_hint_candidate_match_count_delta": _metric_delta(
+                on_record.diagnostic_hint_candidate_match_count,
+                off_record.diagnostic_hint_candidate_match_count,
+            ),
+            "diagnostic_hint_order_changed_delta": _metric_delta(
+                int(on_record.diagnostic_hint_order_changed),
+                int(off_record.diagnostic_hint_order_changed),
+            ),
+            "diagnostic_hint_order_delta_count_delta": _metric_delta(
+                on_record.diagnostic_hint_order_delta_count,
+                off_record.diagnostic_hint_order_delta_count,
+            ),
         }
         row["conclusion"] = _hint_pair_conclusion(row)
         rows.append(row)
     conclusion_counts = _counts([row["conclusion"] for row in rows])
     improved_count = sum(count for kind, count in conclusion_counts.items() if kind.startswith("improved_"))
     regressed_count = sum(count for kind, count in conclusion_counts.items() if kind.startswith("regressed_"))
+    changed_order_count = conclusion_counts.get("changed_search_order", 0)
     return {
         "pair_count": len(rows),
         "both_ok_count": sum(1 for row in rows if row["on_status"] == "ok" and row["off_status"] == "ok"),
@@ -1247,9 +1288,16 @@ def summarize_hint_ablation(records: tuple[ExperimentRecord, ...]) -> dict[str, 
         ),
         "mean_repair_success_count_delta": _mean_optional([row["repair_success_count_delta"] for row in rows]),
         "mean_diagnostic_hint_count_delta": _mean_optional([row["diagnostic_hint_count_delta"] for row in rows]),
+        "mean_diagnostic_hint_candidate_match_count_delta": _mean_optional(
+            [row["diagnostic_hint_candidate_match_count_delta"] for row in rows]
+        ),
+        "mean_diagnostic_hint_order_delta_count_delta": _mean_optional(
+            [row["diagnostic_hint_order_delta_count_delta"] for row in rows]
+        ),
         "conclusion_counts": conclusion_counts,
         "improved_pair_count": improved_count,
         "regressed_pair_count": regressed_count,
+        "changed_search_order_pair_count": changed_order_count,
         "neutral_pair_count": conclusion_counts.get("neutral", 0),
         "inconclusive_pair_count": conclusion_counts.get("inconclusive", 0),
         "verdict": _hint_ablation_verdict(conclusion_counts),

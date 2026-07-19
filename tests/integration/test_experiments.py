@@ -69,6 +69,9 @@ def _minimal_record(
     cache_total_misses: int = 1,
     cache_layer_hits: dict[str, int] | None = None,
     cache_layer_misses: dict[str, int] | None = None,
+    diagnostic_hint_candidate_match_count: int = 0,
+    diagnostic_hint_order_changed: bool = False,
+    diagnostic_hint_order_delta_count: int = 0,
     matrix_pass_index: int = 0,
     matrix_pass_count: int = 1,
 ) -> ExperimentRecord:
@@ -223,6 +226,9 @@ def _minimal_record(
         diagnostic_hints_enabled=diagnostic_hints_enabled if status == "ok" else None,
         diagnostic_hint_count=2 if status == "ok" else 0,
         diagnostic_hint_kinds=("SAVE_PEAK_STORAGE",) if status == "ok" else (),
+        diagnostic_hint_candidate_match_count=diagnostic_hint_candidate_match_count,
+        diagnostic_hint_order_changed=diagnostic_hint_order_changed,
+        diagnostic_hint_order_delta_count=diagnostic_hint_order_delta_count,
         repaired_candidate_count=1 if status == "ok" else 0,
         repair_success_count=1 if status == "ok" else 0,
         feasible_before_repair_count=0 if status == "ok" else 0,
@@ -284,6 +290,9 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.diagnostic_hints_enabled_count == 2
     assert summary.diagnostic_hint_count == 4
     assert summary.diagnostic_hint_kind_counts == {"SAVE_PEAK_STORAGE": 2}
+    assert summary.diagnostic_hint_candidate_match_count == 0
+    assert summary.diagnostic_hint_order_changed_count == 0
+    assert summary.diagnostic_hint_order_delta_count == 0
     assert summary.repaired_candidate_count == 2
     assert summary.repair_success_count == 2
     assert summary.repair_success_rate == 1.0
@@ -371,6 +380,40 @@ def test_hint_ablation_summary_reports_no_pairs_verdict():
 
     assert summary["pair_count"] == 0
     assert summary["verdict"] == "no_pairs"
+
+
+def test_hint_ablation_summary_reports_changed_search_order():
+    records = (
+        _minimal_record(
+            status="ok",
+            budget_bytes=100,
+            measured_peak_bytes=80,
+            variant_name="diagnostic_hints_on",
+            diagnostic_hints_enabled=True,
+            diagnostic_hint_candidate_match_count=2,
+            diagnostic_hint_order_changed=True,
+            diagnostic_hint_order_delta_count=3,
+        ),
+        _minimal_record(
+            status="ok",
+            budget_bytes=100,
+            measured_peak_bytes=80,
+            variant_name="diagnostic_hints_off",
+            diagnostic_hints_enabled=False,
+            diagnostic_hint_candidate_match_count=0,
+            diagnostic_hint_order_changed=False,
+            diagnostic_hint_order_delta_count=0,
+        ),
+    )
+
+    summary = summarize_hint_ablation(records)
+
+    assert summary["rows"][0]["diagnostic_hint_candidate_match_count_delta"] == 2
+    assert summary["rows"][0]["diagnostic_hint_order_changed_delta"] == 1
+    assert summary["rows"][0]["diagnostic_hint_order_delta_count_delta"] == 3
+    assert summary["rows"][0]["conclusion"] == "changed_search_order"
+    assert summary["changed_search_order_pair_count"] == 1
+    assert summary["verdict"] == "changed_search_order"
 
 
 def test_cache_reuse_summary_groups_matrix_passes(tmp_path):
