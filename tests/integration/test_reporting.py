@@ -51,6 +51,9 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert all(item["ranking_provenance"]["risk_score"]["range"] == "[0, 1]" for item in summary["plans"])
     assert all(item["ranking_provenance"]["confidence"]["direction"] == "higher_is_better" for item in summary["plans"])
     assert all("plan_id" in item["ranking_provenance"]["stable_tie_break"] for item in summary["plans"])
+    assert all(item["peak_snapshot"]["phase"] in {"fw", "bw", "optimizer"} for item in summary["plans"])
+    assert all("live_storage_ids" in item["peak_snapshot"] for item in summary["plans"])
+    assert all("workspace_bytes" in item["peak_snapshot"] for item in summary["plans"])
     assert summary["capture_failures"] == []
     failed_result = replace(
         result,
@@ -78,7 +81,9 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert all("realization_gap" in item["expectation"] for item in diagnostic_by_plan.values())
     assert all("repair_hints" in item for item in diagnostic_by_plan.values())
     assert all(item["counterfactuals"] for item in diagnostic_by_plan.values())
+    assert all("candidate_peak" in item["counterfactuals"][0] for item in diagnostic_by_plan.values())
     assert summary["diagnostic"]["counterfactuals"][-1]["level"] == "D5"
+    assert "baseline_peak" in summary["diagnostic"]["counterfactuals"][0]
     assert summary["diagnostic"]["expectation"]["strategy_status"] == "unavailable"
     assert "repair_hints" in summary["diagnostic"]
     assert summary["measured_candidates"]
@@ -90,6 +95,8 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert plan_artifact["saved_value_ids"] == tuple(sorted(result.selected_plan.saved_value_ids))
     assert plan_artifact["effective_saved_value_ids"] == summary["selected_effective_saved_value_ids"]
     assert plan_artifact["ranking_provenance"]["risk_score"]["direction"] == "lower_is_better"
+    assert plan_artifact["peak_snapshot"]["live_bytes"] == summary["estimated_peak_bytes"]
+    assert "recomputed_bytes" in plan_artifact["peak_snapshot"]
     assert plan_artifact["correctness"]["gradients_match"] is True
     assert "Selected plan:" in text
     assert json.loads(exported)["selected_plan_id"] == result.selected_plan.plan_id
