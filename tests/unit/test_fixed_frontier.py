@@ -69,7 +69,7 @@ def test_materialized_optimizer_state_is_counted_exactly():
     assert spec.temporary_bytes == sum(p.numel() * p.element_size() for p in model.parameters())
 
 
-def test_unknown_optimizer_without_state_is_fail_closed_to_no_temp_estimate():
+def test_unknown_optimizer_without_state_uses_nonzero_temporary_estimate():
     class ToyOptimizer(torch.optim.Optimizer):
         def __init__(self, params):
             super().__init__(params, {"lr": 0.1})
@@ -79,9 +79,23 @@ def test_unknown_optimizer_without_state_is_fail_closed_to_no_temp_estimate():
 
     model = nn.Linear(4, 3)
     optimizer = ToyOptimizer(model.parameters())
+    parameter_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
 
     spec = build_optimizer_spec(optimizer, model)
 
     assert spec.name == "ToyOptimizer"
     assert spec.state_bytes == 0
-    assert spec.temporary_bytes == 0
+    assert spec.temporary_bytes == parameter_bytes
+
+
+def test_coarse_feasibility_does_not_reject_on_temporary_upper_bound_only():
+    model = nn.Linear(4, 3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    fixed = analyze_coarse_feasibility(model, optimizer, memory_budget_bytes=1 << 30)[0]
+    budget = fixed.steady_bytes + max(fixed.optimizer_temporary_bytes // 2, 1)
+
+    fixed, report = analyze_coarse_feasibility(model, optimizer, memory_budget_bytes=budget)
+
+    assert fixed.steady_bytes <= report.user_budget_bytes
+    assert fixed.peak_lower_bound_bytes > report.user_budget_bytes
+    assert report.status == "LOW_ACTIVATION_HEADROOM"

@@ -35,9 +35,13 @@ def estimate_optimizer_memory(optimizer: torch.optim.Optimizer, parameter_bytes:
             if isinstance(value, torch.Tensor):
                 state_bytes += _tensor_nbytes(value)
     name = optimizer.__class__.__name__.lower()
+    temporary_bytes = 0
     if state_bytes == 0 and "adam" in name:
         state_bytes = 2 * parameter_bytes
-    temporary_bytes = parameter_bytes if "adam" in name else 0
+    if "adam" in name:
+        temporary_bytes = parameter_bytes
+    elif "sgd" not in name:
+        temporary_bytes = parameter_bytes
     return state_bytes, temporary_bytes
 
 
@@ -74,11 +78,18 @@ def build_fixed_timeline(model: nn.Module, optimizer: torch.optim.Optimizer) -> 
     )
 
 
-def _status_and_explanations(budget: int, fixed: int, activation_headroom: int) -> tuple[str, tuple[str, ...]]:
-    if fixed > budget:
+def _status_and_explanations(
+    budget: int,
+    fixed: int,
+    activation_headroom: int,
+    *,
+    infeasible_lower_bound: int | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    hard_lower_bound = fixed if infeasible_lower_bound is None else infeasible_lower_bound
+    if hard_lower_bound > budget:
         return (
             "INFEASIBLE_BY_ACTIVATION_ONLY",
-            (f"fixed lower bound {fixed} bytes exceeds budget {budget} bytes",),
+            (f"fixed lower bound {hard_lower_bound} bytes exceeds budget {budget} bytes",),
         )
     if activation_headroom < max(1 << 20, budget // 20):
         return (
@@ -99,6 +110,7 @@ def analyze_coarse_feasibility(
         memory_budget_bytes,
         fixed_timeline.peak_lower_bound_bytes,
         activation_budget,
+        infeasible_lower_bound=fixed_timeline.steady_bytes,
     )
     return fixed_timeline, CoarseFeasibilityReport(
         user_budget_bytes=memory_budget_bytes,
