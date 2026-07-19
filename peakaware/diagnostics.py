@@ -60,6 +60,7 @@ class PlanDiagnosticReport:
     primary_cause: RootCause
     secondary_causes: tuple[RootCause, ...]
     root_causes: tuple[str, ...]
+    confidence: float
     evidence: tuple[DiagnosticEvidence, ...]
     repair_hints: tuple[RepairHint, ...]
     counterfactuals: tuple[CounterfactualResult, ...] = ()
@@ -420,6 +421,11 @@ def diagnose_plan(
             )
     all_causes = tuple(dict.fromkeys((primary,) + secondary + measured_causes))
     causes = tuple(cause.name for cause in all_causes)
+    confidence = min(float(baseline.simulation.confidence), float(candidate.simulation.confidence))
+    if primary is RootCause.UNKNOWN:
+        confidence = min(confidence, 0.3)
+    if measured_causes:
+        confidence = max(confidence, 0.8 if measured is not None and measured.correctness_passed else 0.4)
     return PlanDiagnosticReport(
         plan_id=candidate.plan.plan_id,
         expected_saved_reduction=expected_saved,
@@ -431,6 +437,7 @@ def diagnose_plan(
         primary_cause=primary,
         secondary_causes=all_causes[1:],
         root_causes=causes,
+        confidence=confidence,
         evidence=tuple(evidence),
         repair_hints=tuple(hints),
         counterfactuals=build_counterfactual_ladder(

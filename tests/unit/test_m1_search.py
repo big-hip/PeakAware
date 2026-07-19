@@ -172,6 +172,7 @@ def test_diagnostics_reports_recompute_wave_hint():
     assert report.normalized_saved_reduction == report.expected_saved_reduction
     assert report.strategy_estimation_gap is None
     assert report.realization_gap == report.normalized_saved_reduction - report.actual_overall_peak_reduction
+    assert 0 <= report.confidence <= 1
     assert any(item.metric == "normalized_saved_reduction_bytes" for item in report.evidence)
     assert any(item.metric == "estimated_overall_peak_reduction_bytes" for item in report.evidence)
     if report.bw_recompute_transient_change > 0:
@@ -208,6 +209,7 @@ def test_diagnostics_exports_json_and_marks_runtime_level_available():
 
     assert '"primary_cause": "UNKNOWN"' in text
     assert RootCause.MEASUREMENT_NOISE.name in report.root_causes
+    assert report.confidence >= 0.8
     assert any(item.root_cause == RootCause.MEASUREMENT_NOISE.name for item in report.evidence)
     assert report.compiler_workspace_allocator_change == 0
     assert report.counterfactuals[-1].level == "D5"
@@ -242,6 +244,7 @@ def test_diagnostics_marks_workspace_growth_and_cost_misrank_from_runtime_residu
 
     assert RootCause.WORKSPACE_GROWTH.name in report.root_causes
     assert RootCause.COST_MODEL_MISRANK.name in report.root_causes
+    assert report.confidence >= 0.8
     assert any(item.root_cause == RootCause.WORKSPACE_GROWTH.name for item in report.evidence)
     assert any(item.root_cause == RootCause.COST_MODEL_MISRANK.name for item in report.evidence)
     assert report.compiler_workspace_allocator_change == measured_peak - baseline.simulation.estimated_peak_bytes
