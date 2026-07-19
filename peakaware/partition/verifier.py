@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 from typing import Any
 
 import torch
@@ -117,6 +118,22 @@ def _compare_nested_state(left: Any, right: Any, path: str, *, atol: float, rtol
     return None if left == right else f"state mismatch at {path}"
 
 
+@contextmanager
+def _deterministic_backend_for_comparison() -> Any:
+    if not torch.cuda.is_available():
+        yield
+        return
+    previous_benchmark = torch.backends.cudnn.benchmark
+    previous_deterministic = torch.backends.cudnn.deterministic
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    try:
+        yield
+    finally:
+        torch.backends.cudnn.benchmark = previous_benchmark
+        torch.backends.cudnn.deterministic = previous_deterministic
+
+
 def compare_dry_run_with_baseline(
     model: nn.Module,
     args: tuple[Any, ...],
@@ -126,22 +143,31 @@ def compare_dry_run_with_baseline(
     atol: float,
     rtol: float,
 ) -> tuple[bool, str | None]:
+    original_model_state = _clone_model_state(model)
     original_grads = _clone_grads(model)
-    rng_state = torch.get_rng_state()
-    try:
-        _zero_grads(model)
-        torch.set_rng_state(rng_state)
-        baseline_loss = loss_fn(model(*args, **kwargs))
-        if baseline_loss.ndim != 0:
-            return False, "loss_fn must return a scalar tensor"
-        baseline_loss.backward()
-        baseline_grads = _clone_grads(model)
+    cpu_rng = torch.get_rng_state()
+    cuda_rng = _cuda_rng_state()
 
-        _zero_grads(model)
-        torch.set_rng_state(rng_state)
-        candidate_loss = loss_fn(model(*args, **kwargs))
-        candidate_loss.backward()
-        candidate_grads = _clone_grads(model)
+    def restore_all() -> None:
+        model.load_state_dict(original_model_state)
+        _restore_grads(model, original_grads)
+        _restore_rng(cpu_rng, cuda_rng)
+
+    try:
+        with _deterministic_backend_for_comparison():
+            restore_all()
+            _zero_grads(model)
+            baseline_loss = loss_fn(model(*args, **kwargs))
+            if baseline_loss.ndim != 0:
+                return False, "loss_fn must return a scalar tensor"
+            baseline_loss.backward()
+            baseline_grads = _clone_grads(model)
+
+            restore_all()
+            _zero_grads(model)
+            candidate_loss = loss_fn(model(*args, **kwargs))
+            candidate_loss.backward()
+            candidate_grads = _clone_grads(model)
 
         if not torch.allclose(baseline_loss.detach(), candidate_loss.detach(), atol=atol, rtol=rtol):
             return False, "loss mismatch"
@@ -154,7 +180,7 @@ def compare_dry_run_with_baseline(
                 return False, f"gradient mismatch at parameter {index}"
         return True, None
     finally:
-        _restore_grads(model, original_grads)
+        restore_all()
 
 
 def compare_multistep_training_with_baseline(
@@ -244,14 +270,20 @@ def run_aot_eager_dry_run(
     rng_valid, rng_reason = verify_rng_and_tangents(lowered)
     if not rng_valid:
         return DryRunResult(lowered.plan_id, False, False, False, False, rng_reason)
-    rng_state = torch.get_rng_state()
+    cpu_rng = torch.get_rng_state()
+    cuda_rng = _cuda_rng_state()
     try:
         ok, reason = compare_dry_run_with_baseline(model, args, kwargs, loss_fn, atol=atol, rtol=rtol)
     except Exception as exc:
-        torch.set_rng_state(rng_state)
+        _restore_rng(cpu_rng, cuda_rng)
         return DryRunResult(lowered.plan_id, True, False, False, False, str(exc))
-    rng_match = torch.equal(rng_state, torch.get_rng_state())
-    torch.set_rng_state(rng_state)
+    rng_match = torch.equal(cpu_rng, torch.get_rng_state())
+    if cuda_rng is not None:
+        rng_match = rng_match and all(
+            torch.equal(expected, actual)
+            for expected, actual in zip(cuda_rng, torch.cuda.get_rng_state_all())
+        )
+    _restore_rng(cpu_rng, cuda_rng)
     return DryRunResult(
         plan_id=lowered.plan_id,
         abi_valid=True,

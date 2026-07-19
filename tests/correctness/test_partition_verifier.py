@@ -14,7 +14,11 @@ from peakaware.contracts import (
 from peakaware.ir.builder import build_joint_ir
 from peakaware.memory.fixed_frontier import build_optimizer_spec
 from peakaware.partition.aot import partition_joint_graph
-from peakaware.partition.verifier import compare_multistep_training_with_baseline, run_aot_eager_dry_run
+from peakaware.partition.verifier import (
+    compare_dry_run_with_baseline,
+    compare_multistep_training_with_baseline,
+    run_aot_eager_dry_run,
+)
 from peakaware.search.plan import build_recompute_plan
 
 
@@ -139,6 +143,45 @@ def test_multistep_correctness_handles_dropout_and_restores_state():
     assert ok, reason
     assert torch.equal(rng_before, torch.get_rng_state())
     assert optimizer.state_dict()["state"] == {}
+    for name, tensor in model.state_dict().items():
+        assert torch.allclose(tensor, model_state_before[name])
+
+
+def test_dry_run_restores_batchnorm_buffers_and_rng():
+    torch.manual_seed(0)
+    model = nn.Sequential(
+        nn.Linear(3, 4),
+        nn.BatchNorm1d(4),
+        nn.Dropout(p=0.25),
+        nn.Linear(4, 1),
+    )
+    args = (torch.randn(8, 3),)
+    model_state_before = {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
+    rng_before = torch.get_rng_state()
+    previous_benchmark = torch.backends.cudnn.benchmark
+    previous_deterministic = torch.backends.cudnn.deterministic
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
+
+    try:
+        ok, reason = compare_dry_run_with_baseline(
+            model,
+            args,
+            {},
+            lambda out: out.pow(2).mean(),
+            atol=1e-6,
+            rtol=1e-5,
+        )
+    finally:
+        restored_benchmark = torch.backends.cudnn.benchmark
+        restored_deterministic = torch.backends.cudnn.deterministic
+        torch.backends.cudnn.benchmark = previous_benchmark
+        torch.backends.cudnn.deterministic = previous_deterministic
+
+    assert ok, reason
+    assert restored_benchmark is True
+    assert restored_deterministic is False
+    assert torch.equal(rng_before, torch.get_rng_state())
     for name, tensor in model.state_dict().items():
         assert torch.allclose(tensor, model_state_before[name])
 
