@@ -67,6 +67,7 @@ class CapturedJointGraph:
     num_fwd_outputs: int = 1
     static_lifetime_input_indices: tuple[int, ...] = ()
     output_tree_spec: Any | None = None
+    output_tangent_mask: tuple[bool, ...] = ()
     arg_tree_specs: tuple[Any, ...] = ()
     kwarg_tree_specs: tuple[tuple[str, Any], ...] = ()
 

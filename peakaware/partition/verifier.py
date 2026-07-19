@@ -215,23 +215,26 @@ def _loss_input_from_user_outputs(outputs: tuple[Any, ...], output_tree_spec: An
     return outputs[0]
 
 
-def _detach_for_tangent(value: Any) -> Any:
-    if isinstance(value, Tensor):
-        return value.detach().requires_grad_(value.is_floating_point())
-    if isinstance(value, tuple):
-        return tuple(_detach_for_tangent(item) for item in value)
-    if isinstance(value, list):
-        return [_detach_for_tangent(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _detach_for_tangent(item) for key, item in value.items()}
-    raise PartitionReplayUnsupported("lowered partition replay only supports tensor outputs")
-
-
-def _flatten_tensors(value: Any) -> tuple[Tensor, ...]:
-    flat_values, _ = _pytree.tree_flatten(value)
-    if any(not isinstance(item, Tensor) for item in flat_values):
-        raise PartitionReplayUnsupported("lowered partition replay only supports tensor outputs")
-    return tuple(flat_values)
+def _prepare_tangent_outputs(
+    outputs: tuple[Any, ...],
+    output_tree_spec: Any | None,
+    output_tangent_mask: tuple[bool, ...],
+) -> tuple[Any, tuple[Tensor, ...]]:
+    mask = output_tangent_mask or tuple(isinstance(value, Tensor) for value in outputs)
+    if len(mask) != len(outputs):
+        raise PartitionReplayUnsupported("captured output tangent mask does not match lowered FW outputs")
+    prepared: list[Any] = []
+    tangents: list[Tensor] = []
+    for value, has_tangent in zip(outputs, mask):
+        if has_tangent:
+            if not isinstance(value, Tensor):
+                raise PartitionReplayUnsupported("captured output tangent is not a tensor")
+            value = value.detach().requires_grad_(True)
+            tangents.append(value)
+        elif isinstance(value, Tensor):
+            value = value.detach()
+        prepared.append(value)
+    return _loss_input_from_user_outputs(tuple(prepared), output_tree_spec), tuple(tangents)
 
 
 def compare_lowered_partition_with_baseline(
@@ -244,6 +247,7 @@ def compare_lowered_partition_with_baseline(
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] | None = None,
     output_tree_spec: Any | None = None,
+    output_tangent_mask: tuple[bool, ...] = (),
     arg_tree_specs: tuple[Any, ...] = (),
     kwarg_tree_specs: tuple[tuple[str, Any], ...] = (),
     atol: float,
@@ -317,11 +321,14 @@ def compare_lowered_partition_with_baseline(
                 return False, "lowered FW graph returned fewer user outputs than expected"
             user_outputs = fw_outputs[:num_fwd_outputs]
             saved_for_bw = fw_outputs[num_fwd_outputs:]
-            tangent_outputs = _detach_for_tangent(_loss_input_from_user_outputs(user_outputs, output_tree_spec))
+            tangent_outputs, tangent_tensors = _prepare_tangent_outputs(
+                user_outputs,
+                output_tree_spec,
+                output_tangent_mask,
+            )
             candidate_loss = loss_fn(tangent_outputs)
             if candidate_loss.ndim != 0:
                 return False, "loss_fn must return a scalar tensor"
-            tangent_tensors = _flatten_tensors(tangent_outputs)
             tangents = torch.autograd.grad(candidate_loss, tangent_tensors, allow_unused=False)
             bw_outputs = _as_tuple(lowered.bw_graph(*(saved_for_bw + tuple(tangents))))
 
@@ -419,6 +426,7 @@ def run_aot_eager_dry_run(
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] | None = None,
     output_tree_spec: Any | None = None,
+    output_tangent_mask: tuple[bool, ...] = (),
     arg_tree_specs: tuple[Any, ...] = (),
     kwarg_tree_specs: tuple[tuple[str, Any], ...] = (),
 ) -> DryRunResult:
@@ -447,6 +455,7 @@ def run_aot_eager_dry_run(
                 num_fwd_outputs=num_fwd_outputs,
                 kwarg_names=kwarg_names,
                 output_tree_spec=output_tree_spec,
+                output_tangent_mask=output_tangent_mask,
                 arg_tree_specs=arg_tree_specs,
                 kwarg_tree_specs=kwarg_tree_specs,
                 atol=atol,

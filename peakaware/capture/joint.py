@@ -171,6 +171,7 @@ def _capture_with_aot_autograd(request: TrainingRequest) -> CapturedJointGraph:
         num_fwd_outputs=int(partition_meta.get("num_fwd_outputs", len(flat_outputs))),
         static_lifetime_input_indices=tuple(partition_meta.get("static_lifetime_input_indices") or ()),
         output_tree_spec=output_tree_spec,
+        output_tangent_mask=tuple(isinstance(value, torch.Tensor) and value.requires_grad for value in flat_outputs),
         arg_tree_specs=_tree_specs_for_args(args),
         kwarg_tree_specs=_tree_specs_for_kwargs(kwargs),
     )

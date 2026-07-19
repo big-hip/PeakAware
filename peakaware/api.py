@@ -325,6 +325,7 @@ def _dry_run_candidate(
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] | None = None,
     output_tree_spec: Any | None = None,
+    output_tangent_mask: tuple[bool, ...] = (),
     arg_tree_specs: tuple[Any, ...] = (),
     kwarg_tree_specs: tuple[tuple[str, Any], ...] = (),
 ) -> DryRunResult:
@@ -340,6 +341,7 @@ def _dry_run_candidate(
         num_fwd_outputs=num_fwd_outputs,
         kwarg_names=kwarg_names,
         output_tree_spec=output_tree_spec,
+        output_tangent_mask=output_tangent_mask,
         arg_tree_specs=arg_tree_specs,
         kwarg_tree_specs=kwarg_tree_specs,
     )
@@ -384,6 +386,7 @@ class _CandidateValidation:
     kwarg_names: tuple[str, ...] = ()
     num_fwd_outputs: int = 1
     output_tree_spec: Any | None = None
+    output_tangent_mask: tuple[bool, ...] = ()
     arg_tree_specs: tuple[Any, ...] = ()
     kwarg_tree_specs: tuple[tuple[str, Any], ...] = ()
 
@@ -423,6 +426,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         num_fwd_outputs=capture.num_fwd_outputs,
         kwarg_names=kwarg_names,
         output_tree_spec=capture.output_tree_spec,
+        output_tangent_mask=capture.output_tangent_mask,
         arg_tree_specs=capture.arg_tree_specs,
         kwarg_tree_specs=capture.kwarg_tree_specs,
     )
@@ -439,6 +443,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                 num_fwd_outputs=capture.num_fwd_outputs,
                 kwarg_names=kwarg_names,
                 output_tree_spec=capture.output_tree_spec,
+                output_tangent_mask=capture.output_tangent_mask,
                 arg_tree_specs=capture.arg_tree_specs,
                 kwarg_tree_specs=capture.kwarg_tree_specs,
             )
@@ -490,6 +495,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                 kwarg_names=kwarg_names if aot_partition_runtime else (),
                 num_fwd_outputs=capture.num_fwd_outputs,
                 output_tree_spec=capture.output_tree_spec if aot_partition_runtime else None,
+                output_tangent_mask=capture.output_tangent_mask if aot_partition_runtime else (),
                 arg_tree_specs=capture.arg_tree_specs if aot_partition_runtime else (),
                 kwarg_tree_specs=capture.kwarg_tree_specs if aot_partition_runtime else (),
             )
@@ -516,6 +522,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         kwarg_names=kwarg_names if aot_partition_runtime else (),
         num_fwd_outputs=capture.num_fwd_outputs,
         output_tree_spec=capture.output_tree_spec if aot_partition_runtime else None,
+        output_tangent_mask=capture.output_tangent_mask if aot_partition_runtime else (),
         arg_tree_specs=capture.arg_tree_specs if aot_partition_runtime else (),
         kwarg_tree_specs=capture.kwarg_tree_specs if aot_partition_runtime else (),
     )
@@ -560,6 +567,7 @@ def _measure_candidate_for_parent(
             num_fwd_outputs=validation.num_fwd_outputs,
             kwarg_names=validation.kwarg_names,
             output_tree_spec=validation.output_tree_spec,
+            output_tangent_mask=validation.output_tangent_mask,
             arg_tree_specs=validation.arg_tree_specs,
             kwarg_tree_specs=validation.kwarg_tree_specs,
         )

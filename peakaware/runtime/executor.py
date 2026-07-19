@@ -164,11 +164,12 @@ def build_aot_partition_executable(
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] = (),
     output_tree_spec: Any | None = None,
+    output_tangent_mask: tuple[bool, ...] = (),
     arg_tree_specs: tuple[Any, ...] = (),
     kwarg_tree_specs: tuple[tuple[str, Any], ...] = (),
 ) -> Callable[..., Any]:
     if num_fwd_outputs < 1:
-        raise ValueError("AOT partition executable requires at least one tensor user output")
+        raise ValueError("AOT partition executable requires at least one user output")
     params = tuple(model.parameters())
     buffers = tuple(model.buffers())
     state_input_count = len(params) + len(buffers)
@@ -183,22 +184,37 @@ def build_aot_partition_executable(
             if len(fw_outputs) < num_fwd_outputs:
                 raise RuntimeError("lowered FW graph returned fewer user outputs than expected")
             user_outputs = fw_outputs[:num_fwd_outputs]
-            if any(not isinstance(value, Tensor) for value in user_outputs):
-                raise RuntimeError("lowered FW graph user outputs must be tensors")
             saved_for_bw = fw_outputs[num_fwd_outputs:]
             if any(not isinstance(value, Tensor) for value in saved_for_bw):
                 raise RuntimeError("lowered FW graph saved values must be tensors")
             ctx.save_for_backward(*saved_for_bw)
             ctx.input_count = len(flat_inputs)
             ctx.tensor_input_mask = tuple(isinstance(value, Tensor) for value in flat_inputs)
+            if output_tangent_mask and len(output_tangent_mask) != len(user_outputs):
+                raise RuntimeError("captured output tangent mask does not match lowered FW outputs")
+            ctx.output_tangent_mask = output_tangent_mask or tuple(
+                isinstance(value, Tensor) for value in user_outputs
+            )
+            non_differentiable = tuple(
+                value
+                for value, has_tangent in zip(user_outputs, ctx.output_tangent_mask)
+                if isinstance(value, Tensor) and not has_tangent
+            )
+            if non_differentiable:
+                ctx.mark_non_differentiable(*non_differentiable)
             return user_outputs[0] if num_fwd_outputs == 1 else tuple(user_outputs)
 
         @staticmethod
         def backward(ctx: Any, *grad_outputs: Any) -> tuple[Any, ...]:
-            if any(value is None for value in grad_outputs):
-                raise RuntimeError("AOT partition executable requires gradients for all user outputs")
             saved_for_bw = ctx.saved_tensors
-            bw_outputs = lowered.bw_graph(*(tuple(saved_for_bw) + tuple(grad_outputs)))
+            tensor_grad_outputs = tuple(
+                gradient
+                for gradient, has_tangent in zip(grad_outputs, ctx.output_tangent_mask)
+                if has_tangent
+            )
+            if any(value is None for value in tensor_grad_outputs):
+                raise RuntimeError("AOT partition executable requires gradients for all tensor user outputs")
+            bw_outputs = lowered.bw_graph(*(tuple(saved_for_bw) + tensor_grad_outputs))
             if not isinstance(bw_outputs, tuple):
                 bw_outputs = (bw_outputs,)
             gradients = list(bw_outputs[: ctx.input_count])
