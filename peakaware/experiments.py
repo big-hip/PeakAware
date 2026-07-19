@@ -63,6 +63,12 @@ class ExperimentRecord:
     selected_peak_phase: str | None
     measured_peak_phase: str | None
     selected_peak_phase_match: bool | None
+    measured_fw_us: float | None
+    measured_bw_us: float | None
+    measured_optimizer_us: float | None
+    measured_fw_peak_bytes: int | None
+    measured_bw_peak_bytes: int | None
+    measured_optimizer_peak_bytes: int | None
     diagnostic_primary_cause: str | None
     diagnostic_normalized_saved_reduction_bytes: int | None
     diagnostic_realization_gap_bytes: int | None
@@ -213,9 +219,13 @@ def _plan_by_id(summary: dict[str, Any], plan_id: str) -> dict[str, Any] | None:
 
 
 def _config_fingerprint(config: PeakAwareConfig, device: str = "cpu") -> dict[str, Any]:
+    compile_backend = "inductor" if config.enable_inductor else "aot_eager" if config.enable_compile else "eager"
     return {
         "top_k": config.top_k,
         "device": device,
+        "enable_compile": config.enable_compile,
+        "enable_inductor": config.enable_inductor,
+        "compile_backend": compile_backend,
         "selection_objective": config.selection_objective,
         "enable_diagnostic_hints": config.enable_diagnostic_hints,
         "safety_margin_bytes": config.safety_margin_bytes,
@@ -421,6 +431,20 @@ def _record_success(
         selected_peak_phase=None if selected_peak is None else selected_peak["phase"],
         measured_peak_phase=measured.get("peak_phase"),
         selected_peak_phase_match=None if selected_correction is None else selected_correction.get("phase_match"),
+        measured_fw_us=None if "fw_us" not in phase_metrics else float(phase_metrics["fw_us"]),
+        measured_bw_us=None if "bw_us" not in phase_metrics else float(phase_metrics["bw_us"]),
+        measured_optimizer_us=None
+        if "optimizer_us" not in phase_metrics
+        else float(phase_metrics["optimizer_us"]),
+        measured_fw_peak_bytes=None
+        if "fw_peak_bytes" not in phase_metrics
+        else int(phase_metrics["fw_peak_bytes"]),
+        measured_bw_peak_bytes=None
+        if "bw_peak_bytes" not in phase_metrics
+        else int(phase_metrics["bw_peak_bytes"]),
+        measured_optimizer_peak_bytes=None
+        if "optimizer_peak_bytes" not in phase_metrics
+        else int(phase_metrics["optimizer_peak_bytes"]),
         diagnostic_primary_cause=None if diagnostic is None else diagnostic["primary_cause"],
         diagnostic_normalized_saved_reduction_bytes=expectation.get("normalized_saved_reduction"),
         diagnostic_realization_gap_bytes=expectation.get("realization_gap"),
@@ -519,6 +543,12 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         selected_peak_phase=None,
         measured_peak_phase=None,
         selected_peak_phase_match=None,
+        measured_fw_us=None,
+        measured_bw_us=None,
+        measured_optimizer_us=None,
+        measured_fw_peak_bytes=None,
+        measured_bw_peak_bytes=None,
+        measured_optimizer_peak_bytes=None,
         diagnostic_primary_cause=None,
         diagnostic_normalized_saved_reduction_bytes=None,
         diagnostic_realization_gap_bytes=None,
@@ -695,6 +725,12 @@ def experiment_records_from_dicts(rows: list[dict[str, Any]]) -> tuple[Experimen
         normalized = dict(row)
         normalized.setdefault("selected_calibrated_prediction_error_bytes", None)
         normalized.setdefault("selected_calibrated_prediction_relative_error", None)
+        normalized.setdefault("measured_fw_us", None)
+        normalized.setdefault("measured_bw_us", None)
+        normalized.setdefault("measured_optimizer_us", None)
+        normalized.setdefault("measured_fw_peak_bytes", None)
+        normalized.setdefault("measured_bw_peak_bytes", None)
+        normalized.setdefault("measured_optimizer_peak_bytes", None)
         normalized.setdefault("diagnostic_hint_candidate_match_count", 0)
         normalized.setdefault("diagnostic_hint_order_changed", False)
         normalized.setdefault("diagnostic_hint_order_delta_count", 0)
@@ -1692,6 +1728,97 @@ def summarize_simulation_error_root_causes(
     }
 
 
+def _record_compile_backend(record: ExperimentRecord) -> str:
+    backend = record.config_fingerprint.get("compile_backend")
+    if backend is not None:
+        return str(backend)
+    if record.config_fingerprint.get("enable_inductor"):
+        return "inductor"
+    if record.config_fingerprint.get("enable_compile"):
+        return "aot_eager"
+    return "eager"
+
+
+def summarize_steady_state_phases(records: tuple[ExperimentRecord, ...]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if record.status != "ok":
+            continue
+        rows.append(
+            {
+                "variant_name": record.variant_name,
+                "task_name": record.task_name,
+                "microbatch_size": record.microbatch_size,
+                "budget_bytes": record.budget_bytes,
+                "compile_backend": _record_compile_backend(record),
+                "device": record.config_fingerprint.get("device"),
+                "measurement_repeats": record.measurement_repeats,
+                "measurement_warmup_steps": record.measurement_warmup_steps,
+                "selected_plan_id": record.selected_plan_id,
+                "measured_peak_phase": record.measured_peak_phase,
+                "measured_peak_bytes": record.measured_peak_bytes,
+                "measured_step_us": record.measured_step_us,
+                "fw_us": record.measured_fw_us,
+                "bw_us": record.measured_bw_us,
+                "optimizer_us": record.measured_optimizer_us,
+                "fw_peak_bytes": record.measured_fw_peak_bytes,
+                "bw_peak_bytes": record.measured_bw_peak_bytes,
+                "optimizer_peak_bytes": record.measured_optimizer_peak_bytes,
+                "has_phase_timing": all(
+                    value is not None
+                    for value in (record.measured_fw_us, record.measured_bw_us, record.measured_optimizer_us)
+                ),
+                "has_phase_peaks": all(
+                    value is not None
+                    for value in (
+                        record.measured_fw_peak_bytes,
+                        record.measured_bw_peak_bytes,
+                        record.measured_optimizer_peak_bytes,
+                    )
+                ),
+            }
+        )
+
+    backend_summaries: dict[str, dict[str, Any]] = {}
+    for backend in sorted({row["compile_backend"] for row in rows}):
+        backend_rows = [row for row in rows if row["compile_backend"] == backend]
+        repeats = [row["measurement_repeats"] for row in backend_rows if row["measurement_repeats"] is not None]
+        warmups = [
+            row["measurement_warmup_steps"]
+            for row in backend_rows
+            if row["measurement_warmup_steps"] is not None
+        ]
+        backend_summaries[backend] = {
+            "row_count": len(backend_rows),
+            "device_counts": _counts([None if row["device"] is None else str(row["device"]) for row in backend_rows]),
+            "min_measurement_repeats": None if not repeats else min(repeats),
+            "min_measurement_warmup_steps": None if not warmups else min(warmups),
+            "steady_state_record_count": sum(
+                1
+                for row in backend_rows
+                if (row["measurement_repeats"] or 0) >= 2 and (row["measurement_warmup_steps"] or 0) >= 1
+            ),
+            "phase_timing_record_count": sum(1 for row in backend_rows if row["has_phase_timing"]),
+            "phase_peak_record_count": sum(1 for row in backend_rows if row["has_phase_peaks"]),
+            "measured_peak_phase_counts": _counts([row["measured_peak_phase"] for row in backend_rows]),
+            "mean_step_us": _mean([row["measured_step_us"] for row in backend_rows if row["measured_step_us"] is not None]),
+            "mean_fw_us": _mean([row["fw_us"] for row in backend_rows if row["fw_us"] is not None]),
+            "mean_bw_us": _mean([row["bw_us"] for row in backend_rows if row["bw_us"] is not None]),
+            "mean_optimizer_us": _mean(
+                [row["optimizer_us"] for row in backend_rows if row["optimizer_us"] is not None]
+            ),
+            "optimizer_phase_peak_count": sum(
+                1 for row in backend_rows if row["measured_peak_phase"] == "optimizer"
+            ),
+        }
+
+    return {
+        "row_count": len(rows),
+        "backend_summaries": backend_summaries,
+        "rows": rows,
+    }
+
+
 def _ensure_parent_dir(path: str | Path) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1747,6 +1874,11 @@ def write_experiment_simulation_error_json(
     top_k: int = 10,
 ) -> None:
     text = json.dumps(summarize_simulation_error_root_causes(records, top_k=top_k), indent=2, sort_keys=True)
+    _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
+
+
+def write_experiment_steady_state_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
+    text = json.dumps(summarize_steady_state_phases(records), indent=2, sort_keys=True)
     _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 

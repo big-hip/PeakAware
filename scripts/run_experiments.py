@@ -23,6 +23,7 @@ from peakaware.experiments import (
     write_experiment_json,
     write_experiment_layered_accuracy_json,
     write_experiment_simulation_error_json,
+    write_experiment_steady_state_json,
     write_experiment_summary_json,
     write_experiment_variant_summary_json,
 )
@@ -43,6 +44,8 @@ def main() -> None:
     parser.add_argument("--microbatches", default="1")
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--enable-compile", action="store_true")
+    parser.add_argument("--enable-inductor", action="store_true")
     parser.add_argument("--isolate", action="store_true")
     parser.add_argument("--diagnostic-hints", choices=("on", "off", "both"), default="on")
     parser.add_argument("--selection-objective", choices=("min_peak_then_time", "min_time_then_peak"), default="min_peak_then_time")
@@ -64,6 +67,7 @@ def main() -> None:
     parser.add_argument("--sac-baseline-json", type=Path, default=None)
     parser.add_argument("--output-layered-accuracy-json", type=Path, default=None)
     parser.add_argument("--output-simulation-error-json", type=Path, default=None)
+    parser.add_argument("--output-steady-state-json", type=Path, default=None)
     args = parser.parse_args()
     if args.matrix_passes <= 0:
         raise ValueError("--matrix-passes must be positive")
@@ -72,6 +76,8 @@ def main() -> None:
         safety_margin_bytes=0,
         safety_margin_ratio=0.0,
         top_k=args.top_k,
+        enable_compile=args.enable_compile or args.enable_inductor,
+        enable_inductor=args.enable_inductor,
         isolate_candidate_measurement=args.isolate,
         profile_db_path=args.profile_db,
         cache_root=args.cache_root,
@@ -131,6 +137,8 @@ def main() -> None:
         write_experiment_layered_accuracy_json(records, args.output_layered_accuracy_json)
     if args.output_simulation_error_json is not None:
         write_experiment_simulation_error_json(records, args.output_simulation_error_json)
+    if args.output_steady_state_json is not None:
+        write_experiment_steady_state_json(records, args.output_steady_state_json)
     print(json.dumps(experiment_records_to_dicts(records), indent=2, sort_keys=True))
 
 

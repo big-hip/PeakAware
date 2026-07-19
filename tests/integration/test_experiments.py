@@ -18,6 +18,7 @@ from peakaware.experiments import (
     summarize_hint_ablation,
     summarize_layered_simulation_accuracy,
     summarize_simulation_error_root_causes,
+    summarize_steady_state_phases,
     summarize_experiment_records,
     summarize_experiment_records_by_variant,
     write_experiment_csv,
@@ -27,6 +28,7 @@ from peakaware.experiments import (
     write_experiment_json,
     write_experiment_layered_accuracy_json,
     write_experiment_simulation_error_json,
+    write_experiment_steady_state_json,
     write_experiment_summary_json,
     write_experiment_variant_summary_json,
 )
@@ -149,6 +151,12 @@ def _minimal_record(
         selected_peak_phase="bw" if status == "ok" else None,
         measured_peak_phase="bw" if status == "ok" else None,
         selected_peak_phase_match=True if status == "ok" else None,
+        measured_fw_us=3.0 if status == "ok" else None,
+        measured_bw_us=5.0 if status == "ok" else None,
+        measured_optimizer_us=2.0 if status == "ok" else None,
+        measured_fw_peak_bytes=70 if status == "ok" else None,
+        measured_bw_peak_bytes=80 if status == "ok" else None,
+        measured_optimizer_peak_bytes=60 if status == "ok" else None,
         diagnostic_primary_cause="REMATERIALIZATION_WAVE" if status == "ok" else None,
         diagnostic_normalized_saved_reduction_bytes=32 if status == "ok" else None,
         diagnostic_realization_gap_bytes=12 if status == "ok" else None,
@@ -560,6 +568,36 @@ def test_simulation_error_root_cause_summary_explains_optimizer_offset():
     assert "diagnostic:REMATERIALIZATION_WAVE" in outlier["error_sources"]
 
 
+def test_steady_state_phase_summary_groups_compile_backend():
+    record = replace(
+        _minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80),
+        config_fingerprint={
+            "top_k": 1,
+            "device": "cuda",
+            "enable_compile": True,
+            "enable_inductor": True,
+            "compile_backend": "inductor",
+        },
+        measurement_repeats=20,
+        measurement_warmup_steps=5,
+        measured_peak_phase="optimizer",
+        measured_optimizer_peak_bytes=90,
+    )
+
+    summary = summarize_steady_state_phases((record,))
+    inductor = summary["backend_summaries"]["inductor"]
+
+    assert summary["row_count"] == 1
+    assert inductor["device_counts"] == {"cuda": 1}
+    assert inductor["min_measurement_repeats"] == 20
+    assert inductor["min_measurement_warmup_steps"] == 5
+    assert inductor["steady_state_record_count"] == 1
+    assert inductor["phase_timing_record_count"] == 1
+    assert inductor["phase_peak_record_count"] == 1
+    assert inductor["optimizer_phase_peak_count"] == 1
+    assert inductor["mean_optimizer_us"] == 2.0
+
+
 def test_experiment_matrix_writes_json_and_csv(tmp_path):
     records = run_experiment_matrix(
         task_names=("tiny_residual_w8",),
@@ -588,6 +626,9 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].status == "ok"
     assert records[0].variant_name == "default"
     assert records[0].config_fingerprint["device"] == "cpu"
+    assert records[0].config_fingerprint["enable_compile"] is False
+    assert records[0].config_fingerprint["enable_inductor"] is False
+    assert records[0].config_fingerprint["compile_backend"] == "eager"
     assert records[0].config_fingerprint["selection_objective"] == "min_peak_then_time"
     assert records[0].selected_plan_key is not None
     assert records[0].graph_key is not None
@@ -606,6 +647,9 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert hasattr(records[0], "selected_peak_phase_match")
     assert records[0].measurement_repeats == 1
     assert records[0].measurement_warmup_steps == 0
+    assert records[0].measured_fw_us is not None
+    assert records[0].measured_bw_us is not None
+    assert records[0].measured_optimizer_us is not None
     assert records[0].simulation_accuracy_candidate_count >= 1
     assert records[0].measured_plan_results
     assert records[0].diagnostic_counterfactuals
@@ -736,6 +780,7 @@ def test_summarize_experiment_records_script_regenerates_artifacts(tmp_path):
     baseline_comparison_path = output_dir / "baseline_comparison.json"
     layered_accuracy_path = output_dir / "layered_accuracy.json"
     simulation_error_path = output_dir / "simulation_error.json"
+    steady_state_path = output_dir / "steady_state.json"
     sac_path = tmp_path / "sac.json"
     records = (
         _minimal_record(
@@ -808,6 +853,8 @@ def test_summarize_experiment_records_script_regenerates_artifacts(tmp_path):
             str(layered_accuracy_path),
             "--output-simulation-error-json",
             str(simulation_error_path),
+            "--output-steady-state-json",
+            str(steady_state_path),
         ],
         check=True,
         text=True,
@@ -827,6 +874,7 @@ def test_summarize_experiment_records_script_regenerates_artifacts(tmp_path):
         str(baseline_comparison_path),
         str(layered_accuracy_path),
         str(simulation_error_path),
+        str(steady_state_path),
     }
     assert json.loads(summary_path.read_text(encoding="utf-8"))["total_records"] == 2
     assert "diagnostic_hints_on" in json.loads(variant_summary_path.read_text(encoding="utf-8"))
@@ -835,6 +883,7 @@ def test_summarize_experiment_records_script_regenerates_artifacts(tmp_path):
     assert "pytorch_sac" in baseline_comparison_payload["baseline_groups"]
     assert "D5" in json.loads(layered_accuracy_path.read_text(encoding="utf-8"))["level_summaries"]
     assert json.loads(simulation_error_path.read_text(encoding="utf-8"))["row_count"] == 2
+    assert json.loads(steady_state_path.read_text(encoding="utf-8"))["row_count"] == 2
 
 
 def test_experiment_matrix_can_write_plan_artifacts(tmp_path):
@@ -872,6 +921,7 @@ def test_experiment_writers_create_parent_directories(tmp_path):
     write_experiment_baseline_comparison_json(records, base / "baseline_comparison.json")
     write_experiment_layered_accuracy_json(records, base / "layered_accuracy.json")
     write_experiment_simulation_error_json(records, base / "simulation_error.json")
+    write_experiment_steady_state_json(records, base / "steady_state.json")
 
     assert (base / "records.json").exists()
     assert (base / "records.csv").exists()
@@ -881,6 +931,7 @@ def test_experiment_writers_create_parent_directories(tmp_path):
     assert (base / "baseline_comparison.json").exists()
     assert (base / "layered_accuracy.json").exists()
     assert (base / "simulation_error.json").exists()
+    assert (base / "steady_state.json").exists()
 
 
 def test_experiment_matrix_can_include_exact_small_graph_baseline():
@@ -929,6 +980,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     baseline_comparison_path = tmp_path / "baseline_comparison.json"
     layered_accuracy_path = tmp_path / "layered_accuracy.json"
     simulation_error_path = tmp_path / "simulation_error.json"
+    steady_state_path = tmp_path / "steady_state.json"
     plan_artifact_dir = tmp_path / "plan_artifacts"
     sac_baseline_path = tmp_path / "sac_baseline.json"
     sac_baseline_path.write_text(
@@ -972,6 +1024,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             "min_peak_then_time",
             "--measurement-repeats",
             "2",
+            "--measurement-warmup-steps",
+            "1",
             "--matrix-passes",
             "2",
             "--cache-root",
@@ -999,6 +1053,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
             str(layered_accuracy_path),
             "--output-simulation-error-json",
             str(simulation_error_path),
+            "--output-steady-state-json",
+            str(steady_state_path),
         ],
         check=True,
         text=True,
@@ -1014,6 +1070,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     baseline_comparison_payload = json.loads(baseline_comparison_path.read_text(encoding="utf-8"))
     layered_accuracy_payload = json.loads(layered_accuracy_path.read_text(encoding="utf-8"))
     simulation_error_payload = json.loads(simulation_error_path.read_text(encoding="utf-8"))
+    steady_state_payload = json.loads(steady_state_path.read_text(encoding="utf-8"))
 
     assert len(stdout_payload) == 4
     assert {record["variant_name"] for record in stdout_payload} == {
@@ -1024,7 +1081,9 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["status"] == "ok"
     assert stdout_payload[0]["selected_plan_key"]
     assert stdout_payload[0]["config_fingerprint"]["device"] == "cpu"
+    assert stdout_payload[0]["config_fingerprint"]["compile_backend"] == "eager"
     assert stdout_payload[0]["config_fingerprint"]["measurement_repeats"] == 2
+    assert stdout_payload[0]["config_fingerprint"]["measurement_warmup_steps"] == 1
     assert stdout_payload[0]["exact_plan_key"] is None
     assert stdout_payload[0]["exact_error_type"] == "PlanValidationError"
     assert stdout_payload[0]["graph_key"]
@@ -1069,11 +1128,13 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert layered_accuracy_payload["row_count"] >= 1
     assert simulation_error_payload["row_count"] == 4
     assert "tiny_mlp_w8_d3" in simulation_error_payload["task_summaries"]
+    assert steady_state_payload["backend_summaries"]["eager"]["steady_state_record_count"] == 4
     assert hint_ablation_payload["rows"][0]["conclusion"] in {
         "improved_budget",
         "improved_search",
         "improved_success",
         "improved_throughput",
+        "changed_search_order",
         "neutral",
         "regressed_budget",
         "regressed_search",

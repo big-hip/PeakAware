@@ -14,6 +14,7 @@ from .experiments import (
     summarize_hint_ablation,
     summarize_layered_simulation_accuracy,
     summarize_simulation_error_root_causes,
+    summarize_steady_state_phases,
     summarize_experiment_records,
     summarize_experiment_records_by_variant,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "summarize_hint_ablation",
     "summarize_layered_simulation_accuracy",
     "summarize_simulation_error_root_causes",
+    "summarize_steady_state_phases",
     "summarize_experiment_records",
     "summarize_experiment_records_by_variant",
     "summarize_result",
