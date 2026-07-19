@@ -212,6 +212,11 @@ class ExperimentSummary:
     exact_success_count: int
     exact_failure_count: int
     mean_selected_exact_peak_gap_bytes: float | None
+    candidate_time_ranking_record_count: int
+    candidate_time_ranking_pair_count: int
+    mean_candidate_time_spearman: float | None
+    mean_candidate_time_kendall: float | None
+    mean_candidate_time_best_rank_error: float | None
 
 
 def _plan_by_id(summary: dict[str, Any], plan_id: str) -> dict[str, Any] | None:
@@ -780,6 +785,81 @@ def _percentile(values: list[float | int], percentile: float) -> float | None:
     return ordered[index]
 
 
+def _average_ranks(values: list[float]) -> list[float]:
+    indexed = sorted(enumerate(values), key=lambda item: item[1])
+    ranks = [0.0 for _ in values]
+    index = 0
+    while index < len(indexed):
+        end = index + 1
+        while end < len(indexed) and indexed[end][1] == indexed[index][1]:
+            end += 1
+        average_rank = (index + end - 1) / 2.0
+        for original_index, _ in indexed[index:end]:
+            ranks[original_index] = average_rank
+        index = end
+    return ranks
+
+
+def _pearson(left: list[float], right: list[float]) -> float | None:
+    if len(left) < 2 or len(left) != len(right):
+        return None
+    left_mean = sum(left) / len(left)
+    right_mean = sum(right) / len(right)
+    numerator = sum((a - left_mean) * (b - right_mean) for a, b in zip(left, right))
+    left_denominator = sum((a - left_mean) ** 2 for a in left) ** 0.5
+    right_denominator = sum((b - right_mean) ** 2 for b in right) ** 0.5
+    denominator = left_denominator * right_denominator
+    return None if denominator == 0 else numerator / denominator
+
+
+def _kendall_tau_a(left: list[float], right: list[float]) -> tuple[float | None, int]:
+    concordant = 0
+    discordant = 0
+    for i in range(len(left)):
+        for j in range(i + 1, len(left)):
+            left_delta = left[i] - left[j]
+            right_delta = right[i] - right[j]
+            if left_delta == 0 or right_delta == 0:
+                continue
+            if left_delta * right_delta > 0:
+                concordant += 1
+            else:
+                discordant += 1
+    comparable = concordant + discordant
+    if comparable == 0:
+        return None, 0
+    return (concordant - discordant) / comparable, comparable
+
+
+def _candidate_time_ranking_metrics(rows: tuple[dict[str, Any], ...]) -> dict[str, float | int | None]:
+    candidates = [
+        (float(row["estimated_step_us"]), float(row["measured_step_us"]))
+        for row in rows
+        if row.get("estimated_step_us") is not None and row.get("measured_step_us") is not None
+    ]
+    if len(candidates) < 2:
+        return {
+            "candidate_count": len(candidates),
+            "pair_count": 0,
+            "spearman": None,
+            "kendall": None,
+            "best_rank_error": None,
+        }
+    estimated = [item[0] for item in candidates]
+    measured = [item[1] for item in candidates]
+    estimated_ranks = _average_ranks(estimated)
+    measured_ranks = _average_ranks(measured)
+    kendall, pair_count = _kendall_tau_a(estimated, measured)
+    best_measured_index = min(range(len(candidates)), key=lambda index: (measured[index], estimated[index], index))
+    return {
+        "candidate_count": len(candidates),
+        "pair_count": pair_count,
+        "spearman": _pearson(estimated_ranks, measured_ranks),
+        "kendall": kendall,
+        "best_rank_error": estimated_ranks[best_measured_index],
+    }
+
+
 def _counts(values: list[str | None]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for value in values:
@@ -1019,6 +1099,30 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         for record in exact_success
         if record.selected_exact_peak_gap_bytes is not None
     ]
+    candidate_time_rankings = [
+        _candidate_time_ranking_metrics(record.measured_plan_results)
+        for record in ok
+    ]
+    candidate_time_rankings = [
+        ranking
+        for ranking in candidate_time_rankings
+        if int(ranking["candidate_count"] or 0) >= 2
+    ]
+    candidate_time_spearman = [
+        float(ranking["spearman"])
+        for ranking in candidate_time_rankings
+        if ranking["spearman"] is not None
+    ]
+    candidate_time_kendall = [
+        float(ranking["kendall"])
+        for ranking in candidate_time_rankings
+        if ranking["kendall"] is not None
+    ]
+    candidate_time_best_rank_errors = [
+        float(ranking["best_rank_error"])
+        for ranking in candidate_time_rankings
+        if ranking["best_rank_error"] is not None
+    ]
     return ExperimentSummary(
         total_records=total,
         ok_records=len(ok),
@@ -1147,6 +1251,11 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         exact_success_count=len(exact_success),
         exact_failure_count=len(exact_failures),
         mean_selected_exact_peak_gap_bytes=_mean(exact_gaps),
+        candidate_time_ranking_record_count=len(candidate_time_rankings),
+        candidate_time_ranking_pair_count=sum(int(ranking["pair_count"] or 0) for ranking in candidate_time_rankings),
+        mean_candidate_time_spearman=_mean(candidate_time_spearman),
+        mean_candidate_time_kendall=_mean(candidate_time_kendall),
+        mean_candidate_time_best_rank_error=_mean(candidate_time_best_rank_errors),
     )
 
 

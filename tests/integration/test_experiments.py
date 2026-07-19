@@ -170,6 +170,7 @@ def _minimal_record(
             {
                 "plan_id": "all_save",
                 "estimated_peak_bytes": 80,
+                "estimated_step_us": 12.0,
                 "measured_peak_bytes": measured_peak_bytes + 10,
                 "measured_step_us": 12.0,
                 "measured_feasible": measured_peak_bytes + 10 <= budget_bytes,
@@ -182,6 +183,7 @@ def _minimal_record(
             {
                 "plan_id": "torch_min_cut",
                 "estimated_peak_bytes": 80,
+                "estimated_step_us": 10.0,
                 "measured_peak_bytes": measured_peak_bytes,
                 "measured_step_us": 10.0,
                 "measured_feasible": measured_peak_bytes <= budget_bytes,
@@ -194,6 +196,7 @@ def _minimal_record(
             {
                 "plan_id": "block_checkpoint",
                 "estimated_peak_bytes": measured_peak_bytes + 5,
+                "estimated_step_us": 11.0,
                 "measured_peak_bytes": measured_peak_bytes + 5,
                 "measured_step_us": 11.0,
                 "measured_feasible": measured_peak_bytes + 5 <= budget_bytes,
@@ -286,6 +289,11 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.p50_simulation_accuracy_absolute_error_bytes == 8.0
     assert summary.p90_simulation_accuracy_absolute_error_bytes == 8.0
     assert summary.max_simulation_accuracy_absolute_error_bytes == 8
+    assert summary.candidate_time_ranking_record_count == 2
+    assert summary.candidate_time_ranking_pair_count == 6
+    assert abs(summary.mean_candidate_time_spearman - 1.0) < 1e-12
+    assert summary.mean_candidate_time_kendall == 1.0
+    assert summary.mean_candidate_time_best_rank_error == 0.0
     assert summary.mean_calibrated_simulation_accuracy_absolute_error_bytes == 0.0
     assert summary.calibrated_simulation_accuracy_within_10_percent_rate == 1.0
     assert summary.mean_simulation_accuracy_absolute_relative_error == 0.075
