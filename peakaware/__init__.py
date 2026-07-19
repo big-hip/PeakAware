@@ -3,7 +3,13 @@
 from .api import optimize_training
 from .config import PeakAwareConfig
 from .contracts import CacheStats, OptimizedTrainingResult, StepResult
-from .experiments import ExperimentCase, ExperimentRecord, run_experiment_matrix
+from .experiments import (
+    ExperimentCase,
+    ExperimentRecord,
+    ExperimentSummary,
+    run_experiment_matrix,
+    summarize_experiment_records,
+)
 from .microbatch import optimize_microbatches
 from .reporting import (
     export_plan_artifact_json,
@@ -16,6 +22,7 @@ from .reporting import (
 __all__ = [
     "ExperimentCase",
     "ExperimentRecord",
+    "ExperimentSummary",
     "CacheStats",
     "PeakAwareConfig",
     "export_plan_artifact_json",
@@ -24,6 +31,7 @@ __all__ = [
     "render_text_report",
     "StepResult",
     "summarize_plan_artifact",
+    "summarize_experiment_records",
     "summarize_result",
     "optimize_microbatches",
     "optimize_training",

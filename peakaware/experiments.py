@@ -58,6 +58,26 @@ class ExperimentRecord:
     error_message: str | None = None
 
 
+@dataclass(frozen=True)
+class ExperimentSummary:
+    total_records: int
+    ok_records: int
+    failed_records: int
+    success_rate: float | None
+    budget_violation_count: int
+    budget_violation_rate: float | None
+    max_feasible_microbatch: int | None
+    mean_samples_per_second: float | None
+    mean_measured_step_us: float | None
+    mean_measured_peak_bytes: float | None
+    aggregate_cache_hit_rate: float | None
+    total_cache_hits: int
+    total_cache_misses: int
+    exact_success_count: int
+    exact_failure_count: int
+    mean_selected_exact_peak_gap_bytes: float | None
+
+
 def _record_success(
     case: ExperimentCase,
     summary: dict[str, Any],
@@ -220,8 +240,63 @@ def experiment_records_to_dicts(records: tuple[ExperimentRecord, ...]) -> list[d
     return [asdict(record) for record in records]
 
 
+def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> ExperimentSummary:
+    total = len(records)
+    ok = [record for record in records if record.status == "ok"]
+    failed_count = total - len(ok)
+    violations = [
+        record
+        for record in ok
+        if record.measured_peak_bytes is not None and record.measured_peak_bytes > record.budget_bytes
+    ]
+    feasible_microbatches = [
+        record.microbatch_size
+        for record in ok
+        if record.measured_peak_bytes is not None and record.measured_peak_bytes <= record.budget_bytes
+    ]
+    samples = [record.samples_per_second for record in ok if record.samples_per_second is not None]
+    steps = [record.measured_step_us for record in ok if record.measured_step_us is not None]
+    peaks = [record.measured_peak_bytes for record in ok if record.measured_peak_bytes is not None]
+    total_hits = sum(record.cache_total_hits for record in records)
+    total_misses = sum(record.cache_total_misses for record in records)
+    exact_success = [record for record in ok if record.exact_plan_key is not None]
+    exact_failures = [record for record in ok if record.exact_error_type is not None]
+    exact_gaps = [
+        record.selected_exact_peak_gap_bytes
+        for record in exact_success
+        if record.selected_exact_peak_gap_bytes is not None
+    ]
+    return ExperimentSummary(
+        total_records=total,
+        ok_records=len(ok),
+        failed_records=failed_count,
+        success_rate=None if total == 0 else len(ok) / total,
+        budget_violation_count=len(violations),
+        budget_violation_rate=None if not ok else len(violations) / len(ok),
+        max_feasible_microbatch=max(feasible_microbatches) if feasible_microbatches else None,
+        mean_samples_per_second=None if not samples else sum(samples) / len(samples),
+        mean_measured_step_us=None if not steps else sum(steps) / len(steps),
+        mean_measured_peak_bytes=None if not peaks else sum(peaks) / len(peaks),
+        aggregate_cache_hit_rate=None if total_hits + total_misses == 0 else total_hits / (total_hits + total_misses),
+        total_cache_hits=total_hits,
+        total_cache_misses=total_misses,
+        exact_success_count=len(exact_success),
+        exact_failure_count=len(exact_failures),
+        mean_selected_exact_peak_gap_bytes=None if not exact_gaps else sum(exact_gaps) / len(exact_gaps),
+    )
+
+
+def experiment_summary_to_dict(summary: ExperimentSummary) -> dict[str, Any]:
+    return asdict(summary)
+
+
 def write_experiment_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
     text = json.dumps(experiment_records_to_dicts(records), indent=2, sort_keys=True)
+    Path(path).write_text(text + "\n", encoding="utf-8")
+
+
+def write_experiment_summary_json(summary: ExperimentSummary, path: str | Path) -> None:
+    text = json.dumps(experiment_summary_to_dict(summary), indent=2, sort_keys=True)
     Path(path).write_text(text + "\n", encoding="utf-8")
 
 
