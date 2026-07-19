@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+import peakaware.capture.joint as capture_module
 from peakaware.capture.joint import capture_joint_graph
 from peakaware.config import PeakAwareConfig
 from peakaware.contracts import HardwareSpec, TrainingRequest
@@ -97,3 +98,27 @@ def test_aot_capture_intercepts_joint_fw_and_bw_graphs():
     lowered = lower_partition_graphs(capture.joint_module, capture.fw_module, capture.bw_module, plan, ir)
     assert lowered.fw_graph is capture.fw_module
     assert lowered.bw_graph is capture.bw_module
+
+
+def test_auto_capture_failure_records_adapter_provenance(monkeypatch):
+    model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
+    args = (torch.randn(2, 4),)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+    def fail_aot(request):
+        del request
+        raise RuntimeError("synthetic aot failure")
+
+    monkeypatch.setattr(capture_module, "_capture_with_aot_autograd", fail_aot)
+
+    capture = capture_joint_graph(_request(model, args, optimizer, PeakAwareConfig(capture_backend="auto")))
+
+    assert capture.backend == "fx"
+    assert len(capture.failures) == 1
+    failure = capture.failures[0]
+    assert failure.stage == "capture_aot"
+    assert failure.error_type == "RuntimeError"
+    assert failure.recovered is True
+    assert failure.next_fallback == "fx"
+    assert failure.applied_adapters == ("aot_autograd", "default_partition")
+    assert failure.applied_plugins == ()

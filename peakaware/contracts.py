@@ -341,6 +341,8 @@ class FailureRecord:
     message: str
     recovered: bool
     next_fallback: str | None = None
+    applied_adapters: tuple[str, ...] = ()
+    applied_plugins: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

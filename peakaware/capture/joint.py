@@ -174,6 +174,8 @@ def capture_joint_graph(request: TrainingRequest, adapter: Any | None = None) ->
                 message=str(exc),
                 recovered=True,
                 next_fallback="fx",
+                applied_adapters=("aot_autograd", "default_partition"),
+                applied_plugins=(),
             )
             return _capture_with_fx(request, failures=(failure,))
     return _capture_with_fx(request)
