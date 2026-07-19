@@ -573,6 +573,25 @@ def experiment_records_to_dicts(records: tuple[ExperimentRecord, ...]) -> list[d
     return [asdict(record) for record in records]
 
 
+def experiment_records_from_dicts(rows: list[dict[str, Any]]) -> tuple[ExperimentRecord, ...]:
+    tuple_fields = {
+        "selected_saved_value_ids",
+        "selected_effective_saved_value_ids",
+        "diagnostic_counterfactuals",
+        "measured_plan_results",
+        "fallback_plan_ids",
+        "diagnostic_hint_kinds",
+    }
+    records = []
+    for row in rows:
+        normalized = dict(row)
+        for field in tuple_fields:
+            if field in normalized:
+                normalized[field] = tuple(normalized[field])
+        records.append(ExperimentRecord(**normalized))
+    return tuple(records)
+
+
 def _safe_artifact_stem(*parts: object) -> str:
     text = "_".join(str(part) for part in parts)
     return "".join(char if char.isalnum() or char in "._-" else "_" for char in text)

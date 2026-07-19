@@ -10,6 +10,7 @@ from peakaware.config import PeakAwareConfig
 from peakaware.contracts import TrainingTaskSpec
 from peakaware.experiments import (
     ExperimentRecord,
+    experiment_records_from_dicts,
     run_experiment_matrix,
     summarize_baseline_comparisons,
     summarize_hint_ablation,
@@ -488,6 +489,67 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert "mean_optimization_total_us" in summary_payload
     assert "cache_layer_hit_rates" in summary_payload
     assert summary_payload["total_actual_joint_capture_count"] == 1
+
+
+def test_experiment_records_round_trip_from_json_dicts():
+    records = (_minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80),)
+    payload = json.loads(json.dumps([record.__dict__ for record in records]))
+
+    restored = experiment_records_from_dicts(payload)
+
+    assert restored == records
+    assert isinstance(restored[0].selected_saved_value_ids, tuple)
+    assert isinstance(restored[0].measured_plan_results, tuple)
+
+
+def test_summarize_baseline_comparison_script_reads_saved_records(tmp_path):
+    records_path = tmp_path / "records.json"
+    sac_path = tmp_path / "sac.json"
+    output_path = tmp_path / "baseline_comparison.json"
+    records_path.write_text(
+        json.dumps([_minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80).__dict__]),
+        encoding="utf-8",
+    )
+    sac_path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "task_name": "synthetic",
+                        "microbatch_size": 1,
+                        "device": "cpu",
+                        "status": "ok",
+                        "baseline_id": "pytorch_sac_prefer_recompute",
+                        "performance_result_usable": True,
+                        "correctness_passed": True,
+                        "sac_overall_peak_bytes": 95,
+                        "sac_step_us": 15.0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/summarize_baseline_comparison.py",
+            str(records_path),
+            "--sac-baseline-json",
+            str(sac_path),
+            "--output-json",
+            str(output_path),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    summary = json.loads(output_path.read_text(encoding="utf-8"))
+    assert completed.stdout.strip() == str(output_path)
+    assert "pytorch_sac" in summary["baseline_groups"]
+    assert summary["external_sac_rows_usable"] == 1
 
 
 def test_experiment_matrix_can_write_plan_artifacts(tmp_path):
