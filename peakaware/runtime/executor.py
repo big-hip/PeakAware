@@ -8,6 +8,7 @@ from torch.utils import _pytree
 
 from peakaware.config import PeakAwareConfig
 from peakaware.contracts import GuardSpec, LoweredPartition, MeasuredExecutable, StepResult
+from peakaware.guards import static_guard_value
 from peakaware.runtime.measure import measure_training_step_phases
 
 
@@ -38,7 +39,11 @@ def _runtime_guard_value(name: str, args: tuple[Any, ...], kwargs: dict[str, Any
             flat_values, _ = _pytree.tree_flatten(value)
             value = flat_values[flat_index]
         except (IndexError, ValueError) as exc:
-            raise ValueError(f"runtime guard {name} references a missing flattened tensor input") from exc
+            raise ValueError(f"runtime guard {name} references a missing flattened input") from exc
+    if field == "value":
+        if isinstance(value, Tensor):
+            raise ValueError(f"runtime guard {name} expects a non-tensor input")
+        return static_guard_value(value)
     if not isinstance(value, Tensor):
         raise ValueError(f"runtime guard {name} references a non-tensor input")
     if field == "shape":
@@ -185,6 +190,7 @@ def build_aot_partition_executable(
                 raise RuntimeError("lowered FW graph saved values must be tensors")
             ctx.save_for_backward(*saved_for_bw)
             ctx.input_count = len(flat_inputs)
+            ctx.tensor_input_mask = tuple(isinstance(value, Tensor) for value in flat_inputs)
             return user_outputs[0] if num_fwd_outputs == 1 else tuple(user_outputs)
 
         @staticmethod
@@ -200,6 +206,9 @@ def build_aot_partition_executable(
                 gradients.extend([None] * (ctx.input_count - len(gradients)))
             for index in range(len(params), total_static_input_count):
                 gradients[index] = None
+            for index, is_tensor in enumerate(ctx.tensor_input_mask):
+                if not is_tensor:
+                    gradients[index] = None
             return tuple(gradients)
 
     def executable(*args: Any, **kwargs: Any) -> Any:
@@ -217,8 +226,6 @@ def build_aot_partition_executable(
                 flat_args.extend(flat_values)
         else:
             flat_args = list(args)
-        if any(not isinstance(arg, Tensor) for arg in flat_args):
-            raise ValueError("AOT partition executable currently supports tensor inputs only")
         expected_kwarg_names = tuple(name for name, _ in kwarg_tree_specs) if kwarg_tree_specs else kwarg_names
         if set(kwargs) != set(expected_kwarg_names):
             raise ValueError(
@@ -234,8 +241,6 @@ def build_aot_partition_executable(
                 flat_kwargs.extend(flat_values)
         else:
             flat_kwargs = list(kwargs[name] for name in kwarg_names)
-        if any(not isinstance(value, Tensor) for value in flat_kwargs):
-            raise ValueError("AOT partition executable currently supports tensor kwargs only")
         outputs = _AOTPartitionFunction.apply(*(params + buffers + tuple(flat_args) + tuple(flat_kwargs)))
         flat_outputs = (outputs,) if num_fwd_outputs == 1 else tuple(outputs)
         if output_tree_spec is None:

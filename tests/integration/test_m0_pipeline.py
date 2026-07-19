@@ -65,6 +65,17 @@ class TinyNestedInput(nn.Module):
         return self.left(hidden) + self.right(batch["residual"])
 
 
+class TinyNestedStaticInput(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.left = nn.Linear(8, 2)
+        self.right = nn.Linear(8, 2)
+
+    def forward(self, batch, config=None):
+        hidden = batch["x"] * batch["scale"] + config["bias"]
+        return self.left(hidden) + self.right(batch["residual"])
+
+
 def squared_mean_loss(out):
     return out.pow(2).mean()
 
@@ -336,6 +347,54 @@ def test_optimize_training_uses_aot_partition_runtime_with_nested_tensor_inputs(
     assert any(guard.name == "arg0.flat0.shape" for guard in result.executor.guards)
     assert any(guard.name == "kw.scale.flat0.shape" for guard in result.executor.guards)
     assert any(not torch.equal(left, right) for left, right in zip(before, after))
+
+
+def test_optimize_training_uses_aot_partition_runtime_with_nested_static_inputs():
+    torch.manual_seed(0)
+    model = TinyNestedStaticInput()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    batch = {
+        "x": torch.randn(4, 8),
+        "scale": 2.0,
+        "residual": torch.randn(4, 8),
+    }
+    config_arg = {"bias": -0.5}
+
+    result = optimize_training(
+        model,
+        (batch,),
+        example_kwargs={"config": config_arg},
+        loss_fn=squared_mean_loss,
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 28,
+        config=PeakAwareConfig(
+            capture_backend="aot",
+            enable_compile=False,
+            top_k=2,
+            safety_margin_bytes=0,
+            safety_margin_ratio=0.0,
+        ),
+    )
+
+    before = tuple(param.detach().clone() for param in model.parameters())
+    step = result.executor.step(batch, config=config_arg)
+    after = tuple(param.detach().clone() for param in model.parameters())
+
+    assert step.optimizer_step_performed is True
+    assert step.metrics["aot_partition_runtime"] == 1
+    assert result.dry_run is not None and result.dry_run.replay_mode == "lowered_aot"
+    assert result.executor.aot_partition_runtime is True
+    assert any(guard.name.endswith(".value") for guard in result.executor.guards)
+    assert any(not torch.equal(left, right) for left, right in zip(before, after))
+
+    changed_batch = dict(batch, scale=3.0)
+    params_before_rejected_step = tuple(param.detach().clone() for param in model.parameters())
+    with pytest.raises(ValueError, match="runtime guard failed"):
+        result.executor.step(changed_batch, config=config_arg)
+    assert all(
+        torch.equal(expected, actual)
+        for expected, actual in zip(params_before_rejected_step, model.parameters())
+    )
 
 
 def test_optimize_training_rejects_requires_grad_kwargs():

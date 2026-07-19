@@ -193,12 +193,6 @@ def _placeholder_names(graph: torch.fx.GraphModule) -> tuple[str, ...]:
 
 
 def _aot_partition_replay_supported(lowered: LoweredPartition, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
-    flat_args, _ = _pytree.tree_flatten(args)
-    flat_kwargs, _ = _pytree.tree_flatten(kwargs)
-    if any(not isinstance(arg, Tensor) for arg in flat_args):
-        return False
-    if any(not isinstance(value, Tensor) for value in flat_kwargs):
-        return False
     fw_placeholders = _placeholder_names(lowered.fw_graph)
     bw_placeholders = _placeholder_names(lowered.bw_graph)
     return (
@@ -299,8 +293,6 @@ def compare_lowered_partition_with_baseline(
             flat_kwargs.extend(flat_values)
     else:
         flat_kwargs = list(kwargs[name] for name in ordered_kwarg_names)
-    if any(not isinstance(value, Tensor) for value in tuple(flat_args) + tuple(flat_kwargs)):
-        raise PartitionReplayUnsupported("lowered partition replay only supports tensor inputs")
     flat_user_inputs = tuple(flat_args) + tuple(flat_kwargs)
 
     def restore_all() -> None:

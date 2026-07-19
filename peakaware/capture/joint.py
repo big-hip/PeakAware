@@ -10,6 +10,7 @@ from torch.utils import _pytree
 
 from peakaware.contracts import CapturedJointGraph, FailureRecord, GuardSpec, ParameterBinding, TrainingRequest
 from peakaware.errors import CaptureError
+from peakaware.guards import static_guard_value
 
 from .fake_inputs import assert_no_large_real_storage
 from .graph_key import build_graph_key
@@ -38,30 +39,23 @@ def _collect_parameter_mapping(request: TrainingRequest) -> tuple[ParameterBindi
 
 def _collect_guards(request: TrainingRequest) -> tuple[GuardSpec, ...]:
     guards: list[GuardSpec] = []
+
+    def append_leaf_guards(prefix: str, value: Any) -> None:
+        flat_values, tree_spec = _pytree.tree_flatten(value)
+        nested = not tree_spec.is_leaf()
+        for flat_index, leaf in enumerate(flat_values):
+            leaf_prefix = f"{prefix}.flat{flat_index}" if nested else prefix
+            if isinstance(leaf, torch.Tensor):
+                guards.append(GuardSpec(f"{leaf_prefix}.shape", str(tuple(leaf.shape))))
+                guards.append(GuardSpec(f"{leaf_prefix}.dtype", str(leaf.dtype)))
+                guards.append(GuardSpec(f"{leaf_prefix}.device", str(leaf.device)))
+            else:
+                guards.append(GuardSpec(f"{leaf_prefix}.value", static_guard_value(leaf)))
+
     for index, arg in enumerate(request.example_args):
-        if isinstance(arg, torch.Tensor):
-            guards.append(GuardSpec(f"arg{index}.shape", str(tuple(arg.shape))))
-            guards.append(GuardSpec(f"arg{index}.dtype", str(arg.dtype)))
-            guards.append(GuardSpec(f"arg{index}.device", str(arg.device)))
-        else:
-            flat_values, _ = _pytree.tree_flatten(arg)
-            for flat_index, value in enumerate(flat_values):
-                if isinstance(value, torch.Tensor):
-                    guards.append(GuardSpec(f"arg{index}.flat{flat_index}.shape", str(tuple(value.shape))))
-                    guards.append(GuardSpec(f"arg{index}.flat{flat_index}.dtype", str(value.dtype)))
-                    guards.append(GuardSpec(f"arg{index}.flat{flat_index}.device", str(value.device)))
+        append_leaf_guards(f"arg{index}", arg)
     for name, arg in sorted(request.example_kwargs.items()):
-        if isinstance(arg, torch.Tensor):
-            guards.append(GuardSpec(f"kw.{name}.shape", str(tuple(arg.shape))))
-            guards.append(GuardSpec(f"kw.{name}.dtype", str(arg.dtype)))
-            guards.append(GuardSpec(f"kw.{name}.device", str(arg.device)))
-        else:
-            flat_values, _ = _pytree.tree_flatten(arg)
-            for flat_index, value in enumerate(flat_values):
-                if isinstance(value, torch.Tensor):
-                    guards.append(GuardSpec(f"kw.{name}.flat{flat_index}.shape", str(tuple(value.shape))))
-                    guards.append(GuardSpec(f"kw.{name}.flat{flat_index}.dtype", str(value.dtype)))
-                    guards.append(GuardSpec(f"kw.{name}.flat{flat_index}.device", str(value.device)))
+        append_leaf_guards(f"kw.{name}", arg)
     guards.append(GuardSpec("torch_version", torch.__version__))
     return tuple(guards)
 

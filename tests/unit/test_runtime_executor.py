@@ -50,6 +50,21 @@ def test_runtime_guards_validate_nested_tensor_leaves():
         validate_runtime_guards(guards, ({"x": torch.ones(4, 3), "y": torch.ones(2, 3)},), kwargs)
 
 
+def test_runtime_guards_reject_nested_static_value_drift():
+    args = ({"x": torch.ones(2, 3), "scale": 2.5},)
+    kwargs = {"config": {"bias": 1.0, "training": True}}
+    guards = (
+        GuardSpec("arg0.flat1.value", "builtins.float:2.5"),
+        GuardSpec("kw.config.flat0.value", "builtins.float:1.0"),
+        GuardSpec("kw.config.flat1.value", "builtins.bool:true"),
+    )
+
+    validate_runtime_guards(guards, args, kwargs)
+
+    with pytest.raises(ValueError, match="runtime guard failed"):
+        validate_runtime_guards(guards, ({"x": torch.ones(2, 3), "scale": 3.0},), kwargs)
+
+
 def test_executor_rejects_guard_drift_before_zero_grad_or_step():
     torch.manual_seed(0)
     model = nn.Linear(3, 1)
