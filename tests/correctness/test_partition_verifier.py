@@ -18,6 +18,18 @@ from peakaware.partition.verifier import run_aot_eager_dry_run
 from peakaware.search.plan import build_recompute_plan
 
 
+class TiedLinearModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.shared = nn.Linear(4, 4)
+        self.out = nn.Linear(4, 1)
+
+    def forward(self, x):
+        hidden = self.shared(x).relu()
+        reused = self.shared(hidden).relu()
+        return self.out(reused)
+
+
 def test_dry_run_compares_loss_and_gradients():
     torch.manual_seed(0)
     model = nn.Sequential(nn.Linear(3, 3), nn.Dropout(p=0.1), nn.Linear(3, 1))
@@ -51,6 +63,50 @@ def test_dry_run_compares_loss_and_gradients():
         args=args,
         kwargs={},
         loss_fn=lambda out: out.sum(),
+        atol=1e-5,
+        rtol=1e-4,
+        ir=ir,
+    )
+
+    assert result.abi_valid
+    assert result.outputs_match
+    assert result.gradients_match
+
+
+def test_dry_run_handles_tied_shared_weights():
+    torch.manual_seed(0)
+    model = TiedLinearModel()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    args = (torch.randn(2, 4),)
+    request = TrainingRequest(
+        model=model,
+        example_args=args,
+        example_kwargs={},
+        loss_fn=lambda out: out.pow(2).mean(),
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 30,
+        config=PeakAwareConfig(),
+        optimizer_spec=build_optimizer_spec(optimizer, model),
+        hardware=HardwareSpec("cpu", False, None),
+        request_key="tied",
+    )
+    capture = capture_joint_graph(request)
+    ir, report = build_joint_ir(capture)
+    assert report.valid
+    plan = build_recompute_plan(
+        ir,
+        budget_bytes=1 << 30,
+        saved_value_ids=frozenset(v.id for v in ir.values if v.phase == "fw"),
+        label="all_save",
+    )
+    lowered = partition_joint_graph(capture.joint_module, plan, ir)
+
+    result = run_aot_eager_dry_run(
+        lowered,
+        model=model,
+        args=args,
+        kwargs={},
+        loss_fn=lambda out: out.pow(2).mean(),
         atol=1e-5,
         rtol=1e-4,
         ir=ir,
