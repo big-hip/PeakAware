@@ -653,6 +653,112 @@ def test_summarize_baseline_comparison_script_reads_saved_records(tmp_path):
     assert summary["external_sac_rows_usable"] == 1
 
 
+def test_summarize_experiment_records_script_regenerates_artifacts(tmp_path):
+    records_path = tmp_path / "records.json"
+    output_dir = tmp_path / "derived"
+    summary_path = output_dir / "summary.json"
+    variant_summary_path = output_dir / "variant_summary.json"
+    hint_ablation_path = output_dir / "hint_ablation.json"
+    cache_reuse_path = output_dir / "cache_reuse.json"
+    baseline_comparison_path = output_dir / "baseline_comparison.json"
+    layered_accuracy_path = output_dir / "layered_accuracy.json"
+    sac_path = tmp_path / "sac.json"
+    records = (
+        _minimal_record(
+            status="ok",
+            budget_bytes=100,
+            measured_peak_bytes=80,
+            variant_name="diagnostic_hints_on",
+            diagnostic_hints_enabled=True,
+            cache_total_hits=0,
+            cache_total_misses=2,
+            cache_layer_hits={},
+            cache_layer_misses={"capture": 1, "analysis": 1},
+            matrix_pass_index=0,
+            matrix_pass_count=2,
+        ),
+        _minimal_record(
+            status="ok",
+            budget_bytes=100,
+            measured_peak_bytes=80,
+            variant_name="diagnostic_hints_on",
+            diagnostic_hints_enabled=True,
+            cache_total_hits=3,
+            cache_total_misses=0,
+            cache_layer_hits={"capture": 1, "analysis": 1, "executable": 1},
+            cache_layer_misses={},
+            matrix_pass_index=1,
+            matrix_pass_count=2,
+        ),
+    )
+    records_path.write_text(json.dumps([record.__dict__ for record in records]), encoding="utf-8")
+    sac_path.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "task_name": "synthetic",
+                        "microbatch_size": 1,
+                        "device": "cpu",
+                        "status": "ok",
+                        "baseline_id": "pytorch_sac_prefer_recompute",
+                        "performance_result_usable": True,
+                        "correctness_passed": True,
+                        "sac_overall_peak_bytes": 95,
+                        "sac_step_us": 15.0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/summarize_experiment_records.py",
+            str(records_path),
+            "--sac-baseline-json",
+            str(sac_path),
+            "--output-summary-json",
+            str(summary_path),
+            "--output-variant-summary-json",
+            str(variant_summary_path),
+            "--output-hint-ablation-json",
+            str(hint_ablation_path),
+            "--output-cache-reuse-json",
+            str(cache_reuse_path),
+            "--output-baseline-comparison-json",
+            str(baseline_comparison_path),
+            "--output-layered-accuracy-json",
+            str(layered_accuracy_path),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    stdout_payload = json.loads(completed.stdout)
+    cache_reuse_payload = json.loads(cache_reuse_path.read_text(encoding="utf-8"))
+    baseline_comparison_payload = json.loads(baseline_comparison_path.read_text(encoding="utf-8"))
+
+    assert stdout_payload["record_count"] == 2
+    assert set(stdout_payload["written_paths"]) == {
+        str(summary_path),
+        str(variant_summary_path),
+        str(hint_ablation_path),
+        str(cache_reuse_path),
+        str(baseline_comparison_path),
+        str(layered_accuracy_path),
+    }
+    assert json.loads(summary_path.read_text(encoding="utf-8"))["total_records"] == 2
+    assert "diagnostic_hints_on" in json.loads(variant_summary_path.read_text(encoding="utf-8"))
+    assert json.loads(hint_ablation_path.read_text(encoding="utf-8"))["pair_count"] == 0
+    assert cache_reuse_payload["mean_warm_capture_cache_hit_rate"] == 1.0
+    assert "pytorch_sac" in baseline_comparison_payload["baseline_groups"]
+    assert "D5" in json.loads(layered_accuracy_path.read_text(encoding="utf-8"))["level_summaries"]
+
+
 def test_experiment_matrix_can_write_plan_artifacts(tmp_path):
     artifact_dir = tmp_path / "plans"
     records = run_experiment_matrix(
