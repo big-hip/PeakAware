@@ -376,6 +376,7 @@ class _CandidateValidation:
     cache_hit: bool = False
     lowered: LoweredPartition | None = None
     kwarg_names: tuple[str, ...] = ()
+    num_fwd_outputs: int = 1
 
 
 def _candidate_uses_activation_checkpoint(candidate: EvaluatedPlan) -> bool:
@@ -472,6 +473,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                 cache_hit=True,
                 lowered=lowered if aot_partition_runtime else None,
                 kwarg_names=kwarg_names if aot_partition_runtime else (),
+                num_fwd_outputs=capture.num_fwd_outputs,
             )
     measured = make_measured_executable(
         candidate.plan.plan_id,
@@ -494,6 +496,7 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         ),
         lowered=lowered if aot_partition_runtime else None,
         kwarg_names=kwarg_names if aot_partition_runtime else (),
+        num_fwd_outputs=capture.num_fwd_outputs,
     )
 
 
@@ -533,6 +536,7 @@ def _measure_candidate_for_parent(
         executable_override = build_aot_partition_executable(
             validation.lowered,
             executor.model,
+            num_fwd_outputs=validation.num_fwd_outputs,
             kwarg_names=validation.kwarg_names,
         )
     candidate_executor = build_training_step_executor(

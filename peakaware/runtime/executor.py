@@ -150,8 +150,8 @@ def build_aot_partition_executable(
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] = (),
 ) -> Callable[..., Any]:
-    if num_fwd_outputs != 1:
-        raise ValueError("AOT partition executable currently supports exactly one tensor user output")
+    if num_fwd_outputs < 1:
+        raise ValueError("AOT partition executable requires at least one tensor user output")
     params = tuple(model.parameters())
     buffers = tuple(model.buffers())
     state_input_count = len(params) + len(buffers)
@@ -159,21 +159,26 @@ def build_aot_partition_executable(
 
     class _AOTPartitionFunction(torch.autograd.Function):
         @staticmethod
-        def forward(ctx: Any, *flat_inputs: Any) -> Tensor:
+        def forward(ctx: Any, *flat_inputs: Any) -> Any:
             fw_outputs = lowered.fw_graph(*flat_inputs)
             if not isinstance(fw_outputs, tuple):
                 fw_outputs = (fw_outputs,)
-            if len(fw_outputs) < 1 or not isinstance(fw_outputs[0], Tensor):
-                raise RuntimeError("lowered FW graph must return a tensor user output")
-            saved_for_bw = fw_outputs[1:]
+            if len(fw_outputs) < num_fwd_outputs:
+                raise RuntimeError("lowered FW graph returned fewer user outputs than expected")
+            user_outputs = fw_outputs[:num_fwd_outputs]
+            if any(not isinstance(value, Tensor) for value in user_outputs):
+                raise RuntimeError("lowered FW graph user outputs must be tensors")
+            saved_for_bw = fw_outputs[num_fwd_outputs:]
             if any(not isinstance(value, Tensor) for value in saved_for_bw):
                 raise RuntimeError("lowered FW graph saved values must be tensors")
             ctx.save_for_backward(*saved_for_bw)
             ctx.input_count = len(flat_inputs)
-            return fw_outputs[0]
+            return user_outputs[0] if num_fwd_outputs == 1 else tuple(user_outputs)
 
         @staticmethod
         def backward(ctx: Any, *grad_outputs: Any) -> tuple[Any, ...]:
+            if any(value is None for value in grad_outputs):
+                raise RuntimeError("AOT partition executable requires gradients for all user outputs")
             saved_for_bw = ctx.saved_tensors
             bw_outputs = lowered.bw_graph(*(tuple(saved_for_bw) + tuple(grad_outputs)))
             if not isinstance(bw_outputs, tuple):

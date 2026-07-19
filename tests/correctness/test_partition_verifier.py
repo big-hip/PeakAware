@@ -426,6 +426,90 @@ def test_lowered_aot_partition_executable_supports_tensor_kwargs():
         assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
 
 
+def test_lowered_aot_partition_executable_supports_multiple_tensor_outputs():
+    torch.manual_seed(0)
+
+    class MultiOutputModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.left = nn.Linear(4, 2)
+            self.right = nn.Linear(4, 2)
+
+        def forward(self, x):
+            return self.left(x), self.right(x).relu()
+
+    def loss_fn(outputs):
+        left, right = outputs
+        return left.pow(2).mean() + right.pow(2).mean()
+
+    model = MultiOutputModel()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    args = (torch.randn(2, 4),)
+    request = TrainingRequest(
+        model=model,
+        example_args=args,
+        example_kwargs={},
+        loss_fn=loss_fn,
+        optimizer=optimizer,
+        memory_budget_bytes=1 << 30,
+        config=PeakAwareConfig(capture_backend="aot"),
+        optimizer_spec=build_optimizer_spec(optimizer, model),
+        hardware=HardwareSpec("cpu", False, None),
+        request_key="partition-executable-multi-output",
+    )
+    capture = capture_joint_graph(request)
+    ir, report = build_joint_ir(capture)
+    assert report.valid
+    assert capture.num_fwd_outputs == 2
+    plan = build_recompute_plan(
+        ir,
+        budget_bytes=1 << 30,
+        saved_value_ids=frozenset(value.id for value in ir.values if value.phase == "fw"),
+        label="all_save",
+    )
+    lowered = partition_joint_graph(
+        capture.joint_module,
+        plan,
+        ir,
+        num_fwd_outputs=capture.num_fwd_outputs,
+        static_lifetime_input_indices=capture.static_lifetime_input_indices,
+    )
+    dry_run = run_aot_eager_dry_run(
+        lowered,
+        model=model,
+        args=args,
+        kwargs={},
+        loss_fn=loss_fn,
+        atol=1e-6,
+        rtol=1e-5,
+        ir=ir,
+        num_fwd_outputs=capture.num_fwd_outputs,
+    )
+    executable = build_aot_partition_executable(
+        lowered,
+        model,
+        num_fwd_outputs=capture.num_fwd_outputs,
+    )
+
+    optimizer.zero_grad(set_to_none=True)
+    eager_loss = loss_fn(model(*args))
+    eager_loss.backward()
+    eager_grads = tuple(param.grad.detach().clone() for param in model.parameters())
+    optimizer.zero_grad(set_to_none=True)
+    partition_outputs = executable(*args)
+    partition_loss = loss_fn(partition_outputs)
+    partition_loss.backward()
+    partition_grads = tuple(param.grad.detach().clone() for param in model.parameters())
+
+    assert dry_run.replay_mode == "lowered_aot"
+    assert dry_run.gradients_match
+    assert isinstance(partition_outputs, tuple)
+    assert len(partition_outputs) == 2
+    assert torch.allclose(partition_loss.detach(), eager_loss.detach(), atol=1e-6, rtol=1e-5)
+    for actual, expected in zip(partition_grads, eager_grads):
+        assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
+
+
 def test_lowered_aot_partition_replay_passes_model_buffers_as_primals():
     torch.manual_seed(0)
     model = nn.Sequential(
