@@ -1296,6 +1296,48 @@ def summarize_effect_acceptance(records: tuple[ExperimentRecord, ...]) -> dict[s
     positive_reductions = [value for value in reductions if value > 0]
     nonnegative_reductions = [value for value in reductions if value >= 0]
     speedups_ge_one = [value for value in speedups if value >= 1.0]
+    pareto_rows = [
+        record
+        for record in ok
+        if record.measured_peak_bytes is not None
+        and record.all_save_measured_peak_bytes is not None
+        and record.selected_samples_per_second_speedup_vs_all_save is not None
+    ]
+    same_or_lower_peak_rows = [
+        record
+        for record in pareto_rows
+        if int(record.measured_peak_bytes) <= int(record.all_save_measured_peak_bytes)
+    ]
+    same_or_lower_peak_speedups = [
+        float(record.selected_samples_per_second_speedup_vs_all_save)
+        for record in same_or_lower_peak_rows
+    ]
+    same_or_lower_peak_speedups_ge_one = [
+        value
+        for value in same_or_lower_peak_speedups
+        if value >= 1.0
+    ]
+    pareto_win_rows = [
+        record
+        for record in same_or_lower_peak_rows
+        if float(record.selected_samples_per_second_speedup_vs_all_save or 0.0) >= 1.0
+    ]
+    strict_pareto_win_rows = [
+        record
+        for record in pareto_win_rows
+        if int(record.measured_peak_bytes or 0) < int(record.all_save_measured_peak_bytes or 0)
+        or float(record.selected_samples_per_second_speedup_vs_all_save or 0.0) > 1.0
+    ]
+    dominated_by_all_save_rows = [
+        record
+        for record in pareto_rows
+        if int(record.measured_peak_bytes) >= int(record.all_save_measured_peak_bytes)
+        and float(record.selected_samples_per_second_speedup_vs_all_save) <= 1.0
+        and (
+            int(record.measured_peak_bytes) > int(record.all_save_measured_peak_bytes)
+            or float(record.selected_samples_per_second_speedup_vs_all_save) < 1.0
+        )
+    ]
 
     def ratio(count: int, denominator: int) -> float | None:
         return None if denominator == 0 else count / denominator
@@ -1321,6 +1363,17 @@ def summarize_effect_acceptance(records: tuple[ExperimentRecord, ...]) -> dict[s
         "speedup_observation_count": len(speedups),
         "speedup_ge_one_rate": ratio(len(speedups_ge_one), len(speedups)),
         "mean_samples_per_second_speedup_vs_all_save": _mean(speedups),
+        "pareto_observation_count": len(pareto_rows),
+        "same_or_lower_peak_observation_count": len(same_or_lower_peak_rows),
+        "same_or_lower_peak_speedup_ge_one_count": len(same_or_lower_peak_speedups_ge_one),
+        "same_or_lower_peak_speedup_ge_one_rate": ratio(
+            len(same_or_lower_peak_speedups_ge_one),
+            len(same_or_lower_peak_speedups),
+        ),
+        "mean_same_or_lower_peak_speedup_vs_all_save": _mean(same_or_lower_peak_speedups),
+        "pareto_win_count": len(pareto_win_rows),
+        "strict_pareto_win_count": len(strict_pareto_win_rows),
+        "dominated_by_all_save_count": len(dominated_by_all_save_rows),
     }
 
 

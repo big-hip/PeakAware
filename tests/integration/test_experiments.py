@@ -555,6 +555,29 @@ def test_effect_acceptance_summary_reports_budget_peak_and_speedup_counts():
     assert summary["speedup_ge_one_count"] == 1
     assert summary["positive_peak_reduction_rate"] == 0.5
     assert summary["speedup_ge_one_rate"] == 0.5
+    assert summary["pareto_observation_count"] == 2
+    assert summary["same_or_lower_peak_observation_count"] == 2
+    assert summary["same_or_lower_peak_speedup_ge_one_count"] == 1
+    assert summary["same_or_lower_peak_speedup_ge_one_rate"] == 0.5
+    assert abs(summary["mean_same_or_lower_peak_speedup_vs_all_save"] - 1.05) < 1e-12
+    assert summary["pareto_win_count"] == 1
+    assert summary["strict_pareto_win_count"] == 1
+    assert summary["dominated_by_all_save_count"] == 0
+
+
+def test_effect_acceptance_pareto_tie_is_not_counted_as_dominated():
+    record = replace(
+        _minimal_record(status="ok", budget_bytes=100, measured_peak_bytes=80),
+        all_save_measured_peak_bytes=80,
+        selected_samples_per_second_speedup_vs_all_save=1.0,
+        selected_measured_peak_reduction_vs_all_save_bytes=0,
+    )
+
+    summary = summarize_effect_acceptance((record,))
+
+    assert summary["pareto_win_count"] == 1
+    assert summary["strict_pareto_win_count"] == 0
+    assert summary["dominated_by_all_save_count"] == 0
 
 
 def test_layered_simulation_accuracy_summarizes_diagnostic_counterfactuals():
