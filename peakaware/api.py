@@ -59,7 +59,7 @@ ANALYSIS_SCHEMA_VERSION = "analysis-v3-search-diagnostics"
 
 
 def _hardware_spec(args: tuple[Any, ...], kwargs: dict[str, Any]) -> HardwareSpec:
-    devices = [value.device for value in list(args) + list(kwargs.values()) if isinstance(value, Tensor)]
+    devices = [value.device for value in _iter_tensors(args) + _iter_tensors(kwargs)]
     device = str(devices[0]) if devices else ("cuda" if torch.cuda.is_available() else "cpu")
     total = None
     if torch.cuda.is_available() and str(device).startswith("cuda"):
@@ -78,7 +78,7 @@ def _request_key(
     h.update(model.__class__.__qualname__.encode("utf-8"))
     h.update(str(budget).encode("utf-8"))
     h.update(repr(config.precision_fingerprint()).encode("utf-8"))
-    for value in list(args) + [kwargs[k] for k in sorted(kwargs)]:
+    for value in _iter_tensors(args) + _iter_tensors({key: kwargs[key] for key in sorted(kwargs)}):
         if isinstance(value, Tensor):
             h.update(str(tuple(value.shape)).encode("utf-8"))
             h.update(str(value.dtype).encode("utf-8"))
@@ -211,8 +211,8 @@ def _iter_tensors(value: Any) -> tuple[Tensor, ...]:
         if isinstance(item, Tensor):
             found.append(item)
         elif isinstance(item, dict):
-            for nested in item.values():
-                collect(nested)
+            for key in sorted(item):
+                collect(item[key])
         elif isinstance(item, (tuple, list)):
             for nested in item:
                 collect(nested)
@@ -325,6 +325,8 @@ def _dry_run_candidate(
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] | None = None,
     output_tree_spec: Any | None = None,
+    arg_tree_specs: tuple[Any, ...] = (),
+    kwarg_tree_specs: tuple[tuple[str, Any], ...] = (),
 ) -> DryRunResult:
     return run_aot_eager_dry_run(
         lowered,
@@ -338,6 +340,8 @@ def _dry_run_candidate(
         num_fwd_outputs=num_fwd_outputs,
         kwarg_names=kwarg_names,
         output_tree_spec=output_tree_spec,
+        arg_tree_specs=arg_tree_specs,
+        kwarg_tree_specs=kwarg_tree_specs,
     )
 
 
@@ -380,6 +384,8 @@ class _CandidateValidation:
     kwarg_names: tuple[str, ...] = ()
     num_fwd_outputs: int = 1
     output_tree_spec: Any | None = None
+    arg_tree_specs: tuple[Any, ...] = ()
+    kwarg_tree_specs: tuple[tuple[str, Any], ...] = ()
 
 
 def _candidate_uses_activation_checkpoint(candidate: EvaluatedPlan) -> bool:
@@ -417,6 +423,8 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         num_fwd_outputs=capture.num_fwd_outputs,
         kwarg_names=kwarg_names,
         output_tree_spec=capture.output_tree_spec,
+        arg_tree_specs=capture.arg_tree_specs,
+        kwarg_tree_specs=capture.kwarg_tree_specs,
     )
     if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
         return _CandidateValidation(dry_run=dry_run, measurement=None)
@@ -431,6 +439,8 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                 num_fwd_outputs=capture.num_fwd_outputs,
                 kwarg_names=kwarg_names,
                 output_tree_spec=capture.output_tree_spec,
+                arg_tree_specs=capture.arg_tree_specs,
+                kwarg_tree_specs=capture.kwarg_tree_specs,
             )
             activation_checkpoint = False
             aot_partition_runtime = True
@@ -480,6 +490,8 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                 kwarg_names=kwarg_names if aot_partition_runtime else (),
                 num_fwd_outputs=capture.num_fwd_outputs,
                 output_tree_spec=capture.output_tree_spec if aot_partition_runtime else None,
+                arg_tree_specs=capture.arg_tree_specs if aot_partition_runtime else (),
+                kwarg_tree_specs=capture.kwarg_tree_specs if aot_partition_runtime else (),
             )
     measured = make_measured_executable(
         candidate.plan.plan_id,
@@ -504,6 +516,8 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         kwarg_names=kwarg_names if aot_partition_runtime else (),
         num_fwd_outputs=capture.num_fwd_outputs,
         output_tree_spec=capture.output_tree_spec if aot_partition_runtime else None,
+        arg_tree_specs=capture.arg_tree_specs if aot_partition_runtime else (),
+        kwarg_tree_specs=capture.kwarg_tree_specs if aot_partition_runtime else (),
     )
 
 
@@ -546,6 +560,8 @@ def _measure_candidate_for_parent(
             num_fwd_outputs=validation.num_fwd_outputs,
             kwarg_names=validation.kwarg_names,
             output_tree_spec=validation.output_tree_spec,
+            arg_tree_specs=validation.arg_tree_specs,
+            kwarg_tree_specs=validation.kwarg_tree_specs,
         )
     candidate_executor = build_training_step_executor(
         executor.model,

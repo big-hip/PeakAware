@@ -35,6 +35,21 @@ def test_runtime_guards_reject_shape_drift():
         validate_runtime_guards(guards, (torch.ones(4, 3),), {})
 
 
+def test_runtime_guards_validate_nested_tensor_leaves():
+    args = ({"x": torch.ones(2, 3), "y": torch.ones(2, 3)},)
+    kwargs = {"scale": {"s": torch.ones(2, 3)}}
+    guards = (
+        GuardSpec("arg0.flat0.shape", "(2, 3)"),
+        GuardSpec("arg0.flat1.dtype", "torch.float32"),
+        GuardSpec("kw.scale.flat0.device", "cpu"),
+    )
+
+    validate_runtime_guards(guards, args, kwargs)
+
+    with pytest.raises(ValueError, match="runtime guard failed"):
+        validate_runtime_guards(guards, ({"x": torch.ones(4, 3), "y": torch.ones(2, 3)},), kwargs)
+
+
 def test_executor_rejects_guard_drift_before_zero_grad_or_step():
     torch.manual_seed(0)
     model = nn.Linear(3, 1)

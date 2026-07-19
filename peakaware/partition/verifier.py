@@ -193,9 +193,11 @@ def _placeholder_names(graph: torch.fx.GraphModule) -> tuple[str, ...]:
 
 
 def _aot_partition_replay_supported(lowered: LoweredPartition, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
-    if any(not isinstance(arg, Tensor) for arg in args):
+    flat_args, _ = _pytree.tree_flatten(args)
+    flat_kwargs, _ = _pytree.tree_flatten(kwargs)
+    if any(not isinstance(arg, Tensor) for arg in flat_args):
         return False
-    if any(not isinstance(value, Tensor) for value in kwargs.values()):
+    if any(not isinstance(value, Tensor) for value in flat_kwargs):
         return False
     fw_placeholders = _placeholder_names(lowered.fw_graph)
     bw_placeholders = _placeholder_names(lowered.bw_graph)
@@ -248,6 +250,8 @@ def compare_lowered_partition_with_baseline(
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] | None = None,
     output_tree_spec: Any | None = None,
+    arg_tree_specs: tuple[Any, ...] = (),
+    kwarg_tree_specs: tuple[tuple[str, Any], ...] = (),
     atol: float,
     rtol: float,
 ) -> tuple[bool, str | None]:
@@ -262,13 +266,42 @@ def compare_lowered_partition_with_baseline(
     cuda_rng = _cuda_rng_state()
     params = tuple(model.parameters())
     state_inputs = params + tuple(model.buffers())
-    ordered_kwarg_names = tuple(kwargs) if kwarg_names is None else kwarg_names
+    if arg_tree_specs:
+        if len(args) != len(arg_tree_specs):
+            raise PartitionReplayUnsupported(
+                "lowered partition replay args must match captured args: "
+                f"expected {len(arg_tree_specs)}, got {len(args)}"
+            )
+        flat_args: list[Any] = []
+        for arg, expected_spec in zip(args, arg_tree_specs):
+            flat_values, actual_spec = _pytree.tree_flatten(arg)
+            if actual_spec != expected_spec:
+                raise PartitionReplayUnsupported("lowered partition replay arg pytree structure changed")
+            flat_args.extend(flat_values)
+    else:
+        flat_args = list(args)
+    ordered_kwarg_names = (
+        tuple(name for name, _ in kwarg_tree_specs)
+        if kwarg_tree_specs
+        else (tuple(kwargs) if kwarg_names is None else kwarg_names)
+    )
     if set(kwargs) != set(ordered_kwarg_names):
         raise PartitionReplayUnsupported(
             "lowered partition replay kwargs must match captured kwargs: "
             f"expected {sorted(ordered_kwarg_names)}, got {sorted(kwargs)}"
         )
-    flat_user_inputs = args + tuple(kwargs[name] for name in ordered_kwarg_names)
+    if kwarg_tree_specs:
+        flat_kwargs: list[Any] = []
+        for name, expected_spec in kwarg_tree_specs:
+            flat_values, actual_spec = _pytree.tree_flatten(kwargs[name])
+            if actual_spec != expected_spec:
+                raise PartitionReplayUnsupported("lowered partition replay kwarg pytree structure changed")
+            flat_kwargs.extend(flat_values)
+    else:
+        flat_kwargs = list(kwargs[name] for name in ordered_kwarg_names)
+    if any(not isinstance(value, Tensor) for value in tuple(flat_args) + tuple(flat_kwargs)):
+        raise PartitionReplayUnsupported("lowered partition replay only supports tensor inputs")
+    flat_user_inputs = tuple(flat_args) + tuple(flat_kwargs)
 
     def restore_all() -> None:
         model.load_state_dict(original_model_state)
@@ -394,6 +427,8 @@ def run_aot_eager_dry_run(
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] | None = None,
     output_tree_spec: Any | None = None,
+    arg_tree_specs: tuple[Any, ...] = (),
+    kwarg_tree_specs: tuple[tuple[str, Any], ...] = (),
 ) -> DryRunResult:
     if ir is None:
         structure_valid, structure_reason = verify_partition_abi(lowered)
@@ -420,6 +455,8 @@ def run_aot_eager_dry_run(
                 num_fwd_outputs=num_fwd_outputs,
                 kwarg_names=kwarg_names,
                 output_tree_spec=output_tree_spec,
+                arg_tree_specs=arg_tree_specs,
+                kwarg_tree_specs=kwarg_tree_specs,
                 atol=atol,
                 rtol=rtol,
             )

@@ -31,6 +31,14 @@ def _runtime_guard_value(name: str, args: tuple[Any, ...], kwargs: dict[str, Any
             raise ValueError(f"runtime guard {name} references a missing keyword input") from exc
     else:
         raise ValueError(f"unsupported runtime guard: {name}")
+    if field.startswith("flat"):
+        try:
+            leaf, field = field.split(".", 1)
+            flat_index = int(leaf.removeprefix("flat"))
+            flat_values, _ = _pytree.tree_flatten(value)
+            value = flat_values[flat_index]
+        except (IndexError, ValueError) as exc:
+            raise ValueError(f"runtime guard {name} references a missing flattened tensor input") from exc
     if not isinstance(value, Tensor):
         raise ValueError(f"runtime guard {name} references a non-tensor input")
     if field == "shape":
@@ -151,6 +159,8 @@ def build_aot_partition_executable(
     num_fwd_outputs: int = 1,
     kwarg_names: tuple[str, ...] = (),
     output_tree_spec: Any | None = None,
+    arg_tree_specs: tuple[Any, ...] = (),
+    kwarg_tree_specs: tuple[tuple[str, Any], ...] = (),
 ) -> Callable[..., Any]:
     if num_fwd_outputs < 1:
         raise ValueError("AOT partition executable requires at least one tensor user output")
@@ -193,17 +203,40 @@ def build_aot_partition_executable(
             return tuple(gradients)
 
     def executable(*args: Any, **kwargs: Any) -> Any:
-        if any(not isinstance(arg, Tensor) for arg in args):
+        if arg_tree_specs:
+            if len(args) != len(arg_tree_specs):
+                raise ValueError(
+                    "AOT partition executable args must match captured args: "
+                    f"expected {len(arg_tree_specs)}, got {len(args)}"
+                )
+            flat_args: list[Any] = []
+            for arg, expected_spec in zip(args, arg_tree_specs):
+                flat_values, actual_spec = _pytree.tree_flatten(arg)
+                if actual_spec != expected_spec:
+                    raise ValueError("AOT partition executable arg pytree structure changed")
+                flat_args.extend(flat_values)
+        else:
+            flat_args = list(args)
+        if any(not isinstance(arg, Tensor) for arg in flat_args):
             raise ValueError("AOT partition executable currently supports tensor inputs only")
-        if set(kwargs) != set(kwarg_names):
+        expected_kwarg_names = tuple(name for name, _ in kwarg_tree_specs) if kwarg_tree_specs else kwarg_names
+        if set(kwargs) != set(expected_kwarg_names):
             raise ValueError(
                 "AOT partition executable kwargs must match captured kwargs: "
-                f"expected {sorted(kwarg_names)}, got {sorted(kwargs)}"
+                f"expected {sorted(expected_kwarg_names)}, got {sorted(kwargs)}"
             )
-        kwarg_values = tuple(kwargs[name] for name in kwarg_names)
-        if any(not isinstance(value, Tensor) for value in kwarg_values):
+        if kwarg_tree_specs:
+            flat_kwargs: list[Any] = []
+            for name, expected_spec in kwarg_tree_specs:
+                flat_values, actual_spec = _pytree.tree_flatten(kwargs[name])
+                if actual_spec != expected_spec:
+                    raise ValueError("AOT partition executable kwarg pytree structure changed")
+                flat_kwargs.extend(flat_values)
+        else:
+            flat_kwargs = list(kwargs[name] for name in kwarg_names)
+        if any(not isinstance(value, Tensor) for value in flat_kwargs):
             raise ValueError("AOT partition executable currently supports tensor kwargs only")
-        outputs = _AOTPartitionFunction.apply(*(params + buffers + args + kwarg_values))
+        outputs = _AOTPartitionFunction.apply(*(params + buffers + tuple(flat_args) + tuple(flat_kwargs)))
         flat_outputs = (outputs,) if num_fwd_outputs == 1 else tuple(outputs)
         if output_tree_spec is None:
             return outputs

@@ -43,13 +43,35 @@ def _collect_guards(request: TrainingRequest) -> tuple[GuardSpec, ...]:
             guards.append(GuardSpec(f"arg{index}.shape", str(tuple(arg.shape))))
             guards.append(GuardSpec(f"arg{index}.dtype", str(arg.dtype)))
             guards.append(GuardSpec(f"arg{index}.device", str(arg.device)))
+        else:
+            flat_values, _ = _pytree.tree_flatten(arg)
+            for flat_index, value in enumerate(flat_values):
+                if isinstance(value, torch.Tensor):
+                    guards.append(GuardSpec(f"arg{index}.flat{flat_index}.shape", str(tuple(value.shape))))
+                    guards.append(GuardSpec(f"arg{index}.flat{flat_index}.dtype", str(value.dtype)))
+                    guards.append(GuardSpec(f"arg{index}.flat{flat_index}.device", str(value.device)))
     for name, arg in sorted(request.example_kwargs.items()):
         if isinstance(arg, torch.Tensor):
             guards.append(GuardSpec(f"kw.{name}.shape", str(tuple(arg.shape))))
             guards.append(GuardSpec(f"kw.{name}.dtype", str(arg.dtype)))
             guards.append(GuardSpec(f"kw.{name}.device", str(arg.device)))
+        else:
+            flat_values, _ = _pytree.tree_flatten(arg)
+            for flat_index, value in enumerate(flat_values):
+                if isinstance(value, torch.Tensor):
+                    guards.append(GuardSpec(f"kw.{name}.flat{flat_index}.shape", str(tuple(value.shape))))
+                    guards.append(GuardSpec(f"kw.{name}.flat{flat_index}.dtype", str(value.dtype)))
+                    guards.append(GuardSpec(f"kw.{name}.flat{flat_index}.device", str(value.device)))
     guards.append(GuardSpec("torch_version", torch.__version__))
     return tuple(guards)
+
+
+def _tree_specs_for_args(args: tuple[Any, ...]) -> tuple[Any, ...]:
+    return tuple(_pytree.tree_flatten(arg)[1] for arg in args)
+
+
+def _tree_specs_for_kwargs(kwargs: dict[str, Any]) -> tuple[tuple[str, Any], ...]:
+    return tuple((name, _pytree.tree_flatten(kwargs[name])[1]) for name in kwargs)
 
 
 def _clone_example(value: Any) -> Any:
@@ -155,6 +177,8 @@ def _capture_with_aot_autograd(request: TrainingRequest) -> CapturedJointGraph:
         num_fwd_outputs=int(partition_meta.get("num_fwd_outputs", len(flat_outputs))),
         static_lifetime_input_indices=tuple(partition_meta.get("static_lifetime_input_indices") or ()),
         output_tree_spec=output_tree_spec,
+        arg_tree_specs=_tree_specs_for_args(args),
+        kwarg_tree_specs=_tree_specs_for_kwargs(kwargs),
     )
 
 
