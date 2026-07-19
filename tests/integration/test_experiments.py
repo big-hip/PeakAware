@@ -320,6 +320,28 @@ def test_hint_ablation_summary_pairs_on_off_variants():
     assert summary["rows"][0]["budget_violation_delta"] == -1
     assert summary["rows"][0]["conclusion"] == "improved_budget"
     assert summary["conclusion_counts"] == {"improved_budget": 1}
+    assert summary["improved_pair_count"] == 1
+    assert summary["regressed_pair_count"] == 0
+    assert summary["neutral_pair_count"] == 0
+    assert summary["inconclusive_pair_count"] == 0
+    assert summary["verdict"] == "improved"
+
+
+def test_hint_ablation_summary_reports_no_pairs_verdict():
+    summary = summarize_hint_ablation(
+        (
+            _minimal_record(
+                status="ok",
+                budget_bytes=100,
+                measured_peak_bytes=80,
+                variant_name="diagnostic_hints_on",
+                diagnostic_hints_enabled=True,
+            ),
+        )
+    )
+
+    assert summary["pair_count"] == 0
+    assert summary["verdict"] == "no_pairs"
 
 
 def test_baseline_comparison_summary_reports_selected_deltas():

@@ -971,6 +971,24 @@ def _hint_pair_conclusion(row: dict[str, Any]) -> str:
     return "neutral"
 
 
+def _hint_ablation_verdict(conclusion_counts: dict[str, int]) -> str:
+    if not conclusion_counts:
+        return "no_pairs"
+    improved = sum(count for kind, count in conclusion_counts.items() if kind.startswith("improved_"))
+    regressed = sum(count for kind, count in conclusion_counts.items() if kind.startswith("regressed_"))
+    inconclusive = conclusion_counts.get("inconclusive", 0)
+    neutral = conclusion_counts.get("neutral", 0)
+    if improved and not regressed:
+        return "improved" if improved > neutral + inconclusive else "mixed"
+    if regressed and not improved:
+        return "regressed" if regressed > neutral + inconclusive else "mixed"
+    if improved and regressed:
+        return "mixed"
+    if neutral:
+        return "neutral"
+    return "inconclusive"
+
+
 def summarize_hint_ablation(records: tuple[ExperimentRecord, ...]) -> dict[str, Any]:
     by_variant: dict[str, dict[tuple[str, int, int], ExperimentRecord]] = {
         "diagnostic_hints_on": {},
@@ -1021,6 +1039,8 @@ def summarize_hint_ablation(records: tuple[ExperimentRecord, ...]) -> dict[str, 
         row["conclusion"] = _hint_pair_conclusion(row)
         rows.append(row)
     conclusion_counts = _counts([row["conclusion"] for row in rows])
+    improved_count = sum(count for kind, count in conclusion_counts.items() if kind.startswith("improved_"))
+    regressed_count = sum(count for kind, count in conclusion_counts.items() if kind.startswith("regressed_"))
     return {
         "pair_count": len(rows),
         "both_ok_count": sum(1 for row in rows if row["on_status"] == "ok" and row["off_status"] == "ok"),
@@ -1043,6 +1063,11 @@ def summarize_hint_ablation(records: tuple[ExperimentRecord, ...]) -> dict[str, 
         "mean_repair_success_count_delta": _mean_optional([row["repair_success_count_delta"] for row in rows]),
         "mean_diagnostic_hint_count_delta": _mean_optional([row["diagnostic_hint_count_delta"] for row in rows]),
         "conclusion_counts": conclusion_counts,
+        "improved_pair_count": improved_count,
+        "regressed_pair_count": regressed_count,
+        "neutral_pair_count": conclusion_counts.get("neutral", 0),
+        "inconclusive_pair_count": conclusion_counts.get("inconclusive", 0),
+        "verdict": _hint_ablation_verdict(conclusion_counts),
         "rows": rows,
     }
 
