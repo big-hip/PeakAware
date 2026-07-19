@@ -243,6 +243,7 @@ def test_diagnostics_marks_workspace_growth_and_cost_misrank_from_runtime_residu
 
     report = diagnose_plan(baseline, baseline, measured=measured)
 
+    assert report.primary_cause is RootCause.WORKSPACE_GROWTH
     assert RootCause.WORKSPACE_GROWTH.name in report.root_causes
     assert RootCause.COST_MODEL_MISRANK.name in report.root_causes
     assert report.confidence >= 0.8

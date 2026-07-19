@@ -437,7 +437,15 @@ def diagnose_plan(
                     description="Runtime step time is much higher than the simulated recompute cost.",
                 )
             )
-    all_causes = tuple(dict.fromkeys((primary,) + secondary + measured_causes))
+    if primary is RootCause.UNKNOWN:
+        promoted = next((cause for cause in measured_causes if cause is not RootCause.MEASUREMENT_NOISE), None)
+        if promoted is not None:
+            all_causes = tuple(dict.fromkeys((promoted,) + measured_causes))
+            primary = promoted
+        else:
+            all_causes = tuple(dict.fromkeys((primary,) + secondary + measured_causes))
+    else:
+        all_causes = tuple(dict.fromkeys((primary,) + secondary + measured_causes))
     causes = tuple(cause.name for cause in all_causes)
     confidence = min(float(baseline.simulation.confidence), float(candidate.simulation.confidence))
     if primary is RootCause.UNKNOWN:

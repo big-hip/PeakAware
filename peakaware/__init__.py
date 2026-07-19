@@ -22,6 +22,7 @@ from .reporting import (
     summarize_plan_artifact,
     summarize_result,
 )
+from .root_cause_benchmark import run_synthetic_root_cause_benchmark
 
 __all__ = [
     "ExperimentCase",
@@ -44,4 +45,5 @@ __all__ = [
     "optimize_microbatches",
     "optimize_training",
     "run_experiment_matrix",
+    "run_synthetic_root_cause_benchmark",
 ]
