@@ -70,6 +70,11 @@ def _minimal_record(
         measured_peak_bytes=measured_peak_bytes,
         measured_peak_reserved_bytes=0 if measured_peak_bytes is not None else None,
         measured_budget_headroom_bytes=None if measured_peak_bytes is None else budget_bytes - measured_peak_bytes,
+        all_save_measured_peak_bytes=None if measured_peak_bytes is None else measured_peak_bytes + 10,
+        all_save_measured_step_us=12.0 if status == "ok" else None,
+        selected_measured_peak_reduction_vs_all_save_bytes=10 if status == "ok" else None,
+        selected_step_time_delta_vs_all_save_us=2.0 if status == "ok" else None,
+        selected_samples_per_second_speedup_vs_all_save=1.2 if status == "ok" else None,
         measured_step_us=10.0 if status == "ok" else None,
         samples_per_second=samples_per_second,
         feasibility_status="FEASIBLE" if status == "ok" else None,
@@ -120,6 +125,9 @@ def test_experiment_summary_counts_budget_violations_and_failures():
     assert summary.budget_violation_rate == 0.5
     assert summary.mean_samples_per_second == 15.0
     assert summary.mean_measured_budget_headroom_bytes == 0.0
+    assert summary.mean_measured_peak_reduction_vs_all_save_bytes == 10.0
+    assert summary.mean_selected_step_time_delta_vs_all_save_us == 2.0
+    assert summary.mean_selected_samples_per_second_speedup_vs_all_save == 1.2
     assert summary.mean_estimated_peak_reduction_bytes == 20.0
     assert summary.selected_prediction_count == 2
     assert summary.mean_selected_prediction_absolute_error_bytes == 4.0
@@ -175,6 +183,9 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].baseline_estimated_peak_bytes is not None
     assert records[0].selected_estimated_peak_reduction_bytes is not None
     assert records[0].measured_budget_headroom_bytes is not None
+    assert records[0].all_save_measured_peak_bytes is not None
+    assert records[0].selected_measured_peak_reduction_vs_all_save_bytes is not None
+    assert records[0].selected_samples_per_second_speedup_vs_all_save is not None
     assert records[0].selected_peak_phase is not None
     assert records[0].simulation_accuracy_candidate_count >= 1
     assert records[0].diagnostic_hints_enabled is True
@@ -192,6 +203,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert rows[0]["graph_key"] == records[0].graph_key
     assert rows[0]["selected_estimated_peak_bytes"]
     assert rows[0]["selected_estimated_peak_reduction_bytes"]
+    assert rows[0]["selected_measured_peak_reduction_vs_all_save_bytes"]
     assert "selected_prediction_error_bytes" in rows[0]
     assert summary.total_records == 1
     assert summary.ok_records == 1
@@ -199,6 +211,7 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert summary.max_feasible_microbatch == 1
     assert summary_payload["success_rate"] == 1.0
     assert summary_payload["variant_counts"] == {"default": 1}
+    assert summary_payload["mean_measured_peak_reduction_vs_all_save_bytes"] is not None
     assert summary_payload["selected_prediction_count"] == 1
     assert summary_payload["simulation_accuracy_candidate_count"] >= 1
     assert summary_payload["root_cause_counts"]
@@ -292,6 +305,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["selected_effective_saved_value_ids"]
     assert stdout_payload[0]["selected_prediction_error_bytes"] is not None
     assert stdout_payload[0]["selected_estimated_peak_reduction_bytes"] is not None
+    assert stdout_payload[0]["selected_measured_peak_reduction_vs_all_save_bytes"] is not None
     assert stdout_payload[0]["simulation_accuracy_candidate_count"] >= 1
     assert {record["diagnostic_hints_enabled"] for record in stdout_payload} == {True, False}
     assert stdout_payload[0]["cache_total_hits"] == 0
@@ -301,6 +315,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert summary_payload["ok_records"] == 2
     assert summary_payload["variant_counts"] == {"diagnostic_hints_off": 1, "diagnostic_hints_on": 1}
     assert summary_payload["selected_prediction_count"] == 2
+    assert summary_payload["mean_selected_samples_per_second_speedup_vs_all_save"] is not None
     assert summary_payload["mean_simulation_accuracy_absolute_error_bytes"] is not None
     assert "diagnostic_hint_kind_counts" in summary_payload
     assert summary_payload["exact_failure_count"] == 2

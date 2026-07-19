@@ -41,6 +41,11 @@ class ExperimentRecord:
     measured_peak_bytes: int | None
     measured_peak_reserved_bytes: int | None
     measured_budget_headroom_bytes: int | None
+    all_save_measured_peak_bytes: int | None
+    all_save_measured_step_us: float | None
+    selected_measured_peak_reduction_vs_all_save_bytes: int | None
+    selected_step_time_delta_vs_all_save_us: float | None
+    selected_samples_per_second_speedup_vs_all_save: float | None
     measured_step_us: float | None
     samples_per_second: float | None
     feasibility_status: str | None
@@ -95,6 +100,9 @@ class ExperimentSummary:
     mean_measured_step_us: float | None
     mean_measured_peak_bytes: float | None
     mean_measured_budget_headroom_bytes: float | None
+    mean_measured_peak_reduction_vs_all_save_bytes: float | None
+    mean_selected_step_time_delta_vs_all_save_us: float | None
+    mean_selected_samples_per_second_speedup_vs_all_save: float | None
     mean_estimated_peak_reduction_bytes: float | None
     aggregate_cache_hit_rate: float | None
     total_cache_hits: int
@@ -130,6 +138,10 @@ def _plan_by_id(summary: dict[str, Any], plan_id: str) -> dict[str, Any] | None:
     return next((plan for plan in summary.get("plans", ()) if plan.get("plan_id") == plan_id), None)
 
 
+def _measured_candidate_by_id(summary: dict[str, Any], plan_id: str) -> dict[str, Any] | None:
+    return next((item for item in summary.get("measured_candidates", ()) if item.get("plan_id") == plan_id), None)
+
+
 def _record_success(
     case: ExperimentCase,
     summary: dict[str, Any],
@@ -142,6 +154,7 @@ def _record_success(
     simulation_accuracy = summary.get("topk_correction", {}).get("simulation_accuracy", {})
     search_diagnostics = summary.get("search_diagnostics") or {}
     baseline = _plan_by_id(summary, "all_save")
+    measured_baseline = _measured_candidate_by_id(summary, "all_save")
     selected_plan = _plan_by_id(summary, summary["selected_plan_id"])
     baseline_peak = None if baseline is None else baseline.get("peak_snapshot")
     selected_peak = None if selected_plan is None else selected_plan.get("peak_snapshot")
@@ -149,6 +162,9 @@ def _record_success(
     selected_peak_bytes = int(summary["estimated_peak_bytes"])
     cache = summary.get("cache", {})
     step_us = float(measured["step_us"])
+    measured_peak_bytes = int(measured["peak_bytes"])
+    all_save_peak = None if measured_baseline is None else int(measured_baseline["peak_bytes"])
+    all_save_step_us = None if measured_baseline is None else float(measured_baseline["step_us"])
     exact = exact or {}
     return ExperimentRecord(
         task_name=case.task_name,
@@ -167,9 +183,20 @@ def _record_success(
         selected_estimated_peak_reduction_bytes=None
         if baseline_peak_bytes is None
         else baseline_peak_bytes - selected_peak_bytes,
-        measured_peak_bytes=int(measured["peak_bytes"]),
+        measured_peak_bytes=measured_peak_bytes,
         measured_peak_reserved_bytes=int(measured.get("reserved_peak_bytes", 0)),
-        measured_budget_headroom_bytes=case.budget_bytes - int(measured["peak_bytes"]),
+        measured_budget_headroom_bytes=case.budget_bytes - measured_peak_bytes,
+        all_save_measured_peak_bytes=all_save_peak,
+        all_save_measured_step_us=all_save_step_us,
+        selected_measured_peak_reduction_vs_all_save_bytes=None
+        if all_save_peak is None
+        else all_save_peak - measured_peak_bytes,
+        selected_step_time_delta_vs_all_save_us=None
+        if all_save_step_us is None
+        else all_save_step_us - step_us,
+        selected_samples_per_second_speedup_vs_all_save=None
+        if all_save_step_us is None
+        else all_save_step_us / max(step_us, 1.0),
         measured_step_us=step_us,
         samples_per_second=case.microbatch_size * 1_000_000.0 / max(step_us, 1.0),
         feasibility_status=summary["feasibility"]["status"],
@@ -228,6 +255,11 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         measured_peak_bytes=None,
         measured_peak_reserved_bytes=None,
         measured_budget_headroom_bytes=None,
+        all_save_measured_peak_bytes=None,
+        all_save_measured_step_us=None,
+        selected_measured_peak_reduction_vs_all_save_bytes=None,
+        selected_step_time_delta_vs_all_save_us=None,
+        selected_samples_per_second_speedup_vs_all_save=None,
         measured_step_us=None,
         samples_per_second=None,
         feasibility_status=None,
@@ -396,6 +428,21 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         for record in ok
         if record.selected_estimated_peak_reduction_bytes is not None
     ]
+    measured_peak_reductions = [
+        record.selected_measured_peak_reduction_vs_all_save_bytes
+        for record in ok
+        if record.selected_measured_peak_reduction_vs_all_save_bytes is not None
+    ]
+    selected_step_time_deltas = [
+        record.selected_step_time_delta_vs_all_save_us
+        for record in ok
+        if record.selected_step_time_delta_vs_all_save_us is not None
+    ]
+    selected_speedups = [
+        record.selected_samples_per_second_speedup_vs_all_save
+        for record in ok
+        if record.selected_samples_per_second_speedup_vs_all_save is not None
+    ]
     selected_abs_errors = [
         abs(record.selected_prediction_error_bytes)
         for record in ok
@@ -470,6 +517,9 @@ def summarize_experiment_records(records: tuple[ExperimentRecord, ...]) -> Exper
         mean_measured_step_us=_mean(steps),
         mean_measured_peak_bytes=_mean(peaks),
         mean_measured_budget_headroom_bytes=_mean(headrooms),
+        mean_measured_peak_reduction_vs_all_save_bytes=_mean(measured_peak_reductions),
+        mean_selected_step_time_delta_vs_all_save_us=_mean(selected_step_time_deltas),
+        mean_selected_samples_per_second_speedup_vs_all_save=_mean(selected_speedups),
         mean_estimated_peak_reduction_bytes=_mean(reductions),
         aggregate_cache_hit_rate=None if total_hits + total_misses == 0 else total_hits / (total_hits + total_misses),
         total_cache_hits=total_hits,
