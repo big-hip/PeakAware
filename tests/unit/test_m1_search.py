@@ -193,7 +193,38 @@ def test_diagnostics_exports_json_and_marks_runtime_level_available():
     text = export_diagnostic_json(report)
 
     assert '"primary_cause": "UNKNOWN"' in text
+    assert RootCause.MEASUREMENT_NOISE.name in report.root_causes
+    assert report.compiler_workspace_allocator_change == 0
     assert report.counterfactuals[-1].level == "D5"
     assert report.counterfactuals[-1].status == "available"
     assert report.counterfactuals[-1].candidate_peak is not None
     assert report.counterfactuals[-1].candidate_peak.live_bytes == measured.measured_peak_bytes
+
+
+def test_diagnostics_marks_workspace_growth_and_cost_misrank_from_runtime_residuals():
+    ir, fixed = _ir_and_fixed()
+    all_save = build_recompute_plan(
+        ir,
+        budget_bytes=1 << 30,
+        saved_value_ids=frozenset(v.id for v in ir.values if v.phase == "fw"),
+        label="all_save",
+    )
+    baseline = evaluate_plan(ir, all_save, fixed)
+    measured_peak = baseline.simulation.estimated_peak_bytes + (4 << 20)
+    measured_step_us = max(
+        baseline.simulation.estimated_step_us * 3.0,
+        baseline.simulation.estimated_step_us + 5_000.0,
+    )
+    measured = MeasuredExecutable(
+        plan_id="all_save",
+        forward_backward=lambda x: x,
+        measured_peak_bytes=measured_peak,
+        measured_step_us=measured_step_us,
+        correctness_passed=True,
+    )
+
+    report = diagnose_plan(baseline, baseline, measured=measured)
+
+    assert RootCause.WORKSPACE_GROWTH.name in report.root_causes
+    assert RootCause.COST_MODEL_MISRANK.name in report.root_causes
+    assert report.compiler_workspace_allocator_change == measured_peak - baseline.simulation.estimated_peak_bytes

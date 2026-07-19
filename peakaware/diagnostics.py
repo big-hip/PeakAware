@@ -148,6 +148,30 @@ def rank_root_causes(
     return deduped[0], deduped[1:]
 
 
+def _measured_root_causes(
+    candidate: EvaluatedPlan,
+    measured: MeasuredExecutable | None,
+) -> tuple[tuple[RootCause, ...], int]:
+    if measured is None:
+        return (), 0
+    estimated_peak = max(int(candidate.simulation.estimated_peak_bytes), 1)
+    peak_residual = int(measured.measured_peak_bytes) - estimated_peak
+    noise_threshold = max(1 << 20, int(estimated_peak * 0.01))
+    causes: list[RootCause] = []
+    workspace_change = 0
+    if abs(peak_residual) <= noise_threshold:
+        causes.append(RootCause.MEASUREMENT_NOISE)
+    elif peak_residual > 0:
+        workspace_change = peak_residual
+        causes.append(RootCause.WORKSPACE_GROWTH)
+
+    estimated_step_us = max(float(candidate.simulation.estimated_step_us), 1.0)
+    measured_step_us = float(measured.measured_step_us)
+    if measured_step_us > estimated_step_us * 2.0 and measured_step_us - estimated_step_us > 100.0:
+        causes.append(RootCause.COST_MODEL_MISRANK)
+    return tuple(dict.fromkeys(causes)), workspace_change
+
+
 def diagnose_plan(
     baseline: EvaluatedPlan,
     candidate: EvaluatedPlan,
@@ -181,17 +205,19 @@ def diagnose_plan(
         candidate=candidate,
         feasibility=feasibility,
     )
-    causes = tuple(cause.name for cause in (primary,) + secondary)
+    measured_causes, compiler_workspace_allocator_change = _measured_root_causes(candidate, measured)
+    all_causes = tuple(dict.fromkeys((primary,) + secondary + measured_causes))
+    causes = tuple(cause.name for cause in all_causes)
     return PlanDiagnosticReport(
         plan_id=candidate.plan.plan_id,
         expected_saved_reduction=expected_saved,
         after_fw_retained_reduction=expected_saved,
         bw_recompute_transient_change=transient,
         fixed_frontier_overlap=fixed_overlap,
-        compiler_workspace_allocator_change=0,
+        compiler_workspace_allocator_change=compiler_workspace_allocator_change,
         actual_overall_peak_reduction=peak_reduction,
         primary_cause=primary,
-        secondary_causes=secondary,
+        secondary_causes=all_causes[1:],
         root_causes=causes,
         repair_hints=tuple(hints),
         counterfactuals=build_counterfactual_ladder(
