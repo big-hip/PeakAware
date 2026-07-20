@@ -365,9 +365,9 @@ artifacts/paper_full_matrix_combined_paired_5budget_5pass_r1/
 `paper_full_matrix_combined_hintoff_5budget_5pass_r1`，覆盖四 workload、两个 compile backend、
 diagnostic hints on/off、50/65/80/95/100% 相对预算、5 个 matrix pass 和 `measurement_repeats=5`，
 共 400 条 records；其中 200 条 `ok`、200 条 `failed`，失败记录完整保留。该目录已生成
-F2--F10、T2--T8、manifest/checksum 和 `evidence_gate_report.json`，并通过 artifact 校验。gate 审计为
-`G-1/G-2/G-3/G-4/G-5/G-6/G-8` 通过，仅 `G-7` 因未冻结和 dirty git state 未通过。当前初稿
-图表应优先从该 paired artifact 取数；正式效果数字仍需等 frozen manifest。
+F2--F10、T2--T8、manifest/checksum 和 `evidence_gate_report.json`，并通过 frozen artifact 校验。
+gate 审计为 `G-1`--`G-8` 全部通过。当前初稿图表应优先从该 paired artifact 取数；正文效果数字
+必须绑定 `EV-20`，并保留未测 workload/硬件、PDF/PNG 导出缺失和环境 lock checksum 缺失的边界。
 
 ## 6. 稳定编号
 
