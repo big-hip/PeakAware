@@ -636,6 +636,42 @@ def _qualify_training_executable(
         restore()
 
 
+def prepare_all_save(
+    model: nn.Module,
+    *,
+    execution_backend: str = "unwrapped_eager_autograd",
+) -> PreparedMethod:
+    """Prepare the real model with PyTorch's default save-for-backward policy."""
+    spec = MethodSpec(
+        method_id="all_save",
+        is_real=True,
+        api="torch.nn.Module.forward",
+        policy="PyTorch default save-for-backward",
+        region_family=(),
+        compiler_protocol="unwrapped_eager_autograd",
+    )
+    if execution_backend != spec.compiler_protocol:
+        return _unsupported(spec, f"execution backend {execution_backend!r} is not integrated")
+    try:
+        model_sha256 = _model_sha256(model, ())
+        executable_sha256 = _executable_sha256(spec, model_sha256, region_paths=())
+    except StableSerializationError as exc:
+        return _unsupported(spec, f"stable model digest unavailable: {exc}")
+    identity = RuntimeIdentity(
+        method_id=spec.method_id,
+        status="ready",
+        is_real=True,
+        api=spec.api,
+        policy=spec.policy,
+        region_paths=(),
+        compiler_protocol=spec.compiler_protocol,
+        model_sha256=model_sha256,
+        executable_sha256=executable_sha256,
+        provenance=(("save_policy", "autograd_default"),),
+    )
+    return PreparedMethod(spec=spec, identity=identity, executable=model)
+
+
 def prepare_aot_min_cut(
     model: nn.Module,
     capture: CapturedJointGraph,

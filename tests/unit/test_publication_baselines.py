@@ -16,11 +16,24 @@ from peakaware.publication.baselines import (
     RuntimeIdentity,
     UnsupportedMethodError,
     make_sac_policy,
+    prepare_all_save,
     prepare_aot_min_cut,
     prepare_block_activation_checkpoint,
     prepare_selective_activation_checkpoint,
     resolve_block_regions,
 )
+
+
+def test_all_save_adapter_uses_real_model_and_stable_behavior_digest():
+    model = nn.Sequential(nn.Linear(4, 4), nn.Dropout(p=0.1))
+    prepared = prepare_all_save(model).require_supported()
+    copied = prepare_all_save(copy.deepcopy(model)).require_supported()
+    changed = prepare_all_save(nn.Sequential(nn.Linear(4, 4), nn.Dropout(p=0.9))).require_supported()
+
+    assert prepared.executable is model
+    assert prepared.identity.model_sha256 == copied.identity.model_sha256
+    assert prepared.identity.model_sha256 != changed.identity.model_sha256
+    assert prepare_all_save(model, execution_backend="inductor").supported is False
 
 
 def _capture_mlp():
