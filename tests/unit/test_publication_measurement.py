@@ -1,4 +1,5 @@
 import copy
+import functools
 import json
 import subprocess
 import sys
@@ -12,6 +13,10 @@ from peakaware.runtime import measure as measurement
 from peakaware.runtime.measure import (
     measure_publication_training_step_phases,
     measure_training_step_phases,
+)
+from peakaware.runtime.stable_callable import (
+    register_stable_callable,
+    unregister_stable_callable,
 )
 
 
@@ -320,8 +325,10 @@ def test_inputs_python_counter_and_training_mode_are_restored_across_trajectorie
     assert model.training is True
     assert model.counter == 0
     assert metrics["trajectory_order"] == ["warmup", "overall", "phase"]
-    assert metrics["callable_state_assumption"] == "pure_or_state_dict_owned"
-    assert metrics["python_module_state_policy"] == "public_attributes_snapshotted_or_fail_closed"
+    assert metrics["callable_state_assumption"] == "state_dict_owned_or_registry_identity_bound"
+    assert metrics["python_module_state_policy"] == (
+        "public_attributes_snapshotted_registered_callables_identity_checked_or_fail_closed"
+    )
 
 
 def test_publication_rejects_aliasing_custom_python_state_before_execution():
@@ -352,6 +359,81 @@ def test_publication_rejects_aliasing_custom_python_state_before_execution():
 
     assert executions == 0
     assert model.evil.counter == 0
+
+
+def test_unknown_callable_attribute_still_fails_closed():
+    model = nn.Linear(1, 1)
+    model.evil = lambda value: value
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+    with pytest.raises(ValueError, match="cannot snapshot Python module attribute evil"):
+        measurement._capture_training_state(model, optimizer, None, include_python_state=True)
+
+
+def test_torch_builtin_callable_attribute_is_snapshot_as_stateless():
+    model = nn.Linear(1, 1)
+    model.activation = torch._C._nn.gelu
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+    state = measurement._capture_training_state(model, optimizer, None, include_python_state=True)
+    model.activation = torch.relu
+
+    measurement._restore_training_state(model, optimizer, state, None)
+
+    assert model.activation is torch._C._nn.gelu
+
+
+def test_torch_partial_callable_attribute_is_snapshot_as_stateless_factory():
+    model = nn.Linear(1, 1)
+    model.norm_layer = functools.partial(nn.LayerNorm, eps=1e-6)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+    state = measurement._capture_training_state(model, optimizer, None, include_python_state=True)
+    model.norm_layer = functools.partial(nn.BatchNorm1d, eps=1e-3)
+
+    measurement._restore_training_state(model, optimizer, state, None)
+
+    assert isinstance(model.norm_layer, functools.partial)
+    assert model.norm_layer.func is nn.LayerNorm
+    assert model.norm_layer.args == ()
+    assert model.norm_layer.keywords == {"eps": 1e-6}
+
+
+def test_user_partial_callable_attribute_still_fails_closed():
+    model = nn.Linear(1, 1)
+    model.wrapper = functools.partial(lambda value: value)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+    with pytest.raises(ValueError, match="cannot snapshot Python module attribute wrapper"):
+        measurement._capture_training_state(model, optimizer, None, include_python_state=True)
+
+
+def test_registered_callable_snapshot_rejects_replacement_and_unregistration():
+    model = nn.Linear(1, 1)
+    wrapper = lambda value: value
+    model.wrapper = wrapper
+    token = register_stable_callable(wrapper)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    state = measurement._capture_training_state(model, optimizer, None, include_python_state=True)
+
+    model.wrapper = lambda value: value
+    with pytest.raises(ValueError, match="identity or ownership token changed"):
+        measurement._restore_training_state(model, optimizer, state, None)
+
+    model.wrapper = wrapper
+    unregister_stable_callable(wrapper, token)
+    with pytest.raises(ValueError, match="identity or ownership token changed"):
+        measurement._restore_training_state(model, optimizer, state, None)
+
+
+def test_user_attribute_cannot_forge_stable_callable_registration():
+    model = nn.Linear(1, 1)
+    model.wrapper = lambda value: value
+    model._peakaware_stable_callable_token = object()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+    with pytest.raises(ValueError, match="cannot snapshot Python module attribute wrapper"):
+        measurement._capture_training_state(model, optimizer, None, include_python_state=True)
 
 
 def test_phase_samples_record_after_forward_retained_memory(monkeypatch: pytest.MonkeyPatch):
@@ -385,7 +467,7 @@ def test_publication_wrapper_marks_large_event_wall_gap_unqualified(monkeypatch:
 
     def mismatched_window(fn, cuda_device):
         del cuda_device
-        return fn(), 100.0, 10.0
+        return fn(), 10_000.0, 10.0
 
     monkeypatch.setattr(measurement, "_measure_window", mismatched_window)
     metrics = measure_publication_training_step_phases(
@@ -405,12 +487,49 @@ def test_publication_wrapper_marks_large_event_wall_gap_unqualified(monkeypatch:
     assert len(metrics["warmup_samples"]) == 5
     assert metrics["warmup_last5_wall_relative_slope"] == pytest.approx(0.0)
     assert metrics["warmup_last5_event_relative_slope"] == pytest.approx(0.0)
-    assert metrics["overall_samples"][0]["overall_event_wall_relative_diff"] == pytest.approx(9.0)
+    assert metrics["overall_samples"][0]["overall_event_wall_relative_diff"] == pytest.approx(999.0)
     assert metrics["overall_timing_qualified"] is False
     assert metrics["timing_qualified"] is False
     assert metrics["publication_qualified"] is False
     assert metrics["publication_status"] == "timing_unqualified"
     assert "event_wall_gap_or_event_unavailable" in metrics["publication_unqualified_reasons"]
+
+
+def test_publication_wrapper_keeps_phase_event_gap_diagnostic(monkeypatch: pytest.MonkeyPatch):
+    model = nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    calls = 0
+
+    def phase_mismatched_window(fn, cuda_device):
+        nonlocal calls
+        del cuda_device
+        calls += 1
+        if calls > 25:
+            return fn(), 10_000.0, 10.0
+        return fn(), 100.0, 100.0
+
+    monkeypatch.setattr(measurement, "_measure_window", phase_mismatched_window)
+    metrics = measure_publication_training_step_phases(
+        model,
+        optimizer,
+        model,
+        lambda output: output.square().mean(),
+        (torch.ones(1, 1),),
+        {},
+        backend="aot_eager",
+        zero_grad_set_to_none=True,
+        warmup_steps=5,
+        repeat_count=20,
+        max_event_wall_relative_gap=0.20,
+    )
+
+    assert metrics["overall_timing_qualified"] is True
+    assert metrics["fw_timing_qualified"] is False
+    assert metrics["phase_timing_qualified"] is False
+    assert metrics["phase_timing_scope"] == "diagnostic_only"
+    assert metrics["timing_qualified"] is True
+    assert metrics["publication_qualified"] is True
+    assert metrics["publication_timing_scope"] == "overall_step"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for real Event timing")

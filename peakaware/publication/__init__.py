@@ -1,3 +1,10 @@
+from .artifact import (
+    PUBLICATION_ARTIFACT_SCHEMA_VERSION,
+    PublicationArtifactCheck,
+    build_publication_artifact_manifest,
+    validate_publication_artifact_manifest,
+    verify_publication_artifact,
+)
 from .baselines import (
     MethodSpec,
     PreparedMethod,
@@ -9,6 +16,45 @@ from .baselines import (
     prepare_block_activation_checkpoint,
     prepare_selective_activation_checkpoint,
     resolve_block_regions,
+    resolve_publication_regions,
+)
+from .budget_calibration import (
+    BUDGET_PLAN_SCHEMA_VERSION,
+    build_budget_plan_from_records,
+    validate_budget_plan_manifest,
+)
+from .compiler import (
+    FrozenSACPolicy,
+    PublicationBackend,
+    PublicationDefaultPartitionerFn,
+    PublicationExecutable,
+    PublicationMethod,
+    close_publication_executable,
+    compile_publication_method,
+    prepare_publication_compiler,
+)
+from .figures import (
+    FIGURE_SCHEMA_VERSION,
+    PUBLICATION_FIGURE_IDS,
+    FigureArtifact,
+    FigureValidationResult,
+    build_publication_figures,
+    validate_publication_figure_artifacts,
+)
+from .evidence import (
+    EVIDENCE_GATE_SCHEMA_VERSION,
+    REQUIRED_BUDGET_RATIOS,
+    REQUIRED_REPEAT_COUNT,
+    REQUIRED_WORKLOAD_COUNT,
+    EvidenceGateResult,
+    evaluate_publication_evidence_gates,
+)
+from .matrix import (
+    PUBLICATION_MATRIX_SCHEMA_VERSION,
+    PublicationMatrixCell,
+    PublicationMatrixRun,
+    load_publication_matrix_cells,
+    run_publication_matrix_from_budget_plan,
 )
 from .qualification import (
     PUBLICATION_BACKENDS,
@@ -28,18 +74,63 @@ from .qualification import (
     validate_worker_task_binding,
     write_qualification_artifacts,
 )
+from .records import (
+    RECORD_VALIDATION_SCHEMA_VERSION,
+    validate_publication_records,
+)
+from .tables import (
+    PUBLICATION_TABLE_IDS,
+    TABLE_SCHEMA_VERSION,
+    TableArtifact,
+    build_publication_tables,
+    validate_publication_table_artifacts,
+)
 
 __all__ = [
+    "PublicationArtifactCheck",
+    "PUBLICATION_ARTIFACT_SCHEMA_VERSION",
+    "build_publication_artifact_manifest",
+    "validate_publication_artifact_manifest",
+    "verify_publication_artifact",
     "MethodSpec",
     "PreparedMethod",
     "RuntimeIdentity",
     "UnsupportedMethodError",
+    "BUDGET_PLAN_SCHEMA_VERSION",
+    "build_budget_plan_from_records",
+    "validate_budget_plan_manifest",
     "make_sac_policy",
     "prepare_all_save",
     "prepare_aot_min_cut",
     "prepare_block_activation_checkpoint",
     "prepare_selective_activation_checkpoint",
+    "prepare_publication_compiler",
+    "compile_publication_method",
+    "FIGURE_SCHEMA_VERSION",
+    "PUBLICATION_FIGURE_IDS",
+    "FigureArtifact",
+    "FigureValidationResult",
+    "build_publication_figures",
+    "validate_publication_figure_artifacts",
+    "EVIDENCE_GATE_SCHEMA_VERSION",
+    "REQUIRED_BUDGET_RATIOS",
+    "REQUIRED_REPEAT_COUNT",
+    "REQUIRED_WORKLOAD_COUNT",
+    "EvidenceGateResult",
+    "evaluate_publication_evidence_gates",
+    "PUBLICATION_MATRIX_SCHEMA_VERSION",
+    "PublicationMatrixCell",
+    "PublicationMatrixRun",
+    "load_publication_matrix_cells",
+    "run_publication_matrix_from_budget_plan",
+    "FrozenSACPolicy",
+    "PublicationBackend",
+    "PublicationDefaultPartitionerFn",
+    "PublicationExecutable",
+    "PublicationMethod",
+    "close_publication_executable",
     "resolve_block_regions",
+    "resolve_publication_regions",
     "PUBLICATION_BACKENDS",
     "PUBLICATION_METHODS",
     "QUALIFICATION_SCHEMA_VERSION",
@@ -56,4 +147,11 @@ __all__ = [
     "validate_qualification_slot",
     "validate_worker_task_binding",
     "write_qualification_artifacts",
+    "RECORD_VALIDATION_SCHEMA_VERSION",
+    "validate_publication_records",
+    "PUBLICATION_TABLE_IDS",
+    "TABLE_SCHEMA_VERSION",
+    "TableArtifact",
+    "build_publication_tables",
+    "validate_publication_table_artifacts",
 ]

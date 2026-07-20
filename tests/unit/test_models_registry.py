@@ -85,6 +85,9 @@ def test_main_model_display_names_match_actual_default_configurations():
     assert registry.get("vit_b_16").workload.display_name == "ViT-B/16"
     assert registry.get("bert_base").workload.display_name == "BERT-like-2L-64H"
     assert registry.get("gpt2").workload.display_name == "GPT2-like-2L-64H"
+    assert registry.get("bert_base").workload.model_config["hidden_dropout_prob"] == 0.0
+    assert registry.get("bert_base").workload.model_config["attention_probs_dropout_prob"] == 0.0
+    assert registry.get("bert_base").workload.model_config["classifier_dropout"] == 0.0
 
 
 def test_main_model_tasks_build_fixed_shape_training_losses():

@@ -17,12 +17,16 @@ import pytest
 from torch import nn
 
 from peakaware.contracts import FrozenConfig, TrainingTaskSpec
-from peakaware.models.registry import build_tiny_mlp_task
+from peakaware.models.registry import build_gpt2_task, build_tiny_mlp_task
+from peakaware.publication.compiler import close_publication_executable
 from peakaware.publication.qualification import (
     QualificationRecord,
     _build_seeded_batch,
     _build_seeded_model_optimizer,
+    _cudnn_context_from_identity,
     _marker_process_ids,
+    _prepare_method,
+    _sha256,
     _terminate_process,
     _timeout_stage,
     build_qualification_slots,
@@ -49,6 +53,17 @@ def _descendant_process_target(channel, marker):
     channel.send((same_group.pid, escaped_group.pid))
     channel.close()
     time.sleep(60)
+
+
+def test_cudnn_context_from_identity_applies_and_restores_override():
+    original = torch.backends.cudnn.enabled
+    try:
+        torch.backends.cudnn.enabled = True
+        with _cudnn_context_from_identity({"provenance": {"cudnn_enabled_override": False}}):
+            assert torch.backends.cudnn.enabled is False
+        assert torch.backends.cudnn.enabled is True
+    finally:
+        torch.backends.cudnn.enabled = original
 
 
 def _slots(
@@ -172,6 +187,29 @@ def test_task_binding_rejects_same_workload_with_replaced_factories_and_loss():
     for replacement in replacements:
         with pytest.raises(ValueError, match="task binding"):
             validate_worker_task_binding(replacement, slot, manifest)
+
+
+def test_task_binding_comparison_ignores_python_rng_after_probe_only():
+    manifest, slots = _slots()
+    slot = slots[0]
+    binding = json.loads(json.dumps(manifest["task_bindings"][slot.task_name]))
+    binding["probe"]["rng_after_probe"]["python_sha256"] = "different-python-rng"
+    binding["fingerprint"] = _sha256({key: value for key, value in binding.items() if key != "fingerprint"})
+    manifest = {
+        **manifest,
+        "task_bindings": {**manifest["task_bindings"], slot.task_name: binding},
+    }
+
+    validate_worker_task_binding(build_tiny_mlp_task(), slot, manifest)
+
+    binding["probe"]["loss"]["sha256"] = "forged-loss"
+    binding["fingerprint"] = _sha256({key: value for key, value in binding.items() if key != "fingerprint"})
+    manifest = {
+        **manifest,
+        "task_bindings": {**manifest["task_bindings"], slot.task_name: binding},
+    }
+    with pytest.raises(ValueError, match="task binding"):
+        validate_worker_task_binding(build_tiny_mlp_task(), slot, manifest)
 
 
 def test_build_slots_and_task_binding_probe_restore_all_caller_rng_states():
@@ -298,8 +336,9 @@ def test_summary_uses_manifest_expected_slots_for_empty_subset_and_complete_cove
     complete = summarize_qualification(records, manifest)
     assert complete["complete_slot_coverage"] is True
     assert complete["qualification_passed"] is False
-    assert complete["method_qualification"]["inductor"]["all_save"]["unsupported"] == 1
-    assert complete["required_method_coverage"]["inductor"]["all_save"] is False
+    all_save_counts = complete["method_qualification"]["inductor"]["all_save"]
+    assert all_save_counts["unsupported"] == 0
+    assert all_save_counts["qualified"] + all_save_counts["failure"] == 1
     assert [record.slot.slot_id for record in records] == manifest["qualification_run"]["execution_order"]
     with pytest.raises(ValueError, match="execution order"):
         write_qualification_artifacts(
@@ -322,21 +361,34 @@ def test_runner_rejects_measurement_protocol_different_from_preregistration():
             raise AssertionError("runner accepted a non-preregistered measurement protocol")
 
 
-def test_inductor_methods_fail_closed_as_unsupported():
+def test_inductor_min_cut_fails_closed_and_matched_all_save_has_explicit_identity():
     manifest, slots = _slots(methods=("all_save", "pytorch_min_cut"), backends=("inductor",))
     records = run_qualification_slots(slots, manifest, timeout_s=30.0, repeat_count=20)
 
-    assert {record.status for record in records} == {"unsupported"}
-    assert all(record.error_stage == "method_prepare" for record in records)
-    assert all(record.measurement_raw is None for record in records)
+    by_method = {record.slot.method: record for record in records}
+    assert by_method["pytorch_min_cut"].status == "unsupported"
+    assert by_method["pytorch_min_cut"].error_stage == "method_prepare"
+    assert by_method["pytorch_min_cut"].measurement_raw is None
+    assert by_method["all_save"].status in {"ok", "budget_violation", "runtime_failure"}
     assert all(record.process_id and record.process_id != 0 for record in records)
     for record in records:
         identity = json.loads(record.runtime_identity)
-        assert identity["status"] == "unsupported"
-        assert identity["fallback_reason"]
+        if record.slot.method == "pytorch_min_cut":
+            assert identity["status"] == "unsupported"
+            assert identity["fallback_reason"]
+        else:
+            assert identity["status"] == "ready"
+            assert identity["compiler_protocol"].startswith("inductor:")
+            assert identity["provenance"]["fresh_cache_per_preparation"] is True
+            assert identity["provenance"]["cache_reuse_disabled"] is True
+    ready = by_method["all_save"]
+    forged_identity = json.loads(ready.runtime_identity)
+    forged_identity["provenance"]["cache_reuse_disabled"] = False
+    with pytest.raises(ValueError, match="cold-cache"):
+        validate_qualification_record(replace(ready, runtime_identity=json.dumps(forged_identity)), manifest)
 
 
-def test_aot_methods_without_matched_budget_or_compiler_protocol_are_explicitly_unsupported():
+def test_aot_tiny_workload_fails_closed_for_methods_without_matched_regions_or_budget():
     methods = ("pytorch_min_cut", "block_ac", "sac")
     manifest, slots = _slots(methods=methods)
     records = run_qualification_slots(slots, manifest, timeout_s=30.0, repeat_count=20)
@@ -348,6 +400,76 @@ def test_aot_methods_without_matched_budget_or_compiler_protocol_are_explicitly_
         identity = json.loads(record.runtime_identity)
         assert identity["status"] == "unsupported"
         assert identity["fallback_reason"]
+        assert identity["compiler_protocol"].startswith("aot_eager:")
+
+
+@pytest.mark.parametrize("method", ["all_save", "block_ac", "sac"])
+def test_prepare_method_routes_gpt2_matched_methods_through_compiler_adapter(method):
+    task = build_gpt2_task(
+        sequence_length=4,
+        vocab_size=31,
+        n_embd=8,
+        n_layer=1,
+        n_head=2,
+    )
+    _, slots = _slots(methods=(method,))
+    slot = slots[0]
+    torch.manual_seed(slot.seed)
+    reference = task.build_model()
+    torch.manual_seed(slot.seed)
+    candidate = task.build_model()
+    optimizer = task.build_optimizer(candidate)
+    args, kwargs = task.build_batch(slot.microbatch_size)
+
+    executable, identity = _prepare_method(
+        slot,
+        task,
+        reference,
+        candidate,
+        optimizer,
+        args,
+        kwargs,
+        torch.device("cpu"),
+    )
+    try:
+        assert identity["status"] == "ready"
+        assert identity["compiler_protocol"] == "aot_eager:matched_publication_v2_default_partition"
+        assert identity["provenance"]["joint_callback_count"] >= 1
+        if method != "all_save":
+            assert identity["provenance"]["checkpoint_call_count"] == 1
+            assert identity["provenance"]["recompute_count"] > 0
+    finally:
+        close_publication_executable(executable)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_gpt2_aot_block_and_sac_complete_strict_gpu_measurement():
+    manifest, slots = build_qualification_slots(
+        (build_gpt2_task(),),
+        run_id="gpt2-strict-measurement-canary",
+        backends=("aot_eager",),
+        methods=("block_ac", "sac"),
+        memory_budgets_bytes=(8 << 30,),
+        replicates=1,
+        microbatch_size=2,
+        device="cuda",
+        base_seed=29,
+        repeat_count=20,
+        timeout_s=300.0,
+    )
+
+    records = run_qualification_slots(slots, manifest, timeout_s=300.0, repeat_count=20)
+
+    assert {record.slot.method for record in records} == {"block_ac", "sac"}
+    for record in records:
+        assert record.status in {"ok", "budget_violation"}, record.error_message
+        assert record.error_stage is None
+        assert record.last_progress_stage == "measurement"
+        identity = json.loads(record.runtime_identity)
+        assert identity["status"] == "ready"
+        raw = json.loads(record.measurement_raw)
+        assert len(raw["overall_samples"]) == 20
+        assert len(raw["phase_samples"]) == 20
 
 
 def test_cpu_tiny_runner_preserves_twenty_repeats_and_uses_new_processes():
@@ -366,10 +488,11 @@ def test_cpu_tiny_runner_preserves_twenty_repeats_and_uses_new_processes():
         assert record.last_progress_stage == "measurement"
         assert record.elapsed_seconds is not None and record.elapsed_seconds > 0
         identity = json.loads(record.runtime_identity)
-        assert identity["compiler_protocol"].endswith("custom_aot_autograd_default_partition")
+        assert identity["compiler_protocol"] == "aot_eager:matched_publication_v2_default_partition"
         assert identity["provenance"]["partition_fn"].endswith("default_partition")
-        assert "no-rematerialization" in identity["provenance"]["all_save_naming_scope"]
-        assert len(identity["provenance"]["partition_fn_source_sha256"]) == 64
+        assert identity["provenance"]["graph_break_count"] == 0
+        assert len(identity["provenance"]["joint_graph_sha256"]) == 64
+        assert identity["runtime_observations"]["joint_compile_count"] >= 1
         assert identity["runtime_observations"]["fw_compile_count"] >= 1
         assert identity["runtime_observations"]["bw_compile_count"] >= 1
 
@@ -379,6 +502,14 @@ def test_cpu_tiny_runner_preserves_twenty_repeats_and_uses_new_processes():
     forged_method = replace(source, runtime_identity=json.dumps(fake_identity))
     with pytest.raises(ValueError, match="method"):
         validate_qualification_record(forged_method, manifest)
+
+    wrong_callback_pid = json.loads(source.runtime_identity)
+    wrong_callback_pid["provenance"]["compiler_callback_pid"] = source.process_id + 1
+    with pytest.raises(ValueError, match="callback PID"):
+        validate_qualification_record(
+            replace(source, runtime_identity=json.dumps(wrong_callback_pid)),
+            manifest,
+        )
 
     raw = json.loads(source.measurement_raw)
     aggregate = json.loads(source.measurement_aggregate)
@@ -443,6 +574,60 @@ def test_native_min_cut_absolute_budget_fails_closed_without_conversion_evidence
     assert conversion["status"] == "unavailable"
     assert record.correctness_report is None
     assert record.measurement_raw is None
+
+
+def test_native_min_cut_accepts_preregistered_activation_ratio_for_identity_probe():
+    task = build_tiny_mlp_task()
+    manifest, slots = build_qualification_slots(
+        (task,),
+        run_id="min-cut-explicit-ratio",
+        backends=("aot_eager",),
+        methods=("pytorch_min_cut",),
+        memory_budgets_bytes=(1 << 20,),
+        replicates=1,
+        microbatch_size=2,
+        device="cpu",
+        repeat_count=20,
+        timeout_s=90.0,
+        method_configs={
+            "pytorch_min_cut": {
+                "activation_memory_budget": 1.0,
+                "source": "unit-test-explicit-ratio",
+            }
+        },
+    )
+    slot = slots[0]
+    torch.manual_seed(slot.seed)
+    reference = task.build_model()
+    torch.manual_seed(slot.seed)
+    candidate = task.build_model()
+    optimizer = task.build_optimizer(candidate)
+    args, kwargs = task.build_batch(slot.microbatch_size)
+
+    executable, identity = _prepare_method(
+        slot,
+        task,
+        reference,
+        candidate,
+        optimizer,
+        args,
+        kwargs,
+        torch.device("cpu"),
+    )
+    try:
+        conversion = identity["provenance"]["budget_conversion"]
+        assert manifest["qualification_run"]["matrix"]["method_configs"]["pytorch_min_cut"][
+            "activation_memory_budget"
+        ] == 1.0
+        assert slot.to_dict()["method_config"]["activation_memory_budget"] == 1.0
+        assert identity["status"] == "ready"
+        assert identity["method_id"] == "pytorch_aot_min_cut"
+        assert conversion["status"] == "converted"
+        assert conversion["ratio"] == 1.0
+        assert conversion["source"] == "explicit_activation_memory_budget"
+        assert conversion["physical_budget_bytes"] == slot.memory_budget_bytes
+    finally:
+        close_publication_executable(executable)
 
 
 def test_absolute_budget_conversion_requires_complete_auditable_evidence():
@@ -679,8 +864,10 @@ def test_jsonl_summary_manifest_and_t1_are_immutable(tmp_path: Path):
     assert len(lines) == 1
     payload = json.loads(lines[0])
     assert payload["slot_id"] == slots[0].slot_id
-    assert payload["status"] == "unsupported"
-    assert payload["measurement_raw"] is None
+    assert payload["status"] in {"ok", "budget_violation", "runtime_failure"}
+    identity = payload["runtime_identity"]
+    assert identity["status"] == "ready"
+    assert identity["provenance"]["fresh_cache_per_preparation"] is True
     committed_summary = validate_qualification_artifact_bundle(
         output_jsonl=output,
         manifest_json=manifest_path,
@@ -733,6 +920,17 @@ def test_artifact_validator_recomputes_marker_summary_and_validates_jsonl(tmp_pa
                 manifest_json=manifest_path,
                 t1_output=t1_path,
             )
+
+    legacy_summary = json.loads(json.dumps(original_summary))
+    legacy_summary.pop("matrix", None)
+    summary_path.write_text(json.dumps(legacy_summary), encoding="utf-8")
+    validated = validate_qualification_artifact_bundle(
+        output_jsonl=output,
+        manifest_json=manifest_path,
+        t1_output=t1_path,
+    )
+    assert "matrix" not in validated
+    summary_path.write_text(json.dumps(original_summary), encoding="utf-8")
 
     tampered_record = json.loads(output.read_text(encoding="utf-8"))
     tampered_record["task_name"] = "forged-task"

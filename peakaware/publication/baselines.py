@@ -4,6 +4,7 @@ import copy
 import enum
 import functools
 import hashlib
+import inspect
 import json
 import re
 import threading
@@ -84,6 +85,16 @@ class PreparedMethod:
             reason = self.identity.fallback_reason or "method was not prepared"
             raise UnsupportedMethodError(f"{self.spec.method_id} is unsupported: {reason}")
         return self
+
+
+class _CudnnOverrideExecutable:
+    def __init__(self, executable: Callable[..., Any], enabled: bool) -> None:
+        self.executable = executable
+        self.enabled = enabled
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        with torch.backends.cudnn.flags(enabled=self.enabled):
+            return self.executable(*args, **kwargs)
 
 
 def _unsupported(
@@ -260,7 +271,12 @@ def _stable_serialize(value: Any, stack: set[int] | None = None) -> Any:
             "tensor_device": str(value.device),
             "tensor_content_sha256": _tensor_content_sha256(value),
         }
-    tracked = isinstance(value, (tuple, list, dict)) or callable(value)
+    is_transformers_config = (
+        type(value).__module__.startswith("transformers.")
+        and hasattr(value, "to_dict")
+        and callable(value.to_dict)
+    )
+    tracked = isinstance(value, (tuple, list, dict, set, frozenset)) or callable(value) or is_transformers_config
     value_id = id(value)
     if tracked:
         if value_id in stack:
@@ -271,6 +287,10 @@ def _stable_serialize(value: Any, stack: set[int] | None = None) -> Any:
             return {"tuple": [_stable_serialize(item, stack) for item in value]}
         if isinstance(value, list):
             return {"list": [_stable_serialize(item, stack) for item in value]}
+        if isinstance(value, (set, frozenset)):
+            items = [_stable_serialize(item, stack) for item in value]
+            items.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"), default=str))
+            return {type(value).__name__: items}
         if isinstance(value, dict):
             entries = [
                 (_stable_serialize(key, stack), _stable_serialize(item, stack))
@@ -278,6 +298,11 @@ def _stable_serialize(value: Any, stack: set[int] | None = None) -> Any:
             ]
             entries.sort(key=lambda entry: json.dumps(entry[0], sort_keys=True, default=str))
             return {"dict": entries}
+        if is_transformers_config:
+            return {
+                "transformers_config": f"{type(value).__module__}.{type(value).__qualname__}",
+                "config": _stable_serialize(value.to_dict(), stack),
+            }
         if callable(value):
             return {"callable": _callable_payload(value, stack)}
     finally:
@@ -682,6 +707,7 @@ def prepare_aot_min_cut(
     activation_memory_budget: float,
     partitioner_compiler: str = "inductor",
     execution_backend: str = "aot_lowered_graphmodule_eager",
+    cudnn_enabled_override: bool | None = None,
     atol: float = 1e-6,
     rtol: float = 1e-5,
 ) -> PreparedMethod:
@@ -719,12 +745,20 @@ def prepare_aot_min_cut(
     try:
         working_graph = copy.deepcopy(capture.joint_module)
         with functorch_config.patch(activation_memory_budget=ratio):
+            partition_kwargs = {
+                "compiler": partitioner_compiler,
+                "num_fwd_outputs": capture.num_fwd_outputs,
+            }
+            if "static_lifetime_input_indices" in inspect.signature(
+                min_cut_rematerialization_partition
+            ).parameters:
+                partition_kwargs["static_lifetime_input_indices"] = list(
+                    capture.static_lifetime_input_indices
+                )
             fw_graph, bw_graph = min_cut_rematerialization_partition(
                 working_graph,
                 None,
-                compiler=partitioner_compiler,
-                num_fwd_outputs=capture.num_fwd_outputs,
-                static_lifetime_input_indices=list(capture.static_lifetime_input_indices),
+                **partition_kwargs,
             )
     except Exception as exc:
         return _unsupported(spec, f"native min-cut partition failed: {type(exc).__name__}: {exc}")
@@ -760,15 +794,21 @@ def prepare_aot_min_cut(
             fw_graph=fw_graph,
             bw_graph=bw_graph,
         )
-    qualification = _qualify_training_executable(
-        executable,
-        model,
-        example_args,
-        example_kwargs,
-        loss_fn,
-        atol=atol,
-        rtol=rtol,
+    qualification_context = (
+        torch.backends.cudnn.flags(enabled=cudnn_enabled_override)
+        if cudnn_enabled_override is not None
+        else nullcontext()
     )
+    with qualification_context:
+        qualification = _qualify_training_executable(
+            executable,
+            model,
+            example_args,
+            example_kwargs,
+            loss_fn,
+            atol=atol,
+            rtol=rtol,
+        )
     fw_graph_sha256 = _graph_sha256(fw_graph)
     bw_graph_sha256 = _graph_sha256(bw_graph)
     executable_sha256 = _executable_sha256(
@@ -810,6 +850,7 @@ def prepare_aot_min_cut(
                     "cuda_rng_match": qualification.cuda_rng_match,
                     "partitioner_cost_model": partitioner_compiler,
                     "memory_budget_ratio": ratio,
+                    "cudnn_enabled_override": cudnn_enabled_override,
                     "num_fwd_outputs": capture.num_fwd_outputs,
                     "output_tangent_mask": capture.output_tangent_mask,
                     "qualification": "eager_output_loss_parameter_grad",
@@ -823,7 +864,11 @@ def prepare_aot_min_cut(
     return PreparedMethod(
         spec=spec,
         identity=identity,
-        executable=executable,
+        executable=(
+            _CudnnOverrideExecutable(executable, cudnn_enabled_override)
+            if cudnn_enabled_override is not None
+            else executable
+        ),
         fw_graph=fw_graph,
         bw_graph=bw_graph,
     )
@@ -850,6 +895,49 @@ def resolve_block_regions(model: nn.Module, registry_key: str) -> tuple[str, ...
     if any(not isinstance(module, nn.Module) for module in modules):
         return ()
     return declared
+
+
+def resolve_publication_regions(model: nn.Module, registry_key: str) -> tuple[str, ...]:
+    """Resolve the frozen per-block regions used by matched compiler runs.
+
+    Publication workloads are deliberately stricter than the legacy eager
+    baseline resolver: an incomplete ResNet-50 or ViT-B/16 must not silently
+    produce a differently checkpointed workload.
+    """
+    if registry_key == "resnet50":
+        stage_depths = (3, 4, 6, 3)
+        paths = tuple(
+            f"layer{stage_index}.{block_index}"
+            for stage_index, depth in enumerate(stage_depths, start=1)
+            for block_index in range(depth)
+        )
+    elif registry_key == "vit_b_16":
+        paths = tuple(f"encoder.layers.encoder_layer_{index}" for index in range(12))
+    elif registry_key in {"bert_base", "bert_like"}:
+        family = "bert.encoder.layer"
+        try:
+            layer_count = len(model.get_submodule(family))
+        except (AttributeError, KeyError, TypeError):
+            return ()
+        paths = tuple(f"{family}.{index}" for index in range(layer_count))
+    elif registry_key in {"gpt2", "gpt2_like"}:
+        family = "blocks"
+        try:
+            layer_count = len(model.get_submodule(family))
+        except (AttributeError, KeyError, TypeError):
+            return ()
+        paths = tuple(f"{family}.{index}" for index in range(layer_count))
+    else:
+        return ()
+    if not paths:
+        return ()
+    try:
+        regions = tuple(model.get_submodule(path) for path in paths)
+    except (AttributeError, KeyError):
+        return ()
+    if any(not isinstance(region, nn.Module) for region in regions):
+        return ()
+    return paths
 
 
 def _expand_checkpoint_paths(model: nn.Module, region_paths: tuple[str, ...]) -> tuple[str, ...]:

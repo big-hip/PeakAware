@@ -91,6 +91,7 @@ def _plan_row(plan: EvaluatedPlan) -> dict[str, Any]:
         "max_recompute_live_bytes": plan.simulation.max_recompute_live_bytes,
         "risk_score": plan.plan.risk_score,
         "confidence": plan.plan.confidence,
+        "strategy_provenance": dict(plan.plan.strategy_expectation_provenance),
         "ranking_provenance": _ranking_provenance(plan),
         "peak_snapshot": _peak_snapshot_row(plan.simulation.peak_snapshot),
     }

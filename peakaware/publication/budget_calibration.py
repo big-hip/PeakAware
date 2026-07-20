@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import statistics
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, Sequence
 
+from peakaware.experiments import ExperimentRecord
 from peakaware.workload_manifest import canonical_json
 
 
 CALIBRATION_SCHEMA_VERSION = "1.0"
+BUDGET_PLAN_SCHEMA_VERSION = "0.1"
 Backend = Literal["aot_eager", "inductor"]
 Cohort = Literal["tuning", "evaluation"]
 MeasurementStatus = Literal["ok", "budget_violation", "oom"]
@@ -461,6 +465,216 @@ def derive_physical_budgets(
     """Return ``floor(ratio * P_ref)`` without inferring any policy ratio."""
 
     return tuple(reference.physical_budget(ratio) for ratio in ratios)
+
+
+def build_budget_plan_from_records(
+    records: Sequence[ExperimentRecord],
+    *,
+    ratios: Sequence[float],
+    evidence_status: str = "provisional",
+    min_reference_count: int = 5,
+) -> dict[str, Any]:
+    if evidence_status not in {"draft", "provisional", "frozen"}:
+        raise ValueError("evidence_status must be draft, provisional, or frozen")
+    if (
+        isinstance(min_reference_count, bool)
+        or not isinstance(min_reference_count, int)
+        or min_reference_count <= 0
+    ):
+        raise ValueError("min_reference_count must be positive")
+    normalized_ratios = tuple(_normalized_ratio(ratio) for ratio in ratios)
+    if not normalized_ratios:
+        raise ValueError("ratios must not be empty")
+    if len(set(normalized_ratios)) != len(normalized_ratios):
+        raise ValueError("ratios must be unique")
+
+    grouped: dict[tuple[str, int, str, str, str], list[ExperimentRecord]] = {}
+    for record in records:
+        if record.status != "ok" or record.all_save_measured_peak_bytes is None:
+            continue
+        config = record.config_fingerprint or {}
+        grouped.setdefault(
+            (
+                record.task_name,
+                record.microbatch_size,
+                str(config.get("capture_backend", "unknown")),
+                str(config.get("compile_backend", "unknown")),
+                str(config.get("device", "unknown")),
+            ),
+            [],
+        ).append(record)
+    cells: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for key in sorted(grouped):
+        task_name, microbatch_size, capture_backend, compile_backend, device = key
+        samples = grouped[key]
+        peaks = [int(record.all_save_measured_peak_bytes) for record in samples]
+        p_ref = statistics.median(peaks)
+        reference_count = len(peaks)
+        complete = reference_count >= min_reference_count
+        if not complete:
+            warnings.append(
+                f"{task_name}/{capture_backend}/{compile_backend}/mb{microbatch_size} has "
+                f"{reference_count} all-save references; expected at least {min_reference_count}"
+            )
+        cells.append(
+            {
+                "cell_id": _sha256(
+                    {
+                        "task_name": task_name,
+                        "microbatch_size": microbatch_size,
+                        "capture_backend": capture_backend,
+                        "compile_backend": compile_backend,
+                        "device": device,
+                    }
+                ),
+                "task_name": task_name,
+                "microbatch_size": microbatch_size,
+                "capture_backend": capture_backend,
+                "compile_backend": compile_backend,
+                "device": device,
+                "reference_count": reference_count,
+                "reference_complete": complete,
+                "all_save_reference_peak_bytes": peaks,
+                "p_ref_bytes": p_ref,
+                "ratios": list(normalized_ratios),
+                "physical_budgets_bytes": [math.floor(ratio * p_ref) for ratio in normalized_ratios],
+                "source_records": [
+                    {
+                        "task_name": record.task_name,
+                        "variant_name": record.variant_name,
+                        "budget_bytes": record.budget_bytes,
+                        "matrix_pass_index": record.matrix_pass_index,
+                        "all_save_measured_peak_bytes": record.all_save_measured_peak_bytes,
+                    }
+                    for record in sorted(
+                        samples,
+                        key=lambda item: (
+                            item.variant_name,
+                            item.matrix_pass_index,
+                            item.budget_bytes,
+                            item.all_save_measured_peak_bytes or 0,
+                        ),
+                    )
+                ],
+            }
+        )
+    if not cells:
+        raise ValueError("records contain no ok all-save reference measurements")
+    complete = all(cell["reference_complete"] for cell in cells)
+    if evidence_status == "frozen" and not complete:
+        raise ValueError("frozen budget plan requires complete all-save references")
+    return {
+        "schema_version": BUDGET_PLAN_SCHEMA_VERSION,
+        "evidence_status": evidence_status,
+        "min_reference_count": min_reference_count,
+        "ratios": list(normalized_ratios),
+        "cell_count": len(cells),
+        "complete": complete,
+        "warning_count": len(warnings),
+        "warnings": warnings,
+        "cells": cells,
+    }
+
+
+def validate_budget_plan_manifest(
+    budget_manifest: str | Path | dict[str, Any],
+    *,
+    require_frozen: bool = False,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    if isinstance(budget_manifest, (str, Path)):
+        path = Path(budget_manifest)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return _budget_plan_validation_payload(
+                str(path),
+                False,
+                0,
+                (f"invalid budget manifest: {exc}",),
+                (),
+                require_frozen,
+            )
+        source = str(path)
+    else:
+        payload = budget_manifest
+        source = "<mapping>"
+    if not isinstance(payload, dict):
+        errors.append("budget manifest must contain a JSON object")
+        return _budget_plan_validation_payload(source, False, 0, tuple(errors), (), require_frozen)
+    if payload.get("schema_version") != BUDGET_PLAN_SCHEMA_VERSION:
+        errors.append("unsupported budget plan schema_version")
+    evidence_status = payload.get("evidence_status")
+    if require_frozen and evidence_status != "frozen":
+        errors.append("expected frozen budget manifest")
+    min_reference_count = payload.get("min_reference_count")
+    if isinstance(min_reference_count, bool) or not isinstance(min_reference_count, int) or min_reference_count <= 0:
+        errors.append("min_reference_count must be a positive integer")
+        min_reference_count = 1
+    cells = payload.get("cells")
+    if not isinstance(cells, list) or not cells:
+        errors.append("budget manifest must list cells")
+        cells = []
+    for index, cell in enumerate(cells):
+        if not isinstance(cell, dict):
+            errors.append(f"cells[{index}] must be an object")
+            continue
+        reference_count = cell.get("reference_count")
+        reference_complete = cell.get("reference_complete")
+        peaks = cell.get("all_save_reference_peak_bytes")
+        ratios = cell.get("ratios")
+        budgets = cell.get("physical_budgets_bytes")
+        if isinstance(reference_count, bool) or not isinstance(reference_count, int) or reference_count <= 0:
+            errors.append(f"cells[{index}] reference_count must be positive")
+        if not isinstance(peaks, list) or not all(isinstance(value, int) and value > 0 for value in peaks):
+            errors.append(f"cells[{index}] has invalid all-save reference peaks")
+        elif isinstance(reference_count, int) and len(peaks) != reference_count:
+            errors.append(f"cells[{index}] reference_count does not match peak list")
+        if isinstance(reference_count, int) and reference_count < int(min_reference_count):
+            if reference_complete is not False:
+                errors.append(f"cells[{index}] incomplete reference cell is not marked incomplete")
+            warnings.append(f"cells[{index}] has fewer than {min_reference_count} all-save references")
+        if not isinstance(ratios, list) or not isinstance(budgets, list) or len(ratios) != len(budgets):
+            errors.append(f"cells[{index}] ratios and physical_budgets_bytes must have equal length")
+        elif isinstance(peaks, list) and peaks:
+            p_ref = statistics.median(peaks)
+            expected = [math.floor(float(ratio) * p_ref) for ratio in ratios]
+            if budgets != expected:
+                errors.append(f"cells[{index}] physical budgets do not match floor(ratio * P_ref)")
+    complete = bool(payload.get("complete"))
+    if require_frozen and not complete:
+        errors.append("frozen budget manifest must be complete")
+    return _budget_plan_validation_payload(
+        source,
+        not errors,
+        len(cells),
+        tuple(errors),
+        tuple(warnings),
+        require_frozen,
+    )
+
+
+def _budget_plan_validation_payload(
+    source: str,
+    ok: bool,
+    cell_count: int,
+    errors: tuple[str, ...],
+    warnings: tuple[str, ...],
+    require_frozen: bool,
+) -> dict[str, Any]:
+    return {
+        "schema_version": BUDGET_PLAN_SCHEMA_VERSION,
+        "budget_manifest": source,
+        "ok": ok,
+        "require_frozen": require_frozen,
+        "cell_count": cell_count,
+        "error_count": len(errors),
+        "warning_count": len(warnings),
+        "errors": list(errors),
+        "warnings": list(warnings),
+    }
 
 
 def compile_representatives(policies: Sequence[MinCutPolicy]) -> tuple[MinCutPolicy, ...]:

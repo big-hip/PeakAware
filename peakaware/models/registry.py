@@ -220,6 +220,9 @@ def build_bert_base_model(
     num_hidden_layers: int = 2,
     num_attention_heads: int = 4,
     intermediate_size: int = 256,
+    hidden_dropout_prob: float = 0.0,
+    attention_probs_dropout_prob: float = 0.0,
+    classifier_dropout: float | None = 0.0,
 ) -> nn.Module:
     from transformers import BertConfig, BertForSequenceClassification
 
@@ -230,6 +233,9 @@ def build_bert_base_model(
         num_attention_heads=num_attention_heads,
         intermediate_size=intermediate_size,
         num_labels=num_labels,
+        hidden_dropout_prob=hidden_dropout_prob,
+        attention_probs_dropout_prob=attention_probs_dropout_prob,
+        classifier_dropout=classifier_dropout,
     )
     return BertForSequenceClassification(config)
 
@@ -482,6 +488,9 @@ def build_bert_base_task(
     num_hidden_layers: int = 2,
     num_attention_heads: int = 4,
     intermediate_size: int = 256,
+    hidden_dropout_prob: float = 0.0,
+    attention_probs_dropout_prob: float = 0.0,
+    classifier_dropout: float | None = 0.0,
 ) -> TrainingTaskSpec:
     display_name = f"BERT-like-{num_hidden_layers}L-{hidden_size}H"
     return TrainingTaskSpec(
@@ -494,6 +503,9 @@ def build_bert_base_task(
             num_hidden_layers=num_hidden_layers,
             num_attention_heads=num_attention_heads,
             intermediate_size=intermediate_size,
+            hidden_dropout_prob=hidden_dropout_prob,
+            attention_probs_dropout_prob=attention_probs_dropout_prob,
+            classifier_dropout=classifier_dropout,
         ),
         build_batch=TokenBatchBuilder(sequence_length, vocab_size),
         loss_fn=logits_squared_mean_loss,
@@ -513,12 +525,12 @@ def build_bert_base_task(
                 "intermediate_size": intermediate_size,
                 "num_labels": 2,
                 "hidden_act": "gelu",
-                "hidden_dropout_prob": 0.1,
-                "attention_probs_dropout_prob": 0.1,
+                "hidden_dropout_prob": hidden_dropout_prob,
+                "attention_probs_dropout_prob": attention_probs_dropout_prob,
                 "max_position_embeddings": 512,
                 "type_vocab_size": 2,
                 "layer_norm_eps": 1e-12,
-                "classifier_dropout": None,
+                "classifier_dropout": classifier_dropout,
                 "pad_token_id": 0,
             },
             input_config={

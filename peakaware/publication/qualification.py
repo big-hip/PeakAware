@@ -14,7 +14,8 @@ import time
 import traceback
 import types
 import uuid
-from dataclasses import dataclass, replace
+from contextlib import nullcontext
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -37,10 +38,11 @@ from peakaware.memory.fixed_frontier import build_optimizer_spec
 from peakaware.models.registry import TrainingTaskRegistry
 from peakaware.publication.baselines import (
     PreparedMethod,
-    prepare_all_save,
     prepare_aot_min_cut,
-    prepare_block_activation_checkpoint,
-    prepare_selective_activation_checkpoint,
+)
+from peakaware.publication.compiler import (
+    close_publication_executable,
+    prepare_publication_compiler,
 )
 from peakaware.runtime import measure_publication_training_step_phases
 from peakaware.workload_manifest import (
@@ -270,6 +272,7 @@ class QualificationSlot:
     attempt_index: int
     pairing_block_id: str
     execution_order_index: int
+    method_config: FrozenConfig = field(default_factory=FrozenConfig)
 
     def __post_init__(self) -> None:
         if self.schema_version != QUALIFICATION_SCHEMA_VERSION:
@@ -286,6 +289,8 @@ class QualificationSlot:
             object.__setattr__(self, "workload_config", FrozenConfig(self.workload_config))
         if not isinstance(self.execution_config, FrozenConfig):
             object.__setattr__(self, "execution_config", FrozenConfig(self.execution_config))
+        if not isinstance(self.method_config, FrozenConfig):
+            object.__setattr__(self, "method_config", FrozenConfig(self.method_config))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -311,6 +316,7 @@ class QualificationSlot:
             "attempt_index": self.attempt_index,
             "pairing_block_id": self.pairing_block_id,
             "execution_order_index": self.execution_order_index,
+            "method_config": _thaw(self.method_config),
         }
 
 
@@ -428,6 +434,13 @@ def _slot_id(run_id: str, case_id_value: str, replicate_id: str, attempt_id: str
     )
 
 
+def _method_strategy(method: str, method_config: Mapping[str, Any]) -> str:
+    method_config_payload = _thaw(method_config)
+    if not method_config_payload:
+        return method
+    return f"{method}:{_sha256({'method': method, 'method_config': method_config_payload})}"
+
+
 @_preserve_all_rng
 def build_qualification_slots(
     tasks: Sequence[TrainingTaskSpec],
@@ -444,6 +457,7 @@ def build_qualification_slots(
     repeat_count: int = 20,
     timeout_s: float = 900.0,
     warmup_steps_by_backend: Mapping[str, int] | None = None,
+    method_configs: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], tuple[QualificationSlot, ...]]:
     if not run_id:
         raise ValueError("run_id must not be empty")
@@ -461,6 +475,13 @@ def build_qualification_slots(
     for method in methods:
         if method not in PUBLICATION_METHODS:
             raise ValueError(f"unsupported method: {method}")
+    frozen_method_configs = {
+        method: FrozenConfig(config)
+        for method, config in (method_configs or {}).items()
+    }
+    unknown_method_configs = sorted(set(frozen_method_configs) - set(methods))
+    if unknown_method_configs:
+        raise ValueError(f"method_configs contain methods outside the matrix: {unknown_method_configs}")
     missing_workloads = [task.name for task in tasks if task.workload is None]
     if missing_workloads:
         raise ValueError(f"tasks have no workload identity: {missing_workloads}")
@@ -513,11 +534,12 @@ def build_qualification_slots(
                     )
                     attempt_id = attempt_fingerprint(replicate_id, attempt_id=attempt_index)
                     for method in sorted(methods):
+                        method_config = frozen_method_configs.get(method, FrozenConfig())
                         method_case_id = case_id(
                             entry["workload_fingerprint"],
                             execution_fingerprint,
                             memory_budget_bytes=budget,
-                            strategy=method,
+                            strategy=_method_strategy(method, method_config),
                         )
                         block_id = _pairing_block_id(
                             entry["workload_fingerprint"],
@@ -549,6 +571,7 @@ def build_qualification_slots(
                                 attempt_index=attempt_index,
                                 pairing_block_id=block_id,
                                 execution_order_index=0,
+                                method_config=method_config,
                             )
                         )
     blocks: dict[str, list[QualificationSlot]] = {}
@@ -595,6 +618,10 @@ def build_qualification_slots(
                 "charged to the deadline and checked immediately after start returns"
             ),
             "worker_process_group_protocol": "POSIX setsid + process-group TERM/KILL; process fallback otherwise",
+            "method_configs": {
+                method: _thaw(config)
+                for method, config in sorted(frozen_method_configs.items())
+            },
         },
         "expected_slot_count": len(slots),
         "expected_slot_ids": sorted(slot.slot_id for slot in slots),
@@ -637,7 +664,7 @@ def validate_qualification_slot(slot: QualificationSlot, manifest: Mapping[str, 
         expected_workload,
         expected_execution,
         memory_budget_bytes=slot.memory_budget_bytes,
-        strategy=slot.method,
+        strategy=_method_strategy(slot.method, slot.method_config),
     )
     expected_replicate = replicate_fingerprint(
         expected_workload,
@@ -682,6 +709,8 @@ def validate_qualification_slot(slot: QualificationSlot, manifest: Mapping[str, 
         "task": slot.task_name in matrix.get("tasks", ()),
         "backend": slot.backend in matrix.get("backends", ()),
         "method": slot.method in matrix.get("methods", ()),
+        "method config": canonical_json(_thaw(slot.method_config))
+        == canonical_json(matrix.get("method_configs", {}).get(slot.method, {})),
         "memory budget": slot.memory_budget_bytes in matrix.get("memory_budgets_bytes", ()),
         "microbatch": slot.microbatch_size == matrix.get("microbatch_size"),
         "device": execution_spec.device == matrix.get("device"),
@@ -731,7 +760,9 @@ def validate_worker_task_binding(
         microbatch_size=slot.microbatch_size,
         seed=matrix["base_seed"],
     )
-    if canonical_json(actual_binding) != canonical_json(expected_binding):
+    if canonical_json(_task_binding_worker_comparison(actual_binding)) != canonical_json(
+        _task_binding_worker_comparison(expected_binding)
+    ):
         raise ValueError("worker registry task binding does not match the preregistered factories and probe")
     validate_record_manifest_reference(
         manifest,
@@ -742,6 +773,15 @@ def validate_worker_task_binding(
             "workload_config": actual_config,
         },
     )
+
+
+def _task_binding_worker_comparison(binding: Mapping[str, Any]) -> dict[str, Any]:
+    payload = _thaw(binding)
+    payload.pop("fingerprint", None)
+    rng_after_probe = payload.get("probe", {}).get("rng_after_probe", {})
+    if isinstance(rng_after_probe, dict):
+        rng_after_probe.pop("python_sha256", None)
+    return payload
 
 
 def _validate_qualification_preregistration(manifest: Mapping[str, Any]) -> None:
@@ -1286,57 +1326,6 @@ def convert_physical_budget_to_activation_memory_budget(
     return {**evidence, "status": "converted", "ratio": ratio, "reason": None}
 
 
-def _compile_all_save(model: nn.Module, backend: str) -> tuple[Callable[..., Any], dict[str, Any]]:
-    if backend != "aot_eager":
-        raise _Unsupported(f"all_save has no qualified {backend} adapter")
-    try:
-        from functorch.compile import make_boxed_func
-        from torch._dynamo.backends.common import aot_autograd
-        from torch._functorch.partitioners import default_partition
-    except (ImportError, AttributeError) as exc:
-        raise _Unsupported(f"all-save AOT APIs are unavailable: {exc}") from exc
-
-    observations: dict[str, Any] = {
-        "fw_compile_count": 0,
-        "bw_compile_count": 0,
-        "fw_graph_sha256": [],
-        "bw_graph_sha256": [],
-    }
-
-    def compile_graph(graph_module: torch.fx.GraphModule, _inputs: list[Any], phase: str):
-        observations[f"{phase}_compile_count"] += 1
-        observations[f"{phase}_graph_sha256"].append(
-            hashlib.sha256(str(graph_module.graph).encode("utf-8")).hexdigest()
-        )
-        return make_boxed_func(graph_module.forward)
-
-    compiler = aot_autograd(
-        fw_compiler=lambda graph, inputs: compile_graph(graph, inputs, "fw"),
-        bw_compiler=lambda graph, inputs: compile_graph(graph, inputs, "bw"),
-        partition_fn=default_partition,
-        keep_inference_input_mutations=True,
-    )
-    executable = torch.compile(model, backend=compiler)
-    prepared = prepare_all_save(model).require_supported()
-    identity = prepared.identity.to_dict()
-    identity["api"] = "torch.compile+aot_autograd(default_partition)"
-    identity["compiler_protocol"] = "aot_eager:custom_aot_autograd_default_partition"
-    identity["policy"] = "default_partition_without_rematerialization"
-    identity["provenance"] = {
-        **dict(identity.get("provenance", {})),
-        "partition_fn": "torch._functorch.partitioners.default_partition",
-        "partition_fn_source_sha256": hashlib.sha256(
-            inspect.getsource(default_partition).encode("utf-8")
-        ).hexdigest(),
-        "all_save_naming_scope": (
-            "no-rematerialization AOTAutograd partition; all values required by backward are returned "
-            "by the forward according to default_partition, excluding dead/non-required values"
-        ),
-    }
-    setattr(executable, "_peakaware_runtime_observations", observations)
-    return executable, identity
-
-
 def _identity_with_runtime_observations(
     identity: Mapping[str, Any],
     executable: Callable[..., Any],
@@ -1348,26 +1337,87 @@ def _identity_with_runtime_observations(
     return result
 
 
+def _cudnn_context_from_identity(identity: Mapping[str, Any] | None) -> Any:
+    if identity is None:
+        return nullcontext()
+    provenance = identity.get("provenance", {})
+    if not isinstance(provenance, Mapping):
+        return nullcontext()
+    override = provenance.get("cudnn_enabled_override")
+    if override is None:
+        return nullcontext()
+    return torch.backends.cudnn.flags(enabled=bool(override))
+
+
 def _prepare_method(
     slot: QualificationSlot,
     task: TrainingTaskSpec,
+    reference_model: nn.Module,
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     device: torch.device,
 ) -> tuple[Callable[..., Any], dict[str, Any]]:
+    if slot.method in {"all_save", "block_ac", "sac"}:
+        prepared = prepare_publication_compiler(
+            model,
+            task.workload.registry_key if task.workload is not None else task.name,
+            reference_model=reference_model,
+            method=slot.method,
+            backend=slot.backend,
+            example_args=args,
+            example_kwargs=kwargs,
+            loss_fn=task.loss_fn,
+            cache_identity=slot.attempt_id,
+        )
+        if not prepared.supported or prepared.executable is None:
+            identity = prepared.identity.to_dict()
+            identity["provenance"] = {
+                **dict(identity.get("provenance", {})),
+                "requested_method": slot.method,
+                "requested_backend": slot.backend,
+            }
+            raise _Unsupported(prepared.identity.fallback_reason or "adapter preparation failed", identity)
+        return prepared.executable, prepared.identity.to_dict()
     if slot.backend == "inductor":
         reason = f"{slot.method} has no qualified Inductor adapter"
         raise _Unsupported(reason, _unsupported_runtime_identity(slot, reason))
-    if slot.method == "all_save":
-        return _compile_all_save(model, slot.backend)
-    elif slot.method == "pytorch_min_cut":
-        conversion = convert_physical_budget_to_activation_memory_budget(
-            slot.memory_budget_bytes,
-            fixed_physical_bytes=None,
-            maximum_saved_activation_bytes=None,
-        )
+    if slot.method == "pytorch_min_cut":
+        method_config = _thaw(slot.method_config)
+        activation_memory_budget = method_config.get("activation_memory_budget")
+        if activation_memory_budget is None:
+            conversion = convert_physical_budget_to_activation_memory_budget(
+                slot.memory_budget_bytes,
+                fixed_physical_bytes=None,
+                maximum_saved_activation_bytes=None,
+            )
+        elif (
+            isinstance(activation_memory_budget, bool)
+            or not isinstance(activation_memory_budget, (int, float))
+            or not 0.0 <= float(activation_memory_budget) <= 1.0
+        ):
+            conversion = {
+                "schema_version": "1.0",
+                "physical_budget_bytes": slot.memory_budget_bytes,
+                "fixed_physical_bytes": None,
+                "maximum_saved_activation_bytes": None,
+                "status": "invalid",
+                "ratio": None,
+                "reason": "activation_memory_budget must be a number in [0, 1]",
+                "source": "qualification_method_config",
+            }
+        else:
+            conversion = {
+                "schema_version": "1.0",
+                "physical_budget_bytes": slot.memory_budget_bytes,
+                "fixed_physical_bytes": None,
+                "maximum_saved_activation_bytes": None,
+                "status": "converted",
+                "ratio": float(activation_memory_budget),
+                "reason": None,
+                "source": "explicit_activation_memory_budget",
+            }
         if conversion["status"] != "converted":
             reason = f"absolute-to-activation budget conversion unavailable: {conversion['reason']}"
             raise _Unsupported(
@@ -1380,22 +1430,28 @@ def _prepare_method(
                     provenance={"budget_conversion": conversion},
                 ),
             )
-        capture = _capture(model, optimizer, task, args, kwargs, slot.memory_budget_bytes, device)
-        prepared = prepare_aot_min_cut(
-            model,
-            capture,
-            example_args=args,
-            example_kwargs=kwargs,
-            loss_fn=task.loss_fn,
-            activation_memory_budget=float(conversion["ratio"]),
-            execution_backend="aot_lowered_graphmodule_eager",
+        cudnn_enabled_override = (
+            False
+            if (task.workload is not None and task.workload.registry_key == "resnet50")
+            else None
         )
-    elif slot.method == "block_ac":
-        reason = "block_ac adapter is eager and is not integrated with the requested aot_eager compiler protocol"
-        raise _Unsupported(reason, _unsupported_runtime_identity(slot, reason))
-    elif slot.method == "sac":
-        reason = "sac adapter is eager and is not integrated with the requested aot_eager compiler protocol"
-        raise _Unsupported(reason, _unsupported_runtime_identity(slot, reason))
+        cudnn_context = (
+            torch.backends.cudnn.flags(enabled=cudnn_enabled_override)
+            if cudnn_enabled_override is not None
+            else nullcontext()
+        )
+        with cudnn_context:
+            capture = _capture(model, optimizer, task, args, kwargs, slot.memory_budget_bytes, device)
+            prepared = prepare_aot_min_cut(
+                model,
+                capture,
+                example_args=args,
+                example_kwargs=kwargs,
+                loss_fn=task.loss_fn,
+                activation_memory_budget=float(conversion["ratio"]),
+                execution_backend="aot_lowered_graphmodule_eager",
+                cudnn_enabled_override=cudnn_enabled_override,
+            )
     elif slot.method == "peakaware":
         config = PeakAwareConfig(
             capture_backend="aot",
@@ -1466,6 +1522,13 @@ def _prepare_method(
 
     if not isinstance(prepared, PreparedMethod) or not prepared.supported or prepared.executable is None:
         identity = prepared.identity.to_dict()
+        if slot.method == "pytorch_min_cut":
+            identity["provenance"] = {
+                **dict(identity.get("provenance", {})),
+                "budget_conversion": conversion,
+                "requested_method": slot.method,
+                "requested_backend": slot.backend,
+            }
         raise _Unsupported(prepared.identity.fallback_reason or "adapter preparation failed", identity)
     identity = prepared.identity.to_dict()
     if slot.method == "pytorch_min_cut":
@@ -1552,6 +1615,8 @@ def _worker_record(
     correctness: dict[str, Any] | None = None
     measurement: dict[str, Any] | None = None
     environment: dict[str, Any] | None = None
+    executable: Callable[..., Any] | None = None
+    measurement_executable: Callable[..., Any] | None = None
 
     def mark(next_stage: str) -> None:
         nonlocal stage
@@ -1564,6 +1629,8 @@ def _worker_record(
         _seed_all(slot.seed)
         device = torch.device(_thaw(slot.execution_config)["device"])
         if device.type == "cuda":
+            if device.index is None:
+                device = torch.device("cuda", torch.cuda.current_device())
             torch.cuda.set_device(device)
             torch.cuda.manual_seed_all(slot.seed)
         environment = _environment(device)
@@ -1580,6 +1647,7 @@ def _worker_record(
         executable, runtime_identity = _prepare_method(
             slot,
             task,
+            reference_model,
             candidate_model,
             candidate_optimizer,
             args,
@@ -1588,28 +1656,32 @@ def _worker_record(
         )
 
         mark("correctness")
-        correctness = qualify_three_step_correctness(
-            reference_model,
-            candidate_model,
-            executable,
-            reference_optimizer,
-            candidate_optimizer,
-            task.loss_fn,
-            args,
-            kwargs,
-            device=device,
-        )
+        with _cudnn_context_from_identity(runtime_identity):
+            correctness = qualify_three_step_correctness(
+                reference_model,
+                candidate_model,
+                executable,
+                reference_optimizer,
+                candidate_optimizer,
+                task.loss_fn,
+                args,
+                kwargs,
+                device=device,
+            )
         if not correctness["passed"]:
             raise _CorrectnessFailure(correctness["first_mismatch"] or "three-step correctness mismatch")
         runtime_identity = _identity_with_runtime_observations(runtime_identity, executable)
-        if slot.method == "all_save":
+        if slot.method in {"all_save", "block_ac", "sac"}:
             observed = runtime_identity.get("runtime_observations", {})
-            if observed.get("fw_compile_count", 0) < 1 or observed.get("bw_compile_count", 0) < 1:
-                raise _CorrectnessFailure("all-save compiler callbacks were not observed for forward and backward")
+            if any(observed.get(f"{phase}_compile_count", 0) < 1 for phase in ("joint", "fw", "bw")):
+                raise _CorrectnessFailure("matched compiler callbacks were not observed for joint/FW/BW graphs")
+        close_publication_executable(executable)
+        executable = None
 
         # Correctness qualification advances state. Rebuild a clean, independent
         # measurement instance so the measured trajectory starts from its own seed.
         mark("measurement_setup")
+        measurement_reference_model, _ = _build_seeded_model_optimizer(task, device, slot.seed)
         measurement_model, measurement_optimizer = _build_seeded_model_optimizer(task, device, slot.seed)
         measurement_args, measurement_kwargs = _build_seeded_batch(
             task,
@@ -1620,6 +1692,7 @@ def _worker_record(
         measurement_executable, measurement_identity = _prepare_method(
             slot,
             task,
+            measurement_reference_model,
             measurement_model,
             measurement_optimizer,
             measurement_args,
@@ -1743,6 +1816,9 @@ def _worker_record(
             elapsed_seconds=time.monotonic() - started,
             last_progress_stage=stage,
         )
+    finally:
+        close_publication_executable(executable)
+        close_publication_executable(measurement_executable)
 
 
 class _CorrectnessFailure(RuntimeError):
@@ -1964,7 +2040,12 @@ def _timing_field_names(prefix: str) -> set[str]:
     }
 
 
-def _validate_timing_fields(sample: Mapping[str, Any], prefix: str, max_gap: float) -> None:
+def _validate_timing_fields(
+    sample: Mapping[str, Any],
+    prefix: str,
+    max_gap: float,
+    max_abs_gap: float,
+) -> None:
     wall = sample.get(f"{prefix}_wall_us")
     event = sample.get(f"{prefix}_event_us")
     absolute = sample.get(f"{prefix}_event_wall_abs_diff_us")
@@ -1979,7 +2060,11 @@ def _validate_timing_fields(sample: Mapping[str, Any], prefix: str, max_gap: flo
         if not all(_finite_non_negative_number(value) for value in (event, absolute)):
             raise ValueError(f"{prefix} event timing is invalid")
         expected_relative = absolute / event if event > 0 else None
-        expected_qualified = expected_relative <= max_gap if expected_relative is not None else None
+        expected_qualified = (
+            expected_relative <= max_gap or absolute <= max_abs_gap
+            if expected_relative is not None
+            else None
+        )
         if (
             relative != expected_relative
             or qualified != expected_qualified
@@ -2000,8 +2085,13 @@ def _validate_measurement_samples(
     phase = raw.get("phase_samples")
     combined = raw.get("raw_samples")
     max_gap = aggregate.get("max_event_wall_relative_gap")
+    max_abs_gap = aggregate.get("max_event_wall_absolute_gap_us", 2_000.0)
     trend_tolerance = aggregate.get("warmup_trend_relative_tolerance")
-    if not _finite_non_negative_number(max_gap) or not _finite_non_negative_number(trend_tolerance):
+    if (
+        not _finite_non_negative_number(max_gap)
+        or not _finite_non_negative_number(max_abs_gap)
+        or not _finite_non_negative_number(trend_tolerance)
+    ):
         raise ValueError("measurement aggregate tolerances are invalid")
     if set(raw) != {"warmup_samples", "overall_samples", "phase_samples", "raw_samples"}:
         raise ValueError("measurement raw data has an invalid structure")
@@ -2030,7 +2120,7 @@ def _validate_measurement_samples(
         } | _timing_field_names("warmup")
         if not _timing_field_names("warmup") <= set(sample) or set(sample) - allowed_fields:
             raise ValueError("warmup sample fields are invalid")
-        _validate_timing_fields(sample, "warmup", max_gap)
+        _validate_timing_fields(sample, "warmup", max_gap, max_abs_gap)
         for optional in ("last5_wall_strictly_decreasing", "last5_event_strictly_decreasing"):
             if optional in sample and sample[optional] is not None and type(sample[optional]) is not bool:
                 raise ValueError(f"warmup sample field {optional} is invalid")
@@ -2048,7 +2138,7 @@ def _validate_measurement_samples(
         } | _timing_field_names("overall")
         if set(sample) != expected_fields:
             raise ValueError("overall sample fields are invalid")
-        _validate_timing_fields(sample, "overall", max_gap)
+        _validate_timing_fields(sample, "overall", max_gap, max_abs_gap)
         for key in ("overall_peak_bytes", "overall_reserved_peak_bytes"):
             if not _non_negative_int(sample.get(key)):
                 raise ValueError(f"overall sample byte field {key} must be an integer")
@@ -2072,7 +2162,7 @@ def _validate_measurement_samples(
         if set(sample) != expected_fields:
             raise ValueError("phase sample fields are invalid")
         for phase_name in ("fw", "bw", "optimizer"):
-            _validate_timing_fields(sample, phase_name, max_gap)
+            _validate_timing_fields(sample, phase_name, max_gap, max_abs_gap)
             for suffix in ("peak_bytes", "reserved_peak_bytes"):
                 key = f"{phase_name}_{suffix}"
                 if not _non_negative_int(sample.get(key)):
@@ -2116,10 +2206,13 @@ def _validate_measurement_samples(
         len(warmup),
         trend_tolerance,
         max_gap,
+        max_abs_gap,
     )
-    window_qualified = [rebuilt[f"{name}_timing_qualified"] for name in ("fw", "bw", "optimizer", "overall")]
+    phase_window_qualified = [rebuilt[f"{name}_timing_qualified"] for name in ("fw", "bw", "optimizer")]
     warmup_timing = [sample["warmup_timing_qualified"] for sample in warmup]
-    timing_qualified = all(value is True for value in (*window_qualified, *warmup_timing))
+    phase_timing_qualified = all(value is True for value in phase_window_qualified)
+    warmup_timing_qualified = all(value is True for value in warmup_timing)
+    timing_qualified = rebuilt["overall_timing_qualified"] is True
     event_trend = rebuilt["warmup_event_trend_stable"]
     trend_qualified = rebuilt["warmup_wall_trend_stable"] is True and event_trend in {True, None}
     reasons = []
@@ -2134,6 +2227,11 @@ def _validate_measurement_samples(
             "warmup_auto_extended_steps": len(warmup) - registered_warmup,
             "warmup_reached_max_steps": len(warmup) == 30,
             "timing_qualified": timing_qualified,
+            "phase_timing_qualified": phase_timing_qualified,
+            "warmup_timing_qualified": warmup_timing_qualified,
+            "publication_timing_scope": "overall_step",
+            "phase_timing_scope": "diagnostic_only",
+            "warmup_timing_scope": "diagnostic_only",
             "warmup_trend_qualified": trend_qualified,
             "publication_qualified": timing_qualified and trend_qualified,
             "publication_status": (
@@ -2158,16 +2256,48 @@ def _validate_ready_runtime_provenance(
     identity: Mapping[str, Any],
 ) -> None:
     provenance = identity["provenance"]
-    if slot.method == "all_save":
+    if slot.method in {"all_save", "block_ac", "sac"}:
         observations = identity.get("runtime_observations")
+        expected_partition = (
+            "torch._functorch.partitioners.default_partition"
+            if slot.backend == "aot_eager"
+            else "torch._inductor.custom_graph_pass.CustomPartitionerFn(default_partition)"
+        )
         if (
-            provenance.get("partition_fn") != "torch._functorch.partitioners.default_partition"
-            or len(str(provenance.get("partition_fn_source_sha256", ""))) != 64
+            provenance.get("partition_fn") != expected_partition
+            or provenance.get("fullgraph") is not True
+            or provenance.get("graph_break_count") != 0
+            or provenance.get("partition_callback_count", 0) < 1
+            or provenance.get("joint_callback_count", 0) < 1
+            or provenance.get("fw_callback_count", 0) < 1
+            or provenance.get("bw_callback_count", 0) < 1
+            or len(str(provenance.get("joint_graph_sha256", ""))) != 64
+            or len(str(identity.get("fw_graph_sha256", ""))) != 64
+            or len(str(identity.get("bw_graph_sha256", ""))) != 64
+            or provenance.get("compiler_callbacks_observed_in_process") is not True
             or not isinstance(observations, Mapping)
+            or observations.get("joint_compile_count", 0) < 1
             or observations.get("fw_compile_count", 0) < 1
             or observations.get("bw_compile_count", 0) < 1
+            or observations.get("compiler_callback_pid") != provenance.get("compiler_callback_pid")
         ):
-            raise ValueError("all-save identity lacks default_partition runtime evidence")
+            raise ValueError("matched compiler identity lacks joint/FW/BW default_partition evidence")
+        if slot.backend == "inductor" and (
+            provenance.get("fresh_cache_per_preparation") is not True
+            or provenance.get("cache_reuse_disabled") is not True
+            or not provenance.get("cache_identity")
+            or observations.get("cache_identity") != provenance.get("cache_identity")
+            or observations.get("cache_reuse_disabled") is not True
+            or provenance.get("static_lifetime_input_indices_observed") is not True
+        ):
+            raise ValueError("Inductor identity lacks independent cold-cache evidence")
+    if slot.method == "all_save":
+        if (
+            identity.get("region_paths")
+            or provenance.get("checkpoint_call_count") != 0
+            or provenance.get("recompute_count") != 0
+        ):
+            raise ValueError("all-save identity unexpectedly contains checkpoint evidence")
     elif slot.method == "pytorch_min_cut":
         conversion = provenance.get("budget_conversion")
         if (
@@ -2181,6 +2311,8 @@ def _validate_ready_runtime_provenance(
             not identity.get("region_paths")
             or provenance.get("checkpoint_call_count", 0) < 1
             or provenance.get("recompute_count", 0) < 1
+            or provenance.get("checkpoint_region_count") != len(identity.get("region_paths", ()))
+            or provenance.get("checkpoint_region_paths") != identity.get("region_paths")
         ):
             raise ValueError("block AC identity lacks region and recomputation provenance")
     elif slot.method == "sac":
@@ -2189,6 +2321,10 @@ def _validate_ready_runtime_provenance(
             or provenance.get("must_save_count", 0) < 1
             or provenance.get("prefer_recompute_count", 0) < 1
             or not provenance.get("policy_hash")
+            or not provenance.get("policy_source")
+            or not provenance.get("policy_save_ops")
+            or provenance.get("checkpoint_call_count", 0) < 1
+            or provenance.get("recompute_count", 0) < 1
         ):
             raise ValueError("SAC identity lacks policy decision provenance")
     elif slot.method == "peakaware":
@@ -2218,6 +2354,12 @@ def validate_qualification_record(
         provenance = identity.get("provenance")
         if not isinstance(provenance, Mapping) or not provenance:
             raise ValueError("runtime identity requires non-empty provenance")
+        if (
+            record.status in {"ok", "budget_violation", "runtime_failure", "correctness_failure"}
+            and provenance.get("compiler_callback_pid") is not None
+            and provenance.get("compiler_callback_pid") != record.process_id
+        ):
+            raise ValueError("compiler callback PID does not match the qualification worker")
 
     correctness_payload = _decode_or_none(record.correctness_report)
     if correctness_payload is not None:
@@ -2620,6 +2762,17 @@ def summarize_qualification(
         "schema_version": QUALIFICATION_SCHEMA_VERSION,
         "record_count": len(records),
         "expected_slot_count": expected_count,
+        "matrix": {
+            "tasks": list(run["matrix"]["tasks"]),
+            "backends": list(run["matrix"]["backends"]),
+            "methods": list(run["matrix"]["methods"]),
+            "memory_budgets_bytes": list(run["matrix"]["memory_budgets_bytes"]),
+            "replicates": run["matrix"]["replicates"],
+            "microbatch_size": run["matrix"]["microbatch_size"],
+            "device": run["matrix"]["device"],
+            "repeat_count": run["matrix"]["repeat_count"],
+            "warmup_steps_by_backend": dict(run["matrix"]["warmup_steps_by_backend"]),
+        },
         "status_counts": status_counts,
         "complete_slot_coverage": complete_slot_coverage,
         "record_order_valid": relative_order_valid,
@@ -2792,9 +2945,23 @@ def validate_qualification_artifact_bundle(
         records.append(record)
     rebuilt_summary = summarize_qualification(records, manifest)
     marker_summary = {key: value for key, value in summary.items() if key != "artifact_commit"}
-    if canonical_json(marker_summary) != canonical_json(rebuilt_summary):
+    if not _qualification_summary_matches(marker_summary, rebuilt_summary):
         raise ValueError("artifact commit marker summary does not match validated records and manifest")
     return summary
+
+
+def _qualification_summary_matches(
+    marker_summary: Mapping[str, Any],
+    rebuilt_summary: Mapping[str, Any],
+) -> bool:
+    if canonical_json(marker_summary) == canonical_json(rebuilt_summary):
+        return True
+    legacy_marker = dict(marker_summary)
+    if "matrix" not in legacy_marker:
+        legacy_rebuilt = dict(rebuilt_summary)
+        legacy_rebuilt.pop("matrix", None)
+        return canonical_json(legacy_marker) == canonical_json(legacy_rebuilt)
+    return False
 
 
 def cleanup_uncommitted_qualification_artifacts(

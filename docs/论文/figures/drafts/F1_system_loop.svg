@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="660" viewBox="0 0 1120 660" role="img" aria-labelledby="title desc">
+  <title id="title">F-1 PeakAware system loop draft</title>
+  <desc id="desc">Draft architecture diagram for PeakAware, from joint graph capture to executable validation and complete-step measurement.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="11" markerHeight="8" refX="10" refY="4" orient="auto">
+      <path d="M0,0 L11,4 L0,8 Z" fill="#3f3f3f"/>
+    </marker>
+    <marker id="feedback" markerWidth="11" markerHeight="8" refX="10" refY="4" orient="auto">
+      <path d="M0,0 L11,4 L0,8 Z" fill="#D55E00"/>
+    </marker>
+    <style>
+      .title { font: 700 24px Arial, sans-serif; fill: #111; }
+      .subtitle { font: 400 13px Arial, sans-serif; fill: #555; }
+      .label { font: 700 16px Arial, sans-serif; fill: #111; }
+      .small { font: 400 12px Arial, sans-serif; fill: #333; }
+      .tiny { font: 400 11px Arial, sans-serif; fill: #555; }
+      .static { fill: #E5F3FA; stroke: #56B4E9; }
+      .runtime { fill: #FFF1DB; stroke: #E69F00; }
+      .ok { fill: #E6F4EE; stroke: #009E73; }
+      .boundary { fill: #F7F7F7; stroke: #666; stroke-dasharray: 7 5; }
+      .box { stroke-width: 2; rx: 8; ry: 8; }
+      .line { stroke: #3f3f3f; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .feedback { stroke: #D55E00; stroke-width: 2.2; fill: none; stroke-dasharray: 7 5; marker-end: url(#feedback); }
+    </style>
+  </defs>
+
+  <rect width="1120" height="660" fill="#fff"/>
+  <text class="title" x="48" y="48">PeakAware system loop</text>
+  <text class="subtitle" x="48" y="72">Draft F-1: plan identity is optimized statically, then accepted only after lowered execution and complete-step physical-peak measurement.</text>
+
+  <rect class="boundary" x="36" y="100" width="650" height="410" rx="12"/>
+  <text class="small" x="54" y="124">Joint-graph planning domain</text>
+
+  <rect class="boundary" x="716" y="100" width="368" height="410" rx="12"/>
+  <text class="small" x="734" y="124">Execution and measurement domain</text>
+
+  <rect class="box static" x="70" y="165" width="190" height="82"/>
+  <text class="label" x="94" y="195">Joint capture</text>
+  <text class="small" x="94" y="220">AOT FW/BW graph</text>
+  <text class="tiny" x="94" y="237">static shape, single device</text>
+
+  <rect class="box static" x="330" y="165" width="190" height="82"/>
+  <text class="label" x="357" y="195">Storage IR</text>
+  <text class="small" x="357" y="220">alias-aware values</text>
+  <text class="tiny" x="357" y="237">SAVE/RECOMPUTE identity</text>
+
+  <rect class="box static" x="70" y="325" width="190" height="94"/>
+  <text class="label" x="101" y="356">D0-D5 diagnosis</text>
+  <text class="small" x="101" y="381">saved-to-peak gap</text>
+  <text class="tiny" x="101" y="399">storage, liveness, fixed frontier</text>
+
+  <rect class="box static" x="330" y="325" width="190" height="94"/>
+  <text class="label" x="362" y="356">Seeds and repair</text>
+  <text class="small" x="362" y="381">min-cut, block, greedy</text>
+  <text class="tiny" x="362" y="399">peak live set and hints</text>
+
+  <rect class="box runtime" x="582" y="245" width="190" height="94"/>
+  <text class="label" x="620" y="276">Pareto Top-K</text>
+  <text class="small" x="620" y="301">candidate diversity</text>
+  <text class="tiny" x="620" y="319">compile budget control</text>
+
+  <rect class="box runtime" x="830" y="165" width="190" height="82"/>
+  <text class="label" x="859" y="195">Lowering</text>
+  <text class="small" x="859" y="220">FW/BW executable</text>
+  <text class="tiny" x="859" y="237">private AOT ABI boundary</text>
+
+  <rect class="box ok" x="830" y="325" width="190" height="94"/>
+  <text class="label" x="855" y="356">Validation</text>
+  <text class="small" x="855" y="381">correctness and identity</text>
+  <text class="tiny" x="855" y="399">no silent fallback as success</text>
+
+  <rect class="box runtime" x="330" y="540" width="458" height="68"/>
+  <text class="label" x="364" y="570">Complete-step measurement</text>
+  <text class="small" x="364" y="592">max(FW peak, BW peak, optimizer peak), allocated/reserved, throughput</text>
+
+  <rect class="box boundary" x="830" y="540" width="190" height="68"/>
+  <text class="label" x="866" y="570">Optimizer</text>
+  <text class="small" x="866" y="592">outside joint graph, inside step</text>
+
+  <path class="line" d="M260 206 L330 206"/>
+  <path class="line" d="M425 247 L425 325"/>
+  <path class="line" d="M330 372 L260 372"/>
+  <path class="line" d="M520 372 C555 372 565 300 582 300"/>
+  <path class="line" d="M772 292 C800 292 805 206 830 206"/>
+  <path class="line" d="M925 247 L925 325"/>
+  <path class="line" d="M925 419 C925 490 765 540 700 540"/>
+  <path class="line" d="M925 419 L925 540"/>
+  <path class="feedback" d="M560 540 C560 486 570 443 520 403"/>
+  <path class="feedback" d="M492 540 C448 492 280 452 198 419"/>
+
+  <text class="tiny" x="595" y="460" fill="#D55E00">measurement and diagnosis feed back to repair/search</text>
+  <text class="tiny" x="54" y="632">Status: draft conceptual figure. It uses no result numbers and must be regenerated as a frozen publication figure after EV-13 is frozen.</text>
+</svg>

@@ -329,6 +329,7 @@ def _measured_plan_results(summary: dict[str, Any]) -> tuple[dict[str, Any], ...
         rows.append(
             {
                 "plan_id": measured["plan_id"],
+                "strategy_provenance": dict(plan.get("strategy_provenance") or {}),
                 "estimated_peak_bytes": estimated,
                 "estimated_step_us": plan.get("estimated_step_us"),
                 "estimated_feasible": prediction.get("estimated_feasible"),

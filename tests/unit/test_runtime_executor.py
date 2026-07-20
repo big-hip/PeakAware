@@ -5,9 +5,10 @@ import torch
 from torch import nn
 
 from peakaware import PeakAwareConfig
-from peakaware.contracts import GuardSpec
+from peakaware.contracts import GuardSpec, LoweredPartition, PartitionABI
 from peakaware.runtime.executor import (
     EagerTrainingStepExecutor,
+    build_aot_partition_executable,
     build_training_step_executor,
     make_measured_executable,
     validate_runtime_guards,
@@ -252,3 +253,48 @@ def test_executor_fallback_refreshes_aot_partition_runtime_marker():
     assert second.metrics["aot_partition_runtime"] == 1
     assert executor.activation_checkpoint is False
     assert executor.aot_partition_runtime is True
+
+
+class _BufferModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer("running", torch.zeros(2))
+
+
+class _FwGraph(nn.Module):
+    def forward(self, running, value):
+        return running + 1, value * 2, value
+
+
+class _BwGraph(nn.Module):
+    def forward(self, saved_value, grad_output):
+        return None, grad_output * 2
+
+
+def test_aot_partition_executable_applies_mutated_buffer_output_prefix():
+    model = _BufferModel()
+    lowered = LoweredPartition(
+        plan_id="mutated-buffer-prefix",
+        fw_graph=torch.fx.symbolic_trace(_FwGraph()),
+        bw_graph=torch.fx.symbolic_trace(_BwGraph()),
+        partition_abi=PartitionABI(
+            fw_output_value_ids=(),
+            bw_placeholder_value_ids=(),
+            tangent_value_ids=(),
+            rng_state_value_ids=(),
+        ),
+    )
+    executable = build_aot_partition_executable(
+        lowered,
+        model,
+        num_fwd_outputs=2,
+        output_tangent_mask=(True,),
+    )
+    value = torch.tensor([3.0, 4.0], requires_grad=True)
+
+    output = executable(value)
+    output.sum().backward()
+
+    assert torch.equal(output, torch.tensor([6.0, 8.0]))
+    assert torch.equal(model.running, torch.ones(2))
+    assert torch.equal(value.grad, torch.tensor([2.0, 2.0]))

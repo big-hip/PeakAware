@@ -52,6 +52,15 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=900.0)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--attempt-index", type=int, default=0)
+    parser.add_argument(
+        "--min-cut-activation-memory-budget",
+        type=float,
+        default=None,
+        help=(
+            "Explicit torch._functorch.config.activation_memory_budget ratio for pytorch_min_cut. "
+            "Omit to keep physical-budget conversion fail-closed."
+        ),
+    )
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output-jsonl", type=Path, required=True)
     parser.add_argument("--manifest-json", type=Path, required=True)
@@ -76,6 +85,14 @@ def main() -> None:
     methods = _csv(args.methods)
     run_id = args.run_id or time.strftime("qualification-%Y%m%dT%H%M%SZ", time.gmtime())
     tasks = tuple(registry.get(name) for name in task_names)
+    method_configs = {}
+    if args.min_cut_activation_memory_budget is not None:
+        if not 0.0 <= args.min_cut_activation_memory_budget <= 1.0:
+            parser.error("--min-cut-activation-memory-budget must be in [0, 1]")
+        method_configs["pytorch_min_cut"] = {
+            "activation_memory_budget": args.min_cut_activation_memory_budget,
+            "source": "explicit_cli_ratio",
+        }
     warmups = {
         backend: args.warmup if args.warmup is not None else (5 if backend == "aot_eager" else 10)
         for backend in backends
@@ -94,6 +111,7 @@ def main() -> None:
         repeat_count=args.repeats,
         timeout_s=args.timeout,
         warmup_steps_by_backend=warmups,
+        method_configs=method_configs,
     )
     records = run_qualification_slots(
         slots,

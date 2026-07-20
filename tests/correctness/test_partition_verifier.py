@@ -650,6 +650,50 @@ def test_lowered_aot_partition_replay_passes_model_buffers_as_primals():
     assert ok, reason
 
 
+def test_lowered_aot_partition_replay_applies_mutated_buffer_output_prefix():
+    class BufferModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("running", torch.zeros(2))
+
+        def forward(self, value):
+            with torch.no_grad():
+                self.running.copy_(self.running + 1)
+            return value * 2
+
+    class FwGraph(nn.Module):
+        def forward(self, primals_1, primals_2):
+            return primals_1 + 1, primals_2 * 2, primals_2
+
+    class BwGraph(nn.Module):
+        def forward(self, saved_value, tangents_1):
+            return ()
+
+    model = BufferModel()
+    value = torch.tensor([3.0, 4.0], requires_grad=True)
+    lowered = LoweredPartition(
+        plan_id="mutated-buffer-prefix",
+        fw_graph=torch.fx.symbolic_trace(FwGraph()),
+        bw_graph=torch.fx.symbolic_trace(BwGraph()),
+        partition_abi=PartitionABI((), (), (), ()),
+    )
+
+    ok, reason = compare_lowered_partition_with_baseline(
+        lowered,
+        model,
+        (value,),
+        {},
+        lambda out: out.sum(),
+        num_fwd_outputs=2,
+        output_tangent_mask=(True,),
+        atol=1e-6,
+        rtol=1e-5,
+    )
+
+    assert ok, reason
+    assert torch.equal(model.running, torch.zeros(2))
+
+
 def test_lowered_aot_partition_replay_detects_bad_backward_gradient():
     torch.manual_seed(0)
     model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 1))

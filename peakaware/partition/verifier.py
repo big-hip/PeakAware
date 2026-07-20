@@ -237,6 +237,36 @@ def _prepare_tangent_outputs(
     return _loss_input_from_user_outputs(tuple(prepared), output_tree_spec), tuple(tangents)
 
 
+def _split_aot_fw_outputs(
+    fw_outputs: tuple[Any, ...],
+    *,
+    num_fwd_outputs: int,
+    output_tangent_mask: tuple[bool, ...],
+    buffers: tuple[Tensor, ...],
+) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+    if len(fw_outputs) < num_fwd_outputs:
+        raise PartitionReplayUnsupported("lowered FW graph returned fewer user outputs than expected")
+    mutation_output_count = (
+        num_fwd_outputs - len(output_tangent_mask)
+        if output_tangent_mask
+        else 0
+    )
+    if mutation_output_count < 0:
+        raise PartitionReplayUnsupported("captured output tangent mask does not match lowered FW outputs")
+    if mutation_output_count > len(buffers):
+        raise PartitionReplayUnsupported("lowered FW graph returned more mutated outputs than model buffers")
+    mutated_outputs = fw_outputs[:mutation_output_count]
+    user_outputs = fw_outputs[mutation_output_count:num_fwd_outputs]
+    for buffer, updated in zip(buffers, mutated_outputs):
+        if not isinstance(updated, Tensor):
+            raise PartitionReplayUnsupported("lowered FW graph mutated buffer outputs must be tensors")
+        if buffer.shape != updated.shape or buffer.dtype != updated.dtype:
+            raise PartitionReplayUnsupported("lowered FW graph mutated buffer output does not match model buffer")
+        with torch.no_grad():
+            buffer.copy_(updated)
+    return tuple(user_outputs), fw_outputs[num_fwd_outputs:]
+
+
 def compare_lowered_partition_with_baseline(
     lowered: LoweredPartition,
     model: nn.Module,
@@ -263,7 +293,8 @@ def compare_lowered_partition_with_baseline(
     cpu_rng = torch.get_rng_state()
     cuda_rng = _cuda_rng_state()
     params = tuple(model.parameters())
-    state_inputs = params + tuple(model.buffers())
+    buffers = tuple(model.buffers())
+    state_inputs = params + buffers
     if arg_tree_specs:
         if len(args) != len(arg_tree_specs):
             raise PartitionReplayUnsupported(
@@ -317,10 +348,12 @@ def compare_lowered_partition_with_baseline(
             restore_all()
             _zero_grads(model)
             fw_outputs = _as_tuple(lowered.fw_graph(*(state_inputs + flat_user_inputs)))
-            if len(fw_outputs) < num_fwd_outputs:
-                return False, "lowered FW graph returned fewer user outputs than expected"
-            user_outputs = fw_outputs[:num_fwd_outputs]
-            saved_for_bw = fw_outputs[num_fwd_outputs:]
+            user_outputs, saved_for_bw = _split_aot_fw_outputs(
+                fw_outputs,
+                num_fwd_outputs=num_fwd_outputs,
+                output_tangent_mask=output_tangent_mask,
+                buffers=buffers,
+            )
             tangent_outputs, tangent_tensors = _prepare_tangent_outputs(
                 user_outputs,
                 output_tree_spec,

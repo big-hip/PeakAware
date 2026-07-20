@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import copy
+import functools
+import inspect
 import statistics
 import time
+import types
 from dataclasses import dataclass, fields, is_dataclass
 from typing import Any, Callable
 
 import torch
 from torch import Tensor
 from torch.utils import _pytree
+
+from .stable_callable import (
+    StableCallableSnapshot,
+    snapshot_registered_callable,
+    validate_registered_callable,
+)
 
 
 def measure_training_step(fn: Callable[..., Tensor], *args: Any, **kwargs: Any) -> tuple[Tensor, int, float]:
@@ -147,11 +156,30 @@ class _TrainingState:
     public_attribute_names: tuple[tuple[torch.nn.Module, frozenset[str]], ...] = ()
 
 
+@dataclass(frozen=True)
+class _PartialCallableSnapshot:
+    func: Callable[..., Any]
+    args: tuple[Any, ...]
+    keywords: dict[str, Any]
+
+
 _IMMUTABLE_PYTHON_TYPES = (type(None), bool, int, float, complex, str, bytes)
+
+
+def _is_torch_stateless_callable(value: Any) -> bool:
+    module_name = str(getattr(value, "__module__", ""))
+    if not module_name.startswith("torch."):
+        return False
+    return (
+        type(value) is types.BuiltinFunctionType
+        or inspect.isclass(value)
+    )
 
 
 def _snapshot_python_value(value: Any, memo: dict[int, Any] | None = None) -> Any:
     if type(value) in _IMMUTABLE_PYTHON_TYPES:
+        return value
+    if _is_torch_stateless_callable(value):
         return value
     if memo is None:
         memo = {}
@@ -161,6 +189,20 @@ def _snapshot_python_value(value: Any, memo: dict[int, Any] | None = None) -> An
     if isinstance(value, Tensor):
         snapshot = value.detach().clone(memory_format=torch.preserve_format)
         snapshot.requires_grad_(value.requires_grad)
+        memo[id(value)] = snapshot
+        return snapshot
+    callable_snapshot = snapshot_registered_callable(value)
+    if callable_snapshot is not None:
+        return callable_snapshot
+    if isinstance(value, functools.partial) and _is_torch_stateless_callable(value.func):
+        snapshot = _PartialCallableSnapshot(
+            value.func,
+            tuple(_snapshot_python_value(item, memo) for item in value.args),
+            {
+                str(key): _snapshot_python_value(item, memo)
+                for key, item in (value.keywords or {}).items()
+            },
+        )
         memo[id(value)] = snapshot
         return snapshot
     if type(value) is list:
@@ -199,12 +241,26 @@ def _snapshot_python_value(value: Any, memo: dict[int, Any] | None = None) -> An
 def _restore_python_value(original: Any, snapshot: Any) -> Any:
     if type(snapshot) in _IMMUTABLE_PYTHON_TYPES:
         return snapshot
+    if _is_torch_stateless_callable(snapshot):
+        return snapshot
     if isinstance(snapshot, Tensor):
         if not isinstance(original, Tensor):
             return _snapshot_python_value(snapshot)
         with torch.no_grad():
             original.copy_(snapshot)
         return original
+    if isinstance(snapshot, StableCallableSnapshot):
+        validate_registered_callable(original, snapshot)
+        return original
+    if isinstance(snapshot, _PartialCallableSnapshot):
+        return functools.partial(
+            snapshot.func,
+            *(_snapshot_python_value(item) for item in snapshot.args),
+            **{
+                key: _snapshot_python_value(item)
+                for key, item in snapshot.keywords.items()
+            },
+        )
     if type(snapshot) is list:
         if type(original) is not list:
             return _snapshot_python_value(snapshot)
@@ -280,6 +336,9 @@ def _restore_python_attributes(state: _TrainingState) -> None:
         for name in current_names - original_names:
             delattr(module, name)
     for attribute in state.python_attributes:
+        if isinstance(attribute.snapshot, StableCallableSnapshot):
+            current = attribute.module.__dict__.get(attribute.name)
+            validate_registered_callable(current, attribute.snapshot)
         restored = _restore_python_value(attribute.original, attribute.snapshot)
         setattr(attribute.module, attribute.name, restored)
 
@@ -345,6 +404,7 @@ def _timing_sample(
     wall_us: float,
     event_us: float | None,
     max_event_wall_relative_gap: float,
+    max_event_wall_absolute_gap_us: float,
 ) -> dict[str, float | bool | None]:
     if event_us is None:
         absolute_difference = None
@@ -353,7 +413,12 @@ def _timing_sample(
         absolute_difference = abs(wall_us - event_us)
         relative_difference = absolute_difference / event_us if event_us > 0 else None
     timing_qualified = (
-        relative_difference <= max_event_wall_relative_gap if relative_difference is not None else None
+        (
+            relative_difference <= max_event_wall_relative_gap
+            or absolute_difference <= max_event_wall_absolute_gap_us
+        )
+        if relative_difference is not None and absolute_difference is not None
+        else None
     )
     return {
         f"{prefix}_wall_us": wall_us,
@@ -362,6 +427,20 @@ def _timing_sample(
         f"{prefix}_event_wall_relative_diff": relative_difference,
         f"{prefix}_timing_qualified": timing_qualified,
     }
+
+
+def _aggregate_timing_qualified(
+    relative_difference: float | None,
+    absolute_difference: float | None,
+    max_event_wall_relative_gap: float,
+    max_event_wall_absolute_gap_us: float,
+) -> bool | None:
+    if relative_difference is None or absolute_difference is None:
+        return None
+    return (
+        relative_difference <= max_event_wall_relative_gap
+        or absolute_difference <= max_event_wall_absolute_gap_us
+    )
 
 
 def _relative_slope(values: list[float]) -> float | None:
@@ -435,6 +514,7 @@ def _measure_warmup_sample(
     warmup_index: int,
     cuda_device: torch.device | None,
     max_event_wall_relative_gap: float,
+    max_event_wall_absolute_gap_us: float,
 ) -> dict[str, Any]:
     _, wall_us, event_us = _measure_window(
         lambda: _run_training_step(
@@ -452,7 +532,15 @@ def _measure_warmup_sample(
         "trajectory": "warmup",
         "trajectory_order": 0,
     }
-    sample.update(_timing_sample("warmup", wall_us, event_us, max_event_wall_relative_gap))
+    sample.update(
+        _timing_sample(
+            "warmup",
+            wall_us,
+            event_us,
+            max_event_wall_relative_gap,
+            max_event_wall_absolute_gap_us,
+        )
+    )
     return sample
 
 
@@ -467,6 +555,7 @@ def _measure_phase_sample(
     repeat_index: int,
     cuda_device: torch.device | None,
     max_event_wall_relative_gap: float,
+    max_event_wall_absolute_gap_us: float,
 ) -> dict[str, Any]:
     sample: dict[str, Any] = {
         "repeat_index": repeat_index,
@@ -485,7 +574,7 @@ def _measure_phase_sample(
         return loss
 
     loss, wall_us, event_us = _measure_window(forward, cuda_device)
-    sample.update(_timing_sample("fw", wall_us, event_us, max_event_wall_relative_gap))
+    sample.update(_timing_sample("fw", wall_us, event_us, max_event_wall_relative_gap, max_event_wall_absolute_gap_us))
     sample["fw_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
     sample["fw_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
     sample["after_fw_allocated_bytes"] = _cuda_allocated_or_zero(cuda_device)
@@ -493,13 +582,21 @@ def _measure_phase_sample(
 
     _reset_cuda_peak(cuda_device)
     _, wall_us, event_us = _measure_window(loss.backward, cuda_device)
-    sample.update(_timing_sample("bw", wall_us, event_us, max_event_wall_relative_gap))
+    sample.update(_timing_sample("bw", wall_us, event_us, max_event_wall_relative_gap, max_event_wall_absolute_gap_us))
     sample["bw_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
     sample["bw_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
 
     _reset_cuda_peak(cuda_device)
     _, wall_us, event_us = _measure_window(optimizer.step, cuda_device)
-    sample.update(_timing_sample("optimizer", wall_us, event_us, max_event_wall_relative_gap))
+    sample.update(
+        _timing_sample(
+            "optimizer",
+            wall_us,
+            event_us,
+            max_event_wall_relative_gap,
+            max_event_wall_absolute_gap_us,
+        )
+    )
     sample["optimizer_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
     sample["optimizer_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
     sample["phase_step_wall_us"] = sum(float(sample[f"{phase}_wall_us"]) for phase in ("fw", "bw", "optimizer"))
@@ -521,6 +618,7 @@ def _measure_overall_sample(
     repeat_index: int,
     cuda_device: torch.device | None,
     max_event_wall_relative_gap: float,
+    max_event_wall_absolute_gap_us: float,
 ) -> dict[str, Any]:
     # This is deliberately a separate full-step allocation window. No phase
     # reset occurs between forward, backward, and optimizer execution.
@@ -541,7 +639,7 @@ def _measure_overall_sample(
         "trajectory": "overall",
         "trajectory_order": 1,
     }
-    sample.update(_timing_sample("overall", wall_us, event_us, max_event_wall_relative_gap))
+    sample.update(_timing_sample("overall", wall_us, event_us, max_event_wall_relative_gap, max_event_wall_absolute_gap_us))
     sample["overall_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
     sample["overall_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
     return sample
@@ -554,6 +652,7 @@ def _aggregate_measurements(
     warmup_steps: int,
     warmup_trend_relative_tolerance: float,
     max_event_wall_relative_gap: float,
+    max_event_wall_absolute_gap_us: float,
 ) -> dict[str, Any]:
     aggregated: dict[str, Any] = {}
 
@@ -570,9 +669,11 @@ def _aggregate_measurements(
         aggregated[f"{phase}_event_wall_relative_diff"] = _median_or_none(
             [sample[f"{phase}_event_wall_relative_diff"] for sample in phase_samples]
         )
-        qualifications = [sample[f"{phase}_timing_qualified"] for sample in phase_samples]
-        aggregated[f"{phase}_timing_qualified"] = (
-            all(bool(value) for value in qualifications) if all(value is not None for value in qualifications) else None
+        aggregated[f"{phase}_timing_qualified"] = _aggregate_timing_qualified(
+            aggregated[f"{phase}_event_wall_relative_diff"],
+            aggregated[f"{phase}_event_wall_abs_diff_us"],
+            max_event_wall_relative_gap,
+            max_event_wall_absolute_gap_us,
         )
         for memory_kind in ("peak_bytes", "reserved_peak_bytes"):
             key = f"{phase}_{memory_kind}"
@@ -599,11 +700,11 @@ def _aggregate_measurements(
         "overall_event_wall_relative_diff",
     ):
         aggregated[key] = _median_or_none([sample[key] for sample in overall_samples])
-    overall_qualifications = [sample["overall_timing_qualified"] for sample in overall_samples]
-    aggregated["overall_timing_qualified"] = (
-        all(bool(value) for value in overall_qualifications)
-        if all(value is not None for value in overall_qualifications)
-        else None
+    aggregated["overall_timing_qualified"] = _aggregate_timing_qualified(
+        aggregated["overall_event_wall_relative_diff"],
+        aggregated["overall_event_wall_abs_diff_us"],
+        max_event_wall_relative_gap,
+        max_event_wall_absolute_gap_us,
     )
     aggregated["overall_peak_bytes"] = max(int(sample["overall_peak_bytes"]) for sample in overall_samples)
     aggregated["overall_reserved_peak_bytes"] = max(
@@ -640,6 +741,7 @@ def _aggregate_measurements(
         not event_strictly_decreasing if event_strictly_decreasing is not None else None
     )
     aggregated["max_event_wall_relative_gap"] = max_event_wall_relative_gap
+    aggregated["max_event_wall_absolute_gap_us"] = max_event_wall_absolute_gap_us
     aggregated["warmup_trend_relative_tolerance"] = warmup_trend_relative_tolerance
     aggregated["warmup_samples"] = warmup_samples
     aggregated["phase_samples"] = phase_samples
@@ -654,8 +756,10 @@ def _aggregate_measurements(
         for index in range(len(overall_samples))
     ]
     aggregated["trajectory_order"] = ["warmup", "overall", "phase"]
-    aggregated["callable_state_assumption"] = "pure_or_state_dict_owned"
-    aggregated["python_module_state_policy"] = "public_attributes_snapshotted_or_fail_closed"
+    aggregated["callable_state_assumption"] = "state_dict_owned_or_registry_identity_bound"
+    aggregated["python_module_state_policy"] = (
+        "public_attributes_snapshotted_registered_callables_identity_checked_or_fail_closed"
+    )
     aggregated["callable_device_contract"] = "single_device_model_inputs_optimizer_state"
     aggregated["cuda_event_scope"] = "current_stream_and_dependency_ordered_work_only"
     aggregated["process_isolation"] = "external_qualification_runner_required"
@@ -784,6 +888,7 @@ def _measure_publication_training_step_phases(
     warmup_steps: int,
     repeat_count: int = 1,
     max_event_wall_relative_gap: float = 0.25,
+    max_event_wall_absolute_gap_us: float = 2_000.0,
     warmup_trend_relative_tolerance: float = 0.10,
 ) -> dict[str, Any]:
     if warmup_steps < 0:
@@ -792,6 +897,8 @@ def _measure_publication_training_step_phases(
         raise ValueError("repeat_count must be at least 1")
     if max_event_wall_relative_gap < 0:
         raise ValueError("max_event_wall_relative_gap must be non-negative")
+    if max_event_wall_absolute_gap_us < 0:
+        raise ValueError("max_event_wall_absolute_gap_us must be non-negative")
     if warmup_trend_relative_tolerance < 0:
         raise ValueError("warmup_trend_relative_tolerance must be non-negative")
     warmup_steps = int(warmup_steps)
@@ -815,6 +922,7 @@ def _measure_publication_training_step_phases(
                     warmup_index=index,
                     cuda_device=cuda_device,
                     max_event_wall_relative_gap=max_event_wall_relative_gap,
+                    max_event_wall_absolute_gap_us=max_event_wall_absolute_gap_us,
                 )
             )
             if len(warmup_samples) < warmup_steps:
@@ -854,6 +962,7 @@ def _measure_publication_training_step_phases(
                 repeat_index=index,
                 cuda_device=cuda_device,
                 max_event_wall_relative_gap=max_event_wall_relative_gap,
+                max_event_wall_absolute_gap_us=max_event_wall_absolute_gap_us,
             )
             for index in range(repeat_count)
         ]
@@ -871,6 +980,7 @@ def _measure_publication_training_step_phases(
                 repeat_index=index,
                 cuda_device=cuda_device,
                 max_event_wall_relative_gap=max_event_wall_relative_gap,
+                max_event_wall_absolute_gap_us=max_event_wall_absolute_gap_us,
             )
             for index in range(repeat_count)
         ]
@@ -881,6 +991,7 @@ def _measure_publication_training_step_phases(
             len(warmup_samples),
             warmup_trend_relative_tolerance,
             max_event_wall_relative_gap,
+            max_event_wall_absolute_gap_us,
         )
     finally:
         try:
@@ -903,13 +1014,15 @@ def measure_publication_training_step_phases(
     warmup_steps: int,
     repeat_count: int,
     max_event_wall_relative_gap: float = 0.25,
+    max_event_wall_absolute_gap_us: float = 2_000.0,
     warmup_trend_relative_tolerance: float = 0.10,
 ) -> dict[str, Any]:
     """Run the strict publication protocol for one single-device callable.
 
-    The callable must be pure or keep mutable state in ``state_dict``. Public
-    Python attributes on named modules are snapshotted or rejected, but state
-    hidden in closures or external objects cannot be restored. CUDA Event timing covers the current
+    Mutable state must live in ``state_dict``. Public Python attributes on named
+    modules are snapshotted or rejected; compiler-owned callables additionally
+    require an active identity-bound registry token. State hidden in unknown
+    closures or external objects cannot be restored. CUDA Event timing covers the current
     stream and dependency-ordered work; unrelated side-stream work is not
     claimed and should fail the Event/wall-gap qualification.
     """
@@ -932,13 +1045,16 @@ def measure_publication_training_step_phases(
         warmup_steps=warmup_steps,
         repeat_count=repeat_count,
         max_event_wall_relative_gap=max_event_wall_relative_gap,
+        max_event_wall_absolute_gap_us=max_event_wall_absolute_gap_us,
         warmup_trend_relative_tolerance=warmup_trend_relative_tolerance,
     )
-    window_qualifications = [
-        metrics[f"{window}_timing_qualified"] for window in ("fw", "bw", "optimizer", "overall")
+    phase_window_qualifications = [
+        metrics[f"{window}_timing_qualified"] for window in ("fw", "bw", "optimizer")
     ]
     warmup_timing = [sample["warmup_timing_qualified"] for sample in metrics["warmup_samples"]]
-    timing_qualified = all(value is True for value in (*window_qualifications, *warmup_timing))
+    phase_timing_qualified = all(value is True for value in phase_window_qualifications)
+    warmup_timing_qualified = all(value is True for value in warmup_timing)
+    timing_qualified = metrics["overall_timing_qualified"] is True
     event_trend = metrics["warmup_event_trend_stable"]
     trend_qualified = metrics["warmup_wall_trend_stable"] is True and event_trend in {True, None}
 
@@ -952,6 +1068,11 @@ def measure_publication_training_step_phases(
     metrics["warmup_auto_extended_steps"] = len(metrics["warmup_samples"]) - minimum_warmup
     metrics["warmup_reached_max_steps"] = len(metrics["warmup_samples"]) == 30
     metrics["timing_qualified"] = timing_qualified
+    metrics["phase_timing_qualified"] = phase_timing_qualified
+    metrics["warmup_timing_qualified"] = warmup_timing_qualified
+    metrics["publication_timing_scope"] = "overall_step"
+    metrics["phase_timing_scope"] = "diagnostic_only"
+    metrics["warmup_timing_scope"] = "diagnostic_only"
     metrics["warmup_trend_qualified"] = trend_qualified
     metrics["publication_qualified"] = timing_qualified and trend_qualified
     if metrics["publication_qualified"]:

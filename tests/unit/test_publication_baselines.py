@@ -388,6 +388,12 @@ class _ScaledGPT(_FakeGPT):
         return super().forward(x) * self.scale
 
 
+class _SetAttributeGPT(_FakeGPT):
+    def __init__(self, tags):
+        super().__init__()
+        self.tags = set(tags)
+
+
 class _UnserializableAttributeGPT(_FakeGPT):
     def __init__(self):
         super().__init__()
@@ -671,6 +677,48 @@ def test_behavior_digest_tracks_custom_instance_attributes_stably():
     assert scale_one.identity.model_sha256 == copied.identity.model_sha256
     assert scale_one.identity.executable_sha256 == copied.identity.executable_sha256
     assert scale_one.identity.model_sha256 != scale_two.identity.model_sha256
+
+
+def test_behavior_digest_serializes_set_attributes_stably():
+    first_model = _SetAttributeGPT(["encoder", "decoder"])
+    reordered_model = _SetAttributeGPT(["decoder", "encoder"])
+    changed_model = _SetAttributeGPT(["encoder"])
+    first = prepare_block_activation_checkpoint(
+        first_model,
+        "gpt2",
+        **_region_prepare_kwargs(),
+    ).require_supported()
+    reordered = prepare_block_activation_checkpoint(
+        reordered_model,
+        "gpt2",
+        **_region_prepare_kwargs(),
+    ).require_supported()
+    changed = prepare_block_activation_checkpoint(
+        changed_model,
+        "gpt2",
+        **_region_prepare_kwargs(),
+    ).require_supported()
+
+    assert first.identity.model_sha256 == reordered.identity.model_sha256
+    assert first.identity.executable_sha256 == reordered.identity.executable_sha256
+    assert first.identity.model_sha256 != changed.identity.model_sha256
+
+
+def test_behavior_digest_serializes_transformers_config():
+    pytest.importorskip("transformers")
+
+    from peakaware.models.registry import build_bert_base_task
+
+    model = build_bert_base_task().build_model()
+    copied_model = copy.deepcopy(model)
+    changed_model = build_bert_base_task(hidden_size=128, num_attention_heads=4).build_model()
+
+    first = prepare_all_save(model).require_supported()
+    copied = prepare_all_save(copied_model).require_supported()
+    changed = prepare_all_save(changed_model).require_supported()
+
+    assert first.identity.model_sha256 == copied.identity.model_sha256
+    assert first.identity.model_sha256 != changed.identity.model_sha256
 
 
 def test_unserializable_behavior_attribute_fails_closed_without_address_repr():

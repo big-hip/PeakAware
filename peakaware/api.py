@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -395,6 +396,18 @@ def _candidate_uses_activation_checkpoint(candidate: EvaluatedPlan) -> bool:
     return candidate.plan.plan_id != "all_save"
 
 
+def _aot_candidate_cudnn_context(capture: CapturedJointGraph, model: nn.Module) -> Any:
+    if capture.backend != "aot":
+        return nullcontext()
+    has_training_batchnorm = any(
+        isinstance(module, nn.modules.batchnorm._BatchNorm) and module.training
+        for module in model.modules()
+    )
+    if not has_training_batchnorm:
+        return nullcontext()
+    return torch.backends.cudnn.flags(enabled=False)
+
+
 def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValidation:
     capture = payload["capture"]
     candidate = payload["candidate"]
@@ -414,22 +427,23 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
         if not ir_report.valid:
             raise ValueError(f"invalid worker IR: {ir_report.errors}")
     can_return_lowered = capture.backend == "aot"
-    lowered = _lower_candidate(capture, candidate, ir)
-    dry_run = _dry_run_candidate(
-        lowered,
-        ir,
-        model=model,
-        example_args=example_args,
-        example_kwargs=example_kwargs,
-        loss_fn=loss_fn,
-        config=config,
-        num_fwd_outputs=capture.num_fwd_outputs,
-        kwarg_names=kwarg_names,
-        output_tree_spec=capture.output_tree_spec,
-        output_tangent_mask=capture.output_tangent_mask,
-        arg_tree_specs=capture.arg_tree_specs,
-        kwarg_tree_specs=capture.kwarg_tree_specs,
-    )
+    with _aot_candidate_cudnn_context(capture, model):
+        lowered = _lower_candidate(capture, candidate, ir)
+        dry_run = _dry_run_candidate(
+            lowered,
+            ir,
+            model=model,
+            example_args=example_args,
+            example_kwargs=example_kwargs,
+            loss_fn=loss_fn,
+            config=config,
+            num_fwd_outputs=capture.num_fwd_outputs,
+            kwarg_names=kwarg_names,
+            output_tree_spec=capture.output_tree_spec,
+            output_tangent_mask=capture.output_tangent_mask,
+            arg_tree_specs=capture.arg_tree_specs,
+            kwarg_tree_specs=capture.kwarg_tree_specs,
+        )
     if not (dry_run.abi_valid and dry_run.outputs_match and dry_run.gradients_match):
         return _CandidateValidation(dry_run=dry_run, measurement=None)
     activation_checkpoint = _candidate_uses_activation_checkpoint(candidate)
@@ -499,13 +513,14 @@ def _validate_and_measure_candidate(payload: dict[str, Any]) -> _CandidateValida
                 arg_tree_specs=capture.arg_tree_specs if aot_partition_runtime else (),
                 kwarg_tree_specs=capture.kwarg_tree_specs if aot_partition_runtime else (),
             )
-    measured = make_measured_executable(
-        candidate.plan.plan_id,
-        executor,
-        example_args,
-        example_kwargs,
-        candidate.simulation.estimated_peak_bytes,
-    )
+    with _aot_candidate_cudnn_context(capture, model):
+        measured = make_measured_executable(
+            candidate.plan.plan_id,
+            executor,
+            example_args,
+            example_kwargs,
+            candidate.simulation.estimated_peak_bytes,
+        )
     if cache_root is not None:
         store_executable_measurement_cache(cache_root, executable_key, measured, executable_provenance)
     return _CandidateValidation(

@@ -183,8 +183,25 @@ def build_aot_partition_executable(
                 fw_outputs = (fw_outputs,)
             if len(fw_outputs) < num_fwd_outputs:
                 raise RuntimeError("lowered FW graph returned fewer user outputs than expected")
-            user_outputs = fw_outputs[:num_fwd_outputs]
+            mutation_output_count = (
+                num_fwd_outputs - len(output_tangent_mask)
+                if output_tangent_mask
+                else 0
+            )
+            if mutation_output_count < 0:
+                raise RuntimeError("captured output tangent mask does not match lowered FW outputs")
+            if mutation_output_count > len(buffers):
+                raise RuntimeError("lowered FW graph returned more mutated outputs than model buffers")
+            mutated_outputs = fw_outputs[:mutation_output_count]
+            user_outputs = fw_outputs[mutation_output_count:num_fwd_outputs]
             saved_for_bw = fw_outputs[num_fwd_outputs:]
+            for buffer, updated in zip(buffers, mutated_outputs):
+                if not isinstance(updated, Tensor):
+                    raise RuntimeError("lowered FW graph mutated buffer outputs must be tensors")
+                if buffer.shape != updated.shape or buffer.dtype != updated.dtype:
+                    raise RuntimeError("lowered FW graph mutated buffer output does not match model buffer")
+                with torch.no_grad():
+                    buffer.copy_(updated)
             if any(not isinstance(value, Tensor) for value in saved_for_bw):
                 raise RuntimeError("lowered FW graph saved values must be tensors")
             ctx.save_for_backward(*saved_for_bw)
@@ -202,7 +219,7 @@ def build_aot_partition_executable(
             )
             if non_differentiable:
                 ctx.mark_non_differentiable(*non_differentiable)
-            return user_outputs[0] if num_fwd_outputs == 1 else tuple(user_outputs)
+            return user_outputs[0] if len(user_outputs) == 1 else tuple(user_outputs)
 
         @staticmethod
         def backward(ctx: Any, *grad_outputs: Any) -> tuple[Any, ...]:
@@ -258,7 +275,8 @@ def build_aot_partition_executable(
         else:
             flat_kwargs = list(kwargs[name] for name in kwarg_names)
         outputs = _AOTPartitionFunction.apply(*(params + buffers + tuple(flat_args) + tuple(flat_kwargs)))
-        flat_outputs = (outputs,) if num_fwd_outputs == 1 else tuple(outputs)
+        user_output_count = len(output_tangent_mask) if output_tangent_mask else num_fwd_outputs
+        flat_outputs = (outputs,) if user_output_count == 1 else tuple(outputs)
         if output_tree_spec is None:
             return outputs
         return _pytree.tree_unflatten(list(flat_outputs), output_tree_spec)

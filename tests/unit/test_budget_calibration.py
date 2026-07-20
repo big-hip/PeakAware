@@ -7,17 +7,21 @@ import pytest
 
 from peakaware.publication.budget_calibration import (
     AllSaveReference,
+    BUDGET_PLAN_SCHEMA_VERSION,
     CalibrationManifest,
     LegacyBudgetConversionError,
     MinCutPolicy,
     PolicyMeasurement,
+    build_budget_plan_from_records,
     compile_representatives,
     convert_physical_budget_to_activation_memory_budget,
     convert_physical_budget_to_ratio,
     derive_physical_budgets,
     physical_budget_to_ratio,
     select_policy_for_budget,
+    validate_budget_plan_manifest,
 )
+from tests.unit.test_publication_figures import _record
 
 
 def _fp(label: str) -> str:
@@ -317,6 +321,56 @@ def test_manifest_requires_five_held_out_processes_per_feasible_budget():
     assert manifest.selections[0].status == "selected"
     with pytest.raises(ValueError, match="at least 5 evaluation processes"):
         _selected_manifest(evaluation_count=4)
+
+
+def test_build_budget_plan_from_records_marks_incomplete_draft_references():
+    record = _record()
+    plan = build_budget_plan_from_records(
+        (record,),
+        ratios=(0.5, 1.0),
+        evidence_status="draft",
+        min_reference_count=5,
+    )
+
+    assert plan["schema_version"] == BUDGET_PLAN_SCHEMA_VERSION
+    assert plan["complete"] is False
+    assert plan["cell_count"] == 1
+    assert plan["cells"][0]["p_ref_bytes"] == record.all_save_measured_peak_bytes
+    assert plan["cells"][0]["physical_budgets_bytes"] == [
+        record.all_save_measured_peak_bytes // 2,
+        record.all_save_measured_peak_bytes,
+    ]
+    validation = validate_budget_plan_manifest(plan)
+    assert validation["ok"] is True
+    assert validation["warning_count"] == 1
+
+
+def test_build_budget_plan_from_records_requires_complete_frozen_references():
+    record = _record()
+
+    with pytest.raises(ValueError, match="frozen budget plan requires complete"):
+        build_budget_plan_from_records(
+            (record,),
+            ratios=(1.0,),
+            evidence_status="frozen",
+            min_reference_count=5,
+        )
+
+
+def test_validate_budget_plan_manifest_recomputes_physical_budget():
+    record = _record()
+    plan = build_budget_plan_from_records(
+        (record,),
+        ratios=(0.5,),
+        evidence_status="draft",
+        min_reference_count=1,
+    )
+    plan["cells"][0]["physical_budgets_bytes"] = [123]
+
+    validation = validate_budget_plan_manifest(plan)
+
+    assert validation["ok"] is False
+    assert any("floor" in error for error in validation["errors"])
 
 
 def test_manifest_distinguishes_same_policy_across_budget_slots():
