@@ -33,3 +33,4 @@ profiles.sqlite*
 *.nsys-rep
 torch_compile_debug/
 inductor_cache/
+docs/论文/

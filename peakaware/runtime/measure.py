@@ -1204,8 +1204,8 @@ def measure_training_step_phases(
     optimizer_state = _clone_optimizer_state(optimizer)
     grad_state = _clone_grads(model)
     cpu_rng = torch.get_rng_state()
-    cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
-    cuda_device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else None
+    cuda_device = _measurement_cuda_device(model, optimizer, args, kwargs)
+    cuda_rng = torch.cuda.get_rng_state_all() if cuda_device is not None else None
 
     def restore_state() -> None:
         model.load_state_dict(model_state)
