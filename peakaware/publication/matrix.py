@@ -17,6 +17,7 @@ from peakaware.experiments import (
     write_experiment_hint_ablation_json,
     write_experiment_json,
     write_experiment_layered_accuracy_json,
+    write_experiment_selected_regret_json,
     write_experiment_simulation_error_json,
     write_experiment_steady_state_json,
     write_experiment_summary_json,
@@ -95,6 +96,8 @@ def run_publication_matrix_from_budget_plan(
     diagnostic_hints: str = "both",
     matrix_passes: int = 1,
     top_k: int = 3,
+    max_greedy_candidates: int = 4,
+    validation_top_k: int | None = None,
     measurement_warmup_steps: int = 1,
     measurement_repeats: int = 3,
     selection_objective: str = "min_peak_then_time",
@@ -135,6 +138,8 @@ def run_publication_matrix_from_budget_plan(
                     cell,
                     enable_diagnostic_hints=hints_enabled,
                     top_k=top_k,
+                    max_greedy_candidates=max_greedy_candidates,
+                    validation_top_k=validation_top_k,
                     measurement_warmup_steps=measurement_warmup_steps,
                     measurement_repeats=measurement_repeats,
                     selection_objective=selection_objective,
@@ -170,6 +175,8 @@ def _config_for_matrix_cell(
     *,
     enable_diagnostic_hints: bool,
     top_k: int,
+    max_greedy_candidates: int,
+    validation_top_k: int | None,
     measurement_warmup_steps: int,
     measurement_repeats: int,
     selection_objective: str,
@@ -178,6 +185,8 @@ def _config_for_matrix_cell(
     enable_compile = enable_inductor or cell.compile_backend == "aot_eager"
     return PeakAwareConfig(
         top_k=top_k,
+        max_greedy_candidates=max_greedy_candidates,
+        validation_top_k=validation_top_k,
         enable_compile=enable_compile,
         enable_inductor=enable_inductor,
         capture_backend=cell.capture_backend if cell.capture_backend in {"auto", "aot", "fx"} else "auto",
@@ -213,6 +222,7 @@ def _write_publication_matrix_outputs(
     write_experiment_cache_reuse_json(records, derived_root / "cache_reuse.json")
     write_experiment_layered_accuracy_json(records, derived_root / "layered_accuracy.json")
     write_experiment_simulation_error_json(records, derived_root / "simulation_error.json")
+    write_experiment_selected_regret_json(records, derived_root / "selected_regret.json")
     write_experiment_steady_state_json(records, derived_root / "steady_state.json")
     build_publication_figures(
         records,

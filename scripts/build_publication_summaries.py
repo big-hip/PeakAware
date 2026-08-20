@@ -17,6 +17,7 @@ from peakaware.experiments import (
     write_experiment_cache_reuse_json,
     write_experiment_hint_ablation_json,
     write_experiment_layered_accuracy_json,
+    write_experiment_selected_regret_json,
     write_experiment_simulation_error_json,
     write_experiment_steady_state_json,
     write_experiment_summary_json,
@@ -41,6 +42,7 @@ def main() -> None:
         "cache_reuse": args.output_root / "cache_reuse.json",
         "layered_accuracy": args.output_root / "layered_accuracy.json",
         "simulation_error": args.output_root / "simulation_error.json",
+        "selected_regret": args.output_root / "selected_regret.json",
         "steady_state": args.output_root / "steady_state.json",
     }
     write_experiment_summary_json(summarize_experiment_records(records), outputs["summary"])
@@ -50,6 +52,7 @@ def main() -> None:
     write_experiment_cache_reuse_json(records, outputs["cache_reuse"])
     write_experiment_layered_accuracy_json(records, outputs["layered_accuracy"])
     write_experiment_simulation_error_json(records, outputs["simulation_error"])
+    write_experiment_selected_regret_json(records, outputs["selected_regret"])
     write_experiment_steady_state_json(records, outputs["steady_state"])
     print(
         json.dumps(

@@ -106,6 +106,11 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
         summary["diagnostic"]["evidence"][0]
     )
     assert summary["measured_candidates"]
+    assert summary["measured"]["actual_memory_timeline"]
+    assert summary["selected_simulated_memory_timeline"]
+    assert summary["selected_memory_timeline_fit"]["point_count"] > 0
+    assert "simulated_memory_timeline" in summary["plans"][0]
+    assert "actual_memory_timeline" in summary["measured_candidates"][0]
     assert summary["topk_correction"]["selected"]["plan_id"] == result.selected_plan.plan_id
     assert summary["topk_correction"]["simulation_accuracy"]["candidate_count"] == len(
         summary["topk_correction"]["candidates"]
@@ -130,7 +135,8 @@ def test_reporting_summarizes_result_and_exports_json(tmp_path):
     assert plan_artifact["saved_value_ids"] == tuple(sorted(result.selected_plan.saved_value_ids))
     assert plan_artifact["effective_saved_value_ids"] == summary["selected_effective_saved_value_ids"]
     assert plan_artifact["ranking_provenance"]["risk_score"]["direction"] == "lower_is_better"
-    assert plan_artifact["peak_snapshot"]["live_bytes"] == summary["estimated_peak_bytes"]
+    assert plan_artifact["estimated_peak_bytes"] == summary["estimated_peak_bytes"]
+    assert plan_artifact["peak_snapshot"]["live_bytes"] > 0
     assert "recomputed_bytes" in plan_artifact["peak_snapshot"]
     assert plan_artifact["correctness"]["gradients_match"] is True
     assert summary["dry_run"]["replay_mode"] in {"lowered_aot", "eager_baseline"}

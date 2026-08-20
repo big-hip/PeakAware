@@ -4,6 +4,7 @@ import pytest
 import torch
 from torch import nn
 
+from peakaware.runtime import executor as executor_module
 from peakaware import PeakAwareConfig
 from peakaware.contracts import GuardSpec, LoweredPartition, PartitionABI
 from peakaware.runtime.executor import (
@@ -106,6 +107,85 @@ def test_activation_checkpoint_executor_runs_and_reports_plan_marker():
     assert executor.activation_checkpoint is True
     assert measured.correctness_passed
     assert measured.phase_metrics["activation_checkpoint"] == 1
+    assert measured.phase_metrics["candidate_measurement_protocol"] == "legacy_phase"
+    assert measured.phase_metrics["runtime_step_source"] == "legacy_phase_wall_sum"
+
+
+def test_publication_candidate_measurement_uses_overall_cuda_event_median(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    model = nn.Linear(3, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    config = PeakAwareConfig(
+        enable_compile=True,
+        measurement_warmup_steps=5,
+        measurement_repeats=20,
+        candidate_measurement_protocol="publication_overall",
+    )
+    executor = EagerTrainingStepExecutor(
+        model,
+        optimizer,
+        lambda out: out.pow(2).mean(),
+        model,
+        config,
+    )
+
+    monkeypatch.setattr(
+        executor_module,
+        "measure_publication_training_step_phases",
+        lambda *args, **kwargs: {
+            "overall_event_us": 123.0,
+            "overall_wall_us": 150.0,
+            "overall_peak_bytes": 456,
+        },
+    )
+
+    measured = make_measured_executable(
+        "publication",
+        executor,
+        (torch.ones(2, 3),),
+        {},
+        simulated_peak_bytes=1024,
+    )
+
+    assert measured.measured_step_us == 123.0
+    assert measured.measured_peak_bytes == 456
+    assert measured.phase_metrics["runtime_step_us"] == 123.0
+    assert measured.phase_metrics["runtime_step_source"] == "overall_cuda_event_median"
+    assert measured.phase_metrics["candidate_measurement_protocol"] == "publication_overall"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"candidate_measurement_protocol": "unknown"}, "candidate_measurement_protocol"),
+        (
+            {"candidate_measurement_protocol": "publication_overall"},
+            "requires enable_compile=True",
+        ),
+        (
+            {
+                "enable_compile": True,
+                "candidate_measurement_protocol": "publication_overall",
+                "measurement_warmup_steps": 4,
+                "measurement_repeats": 20,
+            },
+            "measurement_warmup_steps=5",
+        ),
+        (
+            {
+                "enable_compile": True,
+                "candidate_measurement_protocol": "publication_overall",
+                "measurement_warmup_steps": 5,
+                "measurement_repeats": 19,
+            },
+            "measurement_repeats>=20",
+        ),
+    ],
+)
+def test_publication_candidate_measurement_config_validation(overrides, message):
+    with pytest.raises(ValueError, match=message):
+        PeakAwareConfig(**overrides).validate()
 
 
 def test_activation_checkpoint_executor_preserves_object_outputs():

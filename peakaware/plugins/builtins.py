@@ -7,7 +7,9 @@ from typing import Any
 import torch
 
 from peakaware.capture import capture_joint_graph
-from peakaware.cost.base import StaticCostProvider
+from peakaware.cost.attention import ScaledDotProductAttentionCostProvider
+from peakaware.cost.base import MetadataViewCostProvider, StructuralZeroCostProvider
+from peakaware.cost.legacy_adapter import LegacyCostmodelAdapter
 from peakaware.cost.profile_db import ExactProfileProvider, InterpolatedProfileProvider, ProfileDB
 from peakaware.diagnostics import diagnose_plan, export_diagnostic_json, render_diagnostic_text
 
@@ -36,7 +38,51 @@ class LegacyCostmodelPlugin:
     version = "0.1"
 
     def register(self, registry: PluginRegistry) -> None:
-        registry.register_service(ServiceKind.COST_PROVIDER, "static_fallback", StaticCostProvider(), priority=30)
+        registry.register_service(
+            ServiceKind.COST_PROVIDER,
+            "legacy_costmodel",
+            LegacyCostmodelAdapter(),
+            priority=30,
+        )
+
+
+class StructuralCostPlugin:
+    name = "structural_cost"
+    version = "0.1"
+
+    def register(self, registry: PluginRegistry) -> None:
+        registry.register_service(
+            ServiceKind.COST_PROVIDER,
+            "structural_zero",
+            StructuralZeroCostProvider(),
+            priority=120,
+        )
+
+
+class AttentionCostPlugin:
+    name = "attention_cost"
+    version = "0.1"
+
+    def register(self, registry: PluginRegistry) -> None:
+        registry.register_service(
+            ServiceKind.COST_PROVIDER,
+            "sdpa_fused_analytical",
+            ScaledDotProductAttentionCostProvider(),
+            priority=60,
+        )
+
+
+class MetadataViewCostPlugin:
+    name = "metadata_view_cost"
+    version = "0.1"
+
+    def register(self, registry: PluginRegistry) -> None:
+        registry.register_service(
+            ServiceKind.COST_PROVIDER,
+            "metadata_view_zero",
+            MetadataViewCostProvider(),
+            priority=110,
+        )
 
 
 class ProfileDBPlugin:
@@ -109,6 +155,9 @@ def build_default_registry(*, profile_db_path: str | Path | None = None) -> Regi
     registry = PluginRegistry()
     for plugin in (
         JointCapturePlugin(),
+        StructuralCostPlugin(),
+        MetadataViewCostPlugin(),
+        AttentionCostPlugin(),
         LegacyCostmodelPlugin(),
         PeakAnalysisPlugin(),
         PlanDiagnosticPlugin(),

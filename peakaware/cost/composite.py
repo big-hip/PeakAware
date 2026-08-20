@@ -15,6 +15,10 @@ class CompositeCostProvider:
     def __init__(self, providers: tuple[CostProvider, ...]) -> None:
         self.providers = providers or (RooflineFallbackProvider(),)
 
+    @property
+    def cache_safe(self) -> bool:
+        return all(bool(getattr(provider, "cache_safe", False)) for provider in self.providers)
+
     def supports(self, signature: OpSignature) -> bool:
         return any(provider.supports(signature) for provider in self.providers)
 
@@ -39,6 +43,9 @@ def rank_providers(providers: tuple[CostProvider, ...]) -> tuple[CostProvider, .
     priority = {
         "profile_db_exact": 100,
         "profile_db_interpolated": 80,
+        "structural_zero": 120,
+        "metadata_view_zero": 110,
+        "analytical:sdpa_fused": 60,
         "legacy_adapter:static_fallback": 50,
         "static_fallback": 30,
         "roofline_fallback": 10,

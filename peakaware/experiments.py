@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gc
 import json
 import platform
 import sys
@@ -12,10 +13,21 @@ import torch
 
 from peakaware.api import optimize_training
 from peakaware.config import PeakAwareConfig
+from peakaware.memory.timeline import fit_memory_timelines
 from peakaware.models import TrainingTaskRegistry
 from peakaware.reporting import export_plan_artifact_json, summarize_result
 from peakaware.search.exact import solve_exact_small_graph
 from peakaware.search.plan import plan_identity_key
+
+
+def _cleanup_experiment_cuda(device: torch.device) -> None:
+    gc.collect()
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return
+    with torch.cuda.device(device):
+        torch.cuda.synchronize(device)
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats(device)
 
 
 @dataclass(frozen=True)
@@ -101,6 +113,28 @@ class ExperimentRecord:
     actual_joint_capture_count: int
     candidate_count: int
     fallback_plan_ids: tuple[str, ...]
+    candidate_attempts: tuple[dict[str, Any], ...] = ()
+    selected_execution_evidence_source: str = "measured"
+    optimization_candidate_realization_us: float | None = None
+    simulation_only_selection: bool = False
+    optimization_compiler_refinement_us: float | None = None
+    compiler_refinement_source: str = "none"
+    compiler_refinement_requested_count: int = 0
+    compiler_refinement_success_count: int = 0
+    compiler_refinement_failure_count: int = 0
+    compiler_refinement_candidate_gpu_measurements_used: int = 0
+    selected_memory_realization_gap_detected: bool | None = None
+    selected_memory_realization_gap_bytes: int | None = None
+    selected_actual_memory_timeline: tuple[dict[str, Any], ...] = ()
+    selected_actual_memory_trace: tuple[dict[str, Any], ...] = ()
+    selected_actual_sampled_memory_trace: tuple[dict[str, Any], ...] = ()
+    selected_actual_overall_sampled_memory_trace: tuple[dict[str, Any], ...] = ()
+    selected_simulated_memory_timeline: tuple[dict[str, Any], ...] = ()
+    selected_simulated_memory_event_trace: tuple[dict[str, Any], ...] = ()
+    selected_lowered_fx_l2_simulated_memory_event_trace: tuple[dict[str, Any], ...] = ()
+    selected_memory_timeline_fit: dict[str, Any] | None = None
+    selected_gpu_util_trace: tuple[dict[str, Any], ...] = ()
+    selected_gpu_compute_summary: dict[str, Any] | None = None
     dry_run_replay_mode: str | None = None
     selected_activation_checkpoint: bool | None = None
     selected_aot_partition_runtime: bool | None = None
@@ -239,6 +273,18 @@ def _config_fingerprint(config: PeakAwareConfig, device: str = "cpu") -> dict[st
     compile_backend = "inductor" if config.enable_inductor else "aot_eager" if config.enable_compile else "eager"
     return {
         "top_k": config.top_k,
+        "max_greedy_candidates": config.max_greedy_candidates,
+        "search_algorithm": config.search_algorithm,
+        "beam_width": config.beam_width,
+        "max_beam_candidates": config.max_beam_candidates,
+        "beam_candidate_overflow_policy": config.beam_candidate_overflow_policy,
+        "compiler_refinement_top_k": config.compiler_refinement_top_k,
+        "validation_top_k": config.validation_top_k,
+        "validation_selection_policy": config.validation_selection_policy,
+        "candidate_measurement_order_seed": config.candidate_measurement_order_seed,
+        "reset_compiler_before_candidate_measurement": (
+            config.reset_compiler_before_candidate_measurement
+        ),
         "device": device,
         "enable_compile": config.enable_compile,
         "enable_inductor": config.enable_inductor,
@@ -250,6 +296,7 @@ def _config_fingerprint(config: PeakAwareConfig, device: str = "cpu") -> dict[st
         "safety_margin_ratio": config.safety_margin_ratio,
         "measurement_warmup_steps": config.measurement_warmup_steps,
         "measurement_repeats": config.measurement_repeats,
+        "candidate_measurement_protocol": config.candidate_measurement_protocol,
         "isolate_candidate_measurement": config.isolate_candidate_measurement,
         "candidate_worker_timeout_s": config.candidate_worker_timeout_s,
         "profile_db_path": str(config.profile_db_path or "none"),
@@ -283,6 +330,8 @@ def _calibrate_measured_plan_rows(rows: tuple[dict[str, Any], ...]) -> tuple[dic
     if all_save.get("estimated_peak_bytes") is not None and all_save.get("measured_peak_bytes") is not None:
         residual = int(all_save["measured_peak_bytes"]) - int(all_save["estimated_peak_bytes"])
     all_save_phase = all_save.get("measured_peak_phase")
+    all_save_measured_peak = all_save.get("measured_peak_bytes")
+    all_save_estimated_peak = all_save.get("estimated_peak_bytes")
     calibrated = []
     for row in rows:
         next_row = dict(row)
@@ -304,6 +353,22 @@ def _calibrate_measured_plan_rows(rows: tuple[dict[str, Any], ...]) -> tuple[dic
         next_row["all_save_phase_calibrated_phase_match"] = (
             None if measured_phase is None or calibrated_phase is None else measured_phase == calibrated_phase
         )
+        realization_gap = None
+        realization_gap_detected = None
+        if (
+            row.get("plan_id") != "all_save"
+            and all_save_measured_peak is not None
+            and all_save_estimated_peak is not None
+            and next_row.get("measured_peak_bytes") is not None
+            and next_row.get("estimated_peak_bytes") is not None
+        ):
+            measured_reduction = int(all_save_measured_peak) - int(next_row["measured_peak_bytes"])
+            estimated_reduction = int(all_save_estimated_peak) - int(next_row["estimated_peak_bytes"])
+            realization_gap = estimated_reduction - measured_reduction
+            tolerance = max(1 << 20, abs(int(all_save_measured_peak)) // 100)
+            realization_gap_detected = estimated_reduction > tolerance and measured_reduction <= tolerance
+        next_row["memory_realization_gap_detected"] = realization_gap_detected
+        next_row["memory_realization_gap_bytes"] = realization_gap
         calibrated.append(next_row)
     return tuple(calibrated)
 
@@ -326,12 +391,17 @@ def _measured_plan_results(summary: dict[str, Any]) -> tuple[dict[str, Any], ...
             calibrated_estimated = int(estimated) + all_save_residual
             calibrated_error = int(measured_peak) - calibrated_estimated
             calibrated_relative = None if calibrated_estimated == 0 else calibrated_error / calibrated_estimated
+        actual_timeline = tuple(measured.get("actual_memory_timeline") or ())
+        simulated_timeline = tuple(plan.get("simulated_memory_timeline") or ())
         rows.append(
             {
                 "plan_id": measured["plan_id"],
                 "strategy_provenance": dict(plan.get("strategy_provenance") or {}),
                 "estimated_peak_bytes": estimated,
                 "estimated_step_us": plan.get("estimated_step_us"),
+                "risk_score": plan.get("risk_score"),
+                "confidence": plan.get("confidence"),
+                "cost_breakdown": dict(plan.get("cost_breakdown") or {}),
                 "estimated_feasible": prediction.get("estimated_feasible"),
                 "measured_peak_bytes": measured_peak,
                 "measured_step_us": measured.get("step_us"),
@@ -342,6 +412,20 @@ def _measured_plan_results(summary: dict[str, Any]) -> tuple[dict[str, Any], ...
                 else all_save_phase == measured.get("peak_phase"),
                 "measured_feasible": prediction.get("measured_feasible"),
                 "phase_metrics": dict(measured.get("phase_metrics") or {}),
+                "actual_memory_timeline": actual_timeline,
+                "actual_memory_trace": tuple(measured.get("actual_memory_trace") or ()),
+                "actual_sampled_memory_trace": tuple(measured.get("actual_sampled_memory_trace") or ()),
+                "actual_overall_sampled_memory_trace": tuple(
+                    measured.get("actual_overall_sampled_memory_trace") or ()
+                ),
+                "gpu_util_trace": tuple(measured.get("gpu_util_trace") or ()),
+                "gpu_compute_summary": dict(measured.get("gpu_compute_summary") or {}),
+                "simulated_memory_timeline": simulated_timeline,
+                "simulated_memory_event_trace": tuple(plan.get("simulated_memory_event_trace") or ()),
+                "lowered_fx_l2_simulated_memory_event_trace": tuple(
+                    (measured.get("phase_metrics") or {}).get("lowered_fx_l2_simulated_memory_event_trace") or ()
+                ),
+                "memory_timeline_fit": fit_memory_timelines(actual_timeline, simulated_timeline),
                 "prediction_error_bytes": prediction.get("error_bytes"),
                 "calibrated_estimated_peak_bytes": calibrated_estimated,
                 "calibrated_prediction_error_bytes": calibrated_error,
@@ -492,6 +576,12 @@ def _record_success(
         measured_optimizer_peak_bytes=None
         if "optimizer_peak_bytes" not in phase_metrics
         else int(phase_metrics["optimizer_peak_bytes"]),
+        selected_memory_realization_gap_detected=None
+        if selected_measured_plan is None
+        else selected_measured_plan.get("memory_realization_gap_detected"),
+        selected_memory_realization_gap_bytes=None
+        if selected_measured_plan is None
+        else selected_measured_plan.get("memory_realization_gap_bytes"),
         diagnostic_primary_cause=None if diagnostic is None else diagnostic["primary_cause"],
         diagnostic_normalized_saved_reduction_bytes=expectation.get("normalized_saved_reduction"),
         diagnostic_realization_gap_bytes=expectation.get("realization_gap"),
@@ -532,6 +622,62 @@ def _record_success(
         actual_joint_capture_count=int(optimization_cost.get("actual_joint_capture_count", 0)),
         candidate_count=len(summary["plans"]),
         fallback_plan_ids=tuple(summary["fallback_plan_ids"]),
+        candidate_attempts=tuple(summary.get("candidate_attempts") or ()),
+        selected_execution_evidence_source=str(
+            measured.get("evidence_source") or "measured"
+        ),
+        optimization_candidate_realization_us=optimization_cost.get(
+            "candidate_realization_us"
+        ),
+        simulation_only_selection=bool(
+            optimization_cost.get("simulation_only_selection", 0)
+        ),
+        optimization_compiler_refinement_us=optimization_cost.get(
+            "compiler_refinement_us"
+        ),
+        compiler_refinement_source=str(
+            optimization_cost.get("compiler_refinement_source") or "none"
+        ),
+        compiler_refinement_requested_count=int(
+            optimization_cost.get("compiler_refinement_requested_count", 0)
+        ),
+        compiler_refinement_success_count=int(
+            optimization_cost.get("compiler_refinement_success_count", 0)
+        ),
+        compiler_refinement_failure_count=int(
+            optimization_cost.get("compiler_refinement_failure_count", 0)
+        ),
+        compiler_refinement_candidate_gpu_measurements_used=int(
+            optimization_cost.get(
+                "compiler_refinement_candidate_gpu_measurements_used",
+                0,
+            )
+        ),
+        selected_actual_memory_timeline=tuple(measured.get("actual_memory_timeline") or ()),
+        selected_actual_memory_trace=tuple(measured.get("actual_memory_trace") or ()),
+        selected_actual_sampled_memory_trace=tuple(
+            measured.get("actual_sampled_memory_trace")
+            or phase_metrics.get("actual_sampled_memory_trace")
+            or ()
+        ),
+        selected_actual_overall_sampled_memory_trace=tuple(
+            measured.get("actual_overall_sampled_memory_trace")
+            or phase_metrics.get("actual_overall_sampled_memory_trace")
+            or ()
+        ),
+        selected_simulated_memory_timeline=tuple(summary.get("selected_simulated_memory_timeline") or ()),
+        selected_simulated_memory_event_trace=tuple(
+            (selected_plan or {}).get("simulated_memory_event_trace") or ()
+        ),
+        selected_lowered_fx_l2_simulated_memory_event_trace=tuple(
+            phase_metrics.get("lowered_fx_l2_simulated_memory_event_trace") or ()
+        ),
+        selected_memory_timeline_fit=summary.get("selected_memory_timeline_fit"),
+        selected_gpu_util_trace=tuple(measured.get("gpu_util_trace") or phase_metrics.get("gpu_util_trace") or ()),
+        selected_gpu_compute_summary=dict(
+            measured.get("gpu_compute_summary") or phase_metrics.get("gpu_compute_summary") or {}
+        )
+        or None,
         dry_run_replay_mode=(summary.get("dry_run") or {}).get("replay_mode"),
         selected_activation_checkpoint=_phase_marker_enabled(phase_metrics, "activation_checkpoint"),
         selected_aot_partition_runtime=_phase_marker_enabled(phase_metrics, "aot_partition_runtime"),
@@ -607,6 +753,8 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         measured_fw_peak_bytes=None,
         measured_bw_peak_bytes=None,
         measured_optimizer_peak_bytes=None,
+        selected_memory_realization_gap_detected=None,
+        selected_memory_realization_gap_bytes=None,
         diagnostic_primary_cause=None,
         diagnostic_normalized_saved_reduction_bytes=None,
         diagnostic_realization_gap_bytes=None,
@@ -639,6 +787,16 @@ def _record_failure(case: ExperimentCase, exc: Exception) -> ExperimentRecord:
         actual_joint_capture_count=0,
         candidate_count=0,
         fallback_plan_ids=(),
+        candidate_attempts=(),
+        selected_execution_evidence_source="unavailable",
+        optimization_candidate_realization_us=None,
+        simulation_only_selection=False,
+        selected_actual_memory_timeline=(),
+        selected_actual_memory_trace=(),
+        selected_simulated_memory_timeline=(),
+        selected_memory_timeline_fit=None,
+        selected_gpu_util_trace=(),
+        selected_gpu_compute_summary=None,
         diagnostic_hints_enabled=None,
         diagnostic_hint_count=0,
         diagnostic_hint_kinds=(),
@@ -702,6 +860,7 @@ def run_experiment_matrix(
                     matrix_pass_index=matrix_pass_index,
                     matrix_pass_count=matrix_pass_count,
                 )
+                _cleanup_experiment_cuda(resolved_device)
                 model = task.build_model().to(resolved_device)
                 optimizer = task.build_optimizer(model)
                 args, kwargs = task.build_batch(microbatch_size)
@@ -719,6 +878,8 @@ def run_experiment_matrix(
                     )
                 except Exception as exc:
                     records.append(_record_failure(case, exc))
+                    del model, optimizer, args, kwargs
+                    _cleanup_experiment_cuda(resolved_device)
                     continue
                 summary = summarize_result(result)
                 if plan_artifact_dir is not None:
@@ -735,6 +896,8 @@ def run_experiment_matrix(
                 if include_exact_baseline:
                     exact = _run_exact_baseline(case, result, exact_max_candidate_count)
                 records.append(_record_success(case, summary, exact))
+                del result, summary, model, optimizer, args, kwargs
+                _cleanup_experiment_cuda(resolved_device)
     return tuple(records)
 
 
@@ -775,7 +938,16 @@ def experiment_records_from_dicts(rows: list[dict[str, Any]]) -> tuple[Experimen
         "selected_effective_saved_value_ids",
         "diagnostic_counterfactuals",
         "measured_plan_results",
+        "candidate_attempts",
         "fallback_plan_ids",
+        "selected_actual_memory_timeline",
+        "selected_actual_memory_trace",
+        "selected_actual_sampled_memory_trace",
+        "selected_actual_overall_sampled_memory_trace",
+        "selected_simulated_memory_timeline",
+        "selected_simulated_memory_event_trace",
+        "selected_lowered_fx_l2_simulated_memory_event_trace",
+        "selected_gpu_util_trace",
         "diagnostic_hint_kinds",
     }
     records = []
@@ -789,6 +961,20 @@ def experiment_records_from_dicts(rows: list[dict[str, Any]]) -> tuple[Experimen
         normalized.setdefault("measured_fw_peak_bytes", None)
         normalized.setdefault("measured_bw_peak_bytes", None)
         normalized.setdefault("measured_optimizer_peak_bytes", None)
+        normalized.setdefault("selected_memory_realization_gap_detected", None)
+        normalized.setdefault("selected_memory_realization_gap_bytes", None)
+        normalized.setdefault("selected_execution_evidence_source", "measured")
+        normalized.setdefault("optimization_candidate_realization_us", None)
+        normalized.setdefault("simulation_only_selection", False)
+        normalized.setdefault("optimization_compiler_refinement_us", None)
+        normalized.setdefault("compiler_refinement_source", "none")
+        normalized.setdefault("compiler_refinement_requested_count", 0)
+        normalized.setdefault("compiler_refinement_success_count", 0)
+        normalized.setdefault("compiler_refinement_failure_count", 0)
+        normalized.setdefault(
+            "compiler_refinement_candidate_gpu_measurements_used",
+            0,
+        )
         normalized.setdefault("diagnostic_hint_candidate_match_count", 0)
         normalized.setdefault("diagnostic_hint_order_changed", False)
         normalized.setdefault("diagnostic_hint_order_delta_count", 0)
@@ -796,6 +982,16 @@ def experiment_records_from_dicts(rows: list[dict[str, Any]]) -> tuple[Experimen
         normalized.setdefault("selected_aot_partition_runtime", None)
         normalized.setdefault("activation_checkpoint_candidate_count", 0)
         normalized.setdefault("aot_partition_runtime_candidate_count", 0)
+        normalized.setdefault("selected_actual_memory_timeline", ())
+        normalized.setdefault("selected_actual_memory_trace", ())
+        normalized.setdefault("selected_actual_sampled_memory_trace", ())
+        normalized.setdefault("selected_actual_overall_sampled_memory_trace", ())
+        normalized.setdefault("selected_simulated_memory_timeline", ())
+        normalized.setdefault("selected_simulated_memory_event_trace", ())
+        normalized.setdefault("selected_lowered_fx_l2_simulated_memory_event_trace", ())
+        normalized.setdefault("selected_memory_timeline_fit", None)
+        normalized.setdefault("selected_gpu_util_trace", ())
+        normalized.setdefault("selected_gpu_compute_summary", None)
         for field in tuple_fields:
             if field in normalized:
                 normalized[field] = tuple(normalized[field])
@@ -1791,6 +1987,109 @@ def summarize_baseline_comparisons(
     }
 
 
+def summarize_selected_regret(records: tuple[ExperimentRecord, ...]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if record.status != "ok" or record.selected_plan_id is None:
+            continue
+        candidates = [
+            row
+            for row in record.measured_plan_results
+            if row.get("measured_peak_bytes") is not None
+            and row.get("measured_step_us") is not None
+            and int(row["measured_peak_bytes"]) <= int(record.budget_bytes)
+        ]
+        selected_row = next(
+            (row for row in record.measured_plan_results if row.get("plan_id") == record.selected_plan_id),
+            None,
+        )
+        if selected_row is None or selected_row.get("measured_step_us") is None:
+            continue
+        selected_step_us = float(selected_row["measured_step_us"])
+        selected_peak_bytes = (
+            None
+            if selected_row.get("measured_peak_bytes") is None
+            else int(selected_row["measured_peak_bytes"])
+        )
+        selected_feasible = selected_peak_bytes is not None and selected_peak_bytes <= int(record.budget_bytes)
+        if candidates:
+            best = min(
+                candidates,
+                key=lambda row: (
+                    float(row["measured_step_us"]),
+                    int(row["measured_peak_bytes"]),
+                    str(row.get("plan_id")),
+                ),
+            )
+            best_step_us = float(best["measured_step_us"])
+            best_plan_id = str(best.get("plan_id"))
+            best_peak_bytes = int(best["measured_peak_bytes"])
+            if selected_feasible:
+                regret_us = selected_step_us - best_step_us
+                regret_ratio = regret_us / best_step_us if best_step_us > 0.0 else None
+            else:
+                regret_us = None
+                regret_ratio = None
+        else:
+            best_step_us = None
+            regret_us = None
+            regret_ratio = None
+            best_plan_id = None
+            best_peak_bytes = None
+        rows.append(
+            {
+                "variant_name": record.variant_name,
+                "task_name": record.task_name,
+                "microbatch_size": record.microbatch_size,
+                "budget_bytes": record.budget_bytes,
+                "selected_plan_id": record.selected_plan_id,
+                "selected_measured_peak_bytes": selected_peak_bytes,
+                "selected_measured_step_us": selected_step_us,
+                "selected_measured_feasible": selected_feasible,
+                "best_feasible_plan_id": best_plan_id,
+                "best_feasible_peak_bytes": best_peak_bytes,
+                "best_feasible_step_us": best_step_us,
+                "candidate_feasible_count": len(candidates),
+                "candidate_measured_count": len(record.measured_plan_results),
+                "selected_regret_us": regret_us,
+                "selected_regret_ratio": regret_ratio,
+                "selected_is_best_feasible": None
+                if best_plan_id is None
+                else record.selected_plan_id == best_plan_id,
+            }
+        )
+    regret_values = [float(row["selected_regret_us"]) for row in rows if row["selected_regret_us"] is not None]
+    regret_ratios = [
+        float(row["selected_regret_ratio"])
+        for row in rows
+        if row["selected_regret_ratio"] is not None
+    ]
+    best_matches = [
+        bool(row["selected_is_best_feasible"])
+        for row in rows
+        if row["selected_is_best_feasible"] is not None
+    ]
+    feasible_selected = [bool(row["selected_measured_feasible"]) for row in rows]
+    return {
+        "row_count": len(rows),
+        "regret_observation_count": len(regret_values),
+        "mean_selected_regret_us": _mean(regret_values),
+        "p50_selected_regret_us": _percentile(regret_values, 0.50),
+        "p90_selected_regret_us": _percentile(regret_values, 0.90),
+        "max_selected_regret_us": None if not regret_values else max(regret_values),
+        "mean_selected_regret_ratio": _mean(regret_ratios),
+        "p50_selected_regret_ratio": _percentile(regret_ratios, 0.50),
+        "p90_selected_regret_ratio": _percentile(regret_ratios, 0.90),
+        "selected_best_feasible_rate": None
+        if not best_matches
+        else sum(1 for value in best_matches if value) / len(best_matches),
+        "selected_measured_feasible_rate": None
+        if not feasible_selected
+        else sum(1 for value in feasible_selected if value) / len(feasible_selected),
+        "rows": rows,
+    }
+
+
 def summarize_layered_simulation_accuracy(records: tuple[ExperimentRecord, ...]) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for record in records:
@@ -2146,6 +2445,11 @@ def write_experiment_baseline_comparison_json(
     _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
 
 
+def write_experiment_selected_regret_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
+    text = json.dumps(summarize_selected_regret(records), indent=2, sort_keys=True)
+    _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
+
+
 def write_experiment_effect_acceptance_json(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
     text = json.dumps(summarize_effect_acceptance(records), indent=2, sort_keys=True)
     _ensure_parent_dir(path).write_text(text + "\n", encoding="utf-8")
@@ -2174,7 +2478,29 @@ def write_experiment_steady_state_json(records: tuple[ExperimentRecord, ...], pa
 def write_experiment_csv(records: tuple[ExperimentRecord, ...], path: str | Path) -> None:
     rows = experiment_records_to_dicts(records)
     fieldnames = tuple(ExperimentRecord.__dataclass_fields__)
+
+    def csv_cell(value: Any) -> Any:
+        if not isinstance(value, (dict, list, tuple)):
+            return value
+        text = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        if len(text) <= 64 * 1024:
+            return text
+        item_count = len(value)
+        return json.dumps(
+            {
+                "full_payload": "records.json",
+                "item_count": item_count,
+                "omitted_from_csv": True,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    csv_rows = [
+        {field: csv_cell(row.get(field)) for field in fieldnames}
+        for row in rows
+    ]
     with _ensure_parent_dir(path).open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(csv_rows)

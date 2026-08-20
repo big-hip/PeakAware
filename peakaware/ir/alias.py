@@ -6,6 +6,28 @@ import torch
 from torch import Tensor
 
 
+_ALIAS_PRESERVING_TARGET_PREFIXES = (
+    "aten._unsafe_view.",
+    "aten.alias.",
+    "aten.as_strided.",
+    "aten.detach.",
+    "aten.expand.",
+    "aten.permute.",
+    "aten.select.",
+    "aten.slice.",
+    "aten.squeeze.",
+    "aten.t.",
+    "aten.transpose.",
+    "aten.unsqueeze.",
+    "aten.view.",
+)
+
+
+def is_alias_preserving_target(target: object) -> bool:
+    normalized = str(target).strip().lower()
+    return normalized.startswith(_ALIAS_PRESERVING_TARGET_PREFIXES)
+
+
 def storage_nbytes(value: Any) -> int:
     if isinstance(value, Tensor):
         return int(value.numel() * value.element_size())
@@ -66,6 +88,55 @@ def build_storage_groups(values: dict[int, Any], external_value_ids: frozenset[i
     return {
         storage_id: (tuple(member_ids), storage_bytes[storage_id], storage_external[storage_id])
         for storage_id, member_ids in storage_members.items()
+    }
+
+
+def merge_alias_storage_groups(
+    storage_groups: dict[int, tuple[tuple[int, ...], int, bool]],
+    alias_edges: tuple[tuple[int, int], ...],
+) -> dict[int, tuple[tuple[int, ...], int, bool]]:
+    """Merge FakeTensor view outputs into their input physical storage.
+
+    FakeTensor metadata does not always populate ``Tensor._base``. Pointer-based
+    grouping can therefore assign view/transpose/detach outputs distinct storage
+    ids even though the ATen operation is alias preserving. The input storage
+    size is retained: expand does not allocate its logical output numel, while a
+    slice keeps the full base storage alive.
+    """
+
+    groups: dict[int, list[Any]] = {
+        storage_id: [list(value_ids), int(nbytes), bool(is_external)]
+        for storage_id, (value_ids, nbytes, is_external) in storage_groups.items()
+    }
+    value_to_storage = {
+        value_id: storage_id
+        for storage_id, (value_ids, _nbytes, _is_external) in storage_groups.items()
+        for value_id in value_ids
+    }
+    for output_value_id, input_value_id in alias_edges:
+        output_storage_id = value_to_storage.get(output_value_id)
+        input_storage_id = value_to_storage.get(input_value_id)
+        if (
+            output_storage_id is None
+            or input_storage_id is None
+            or output_storage_id == input_storage_id
+            or output_storage_id not in groups
+            or input_storage_id not in groups
+        ):
+            continue
+        output_members, output_nbytes, output_external = groups.pop(output_storage_id)
+        input_members, input_nbytes, input_external = groups[input_storage_id]
+        input_members.extend(output_members)
+        groups[input_storage_id] = [
+            input_members,
+            input_nbytes if input_nbytes > 0 else output_nbytes,
+            input_external or output_external,
+        ]
+        for value_id in output_members:
+            value_to_storage[value_id] = input_storage_id
+    return {
+        storage_id: (tuple(value_ids), int(nbytes), bool(is_external))
+        for storage_id, (value_ids, nbytes, is_external) in groups.items()
     }
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 
 from peakaware.contracts import (
     EarlyStopEvidence,
@@ -11,10 +11,15 @@ from peakaware.contracts import (
     RecomputePlan,
     RepairHint,
     SearchDiagnostics,
+    SimulationResult,
 )
-from peakaware.cost.base import CostProvider
+from peakaware.cost.base import CostProvider, provider_cache_safe
 from peakaware.diagnostics import diagnose_plan
-from peakaware.memory.simulator import simulate_plan
+from peakaware.memory.simulator import (
+    SimulationCostCache,
+    build_simulation_cost_cache,
+    simulate_plan,
+)
 
 from .candidates import SaveCandidate, select_save_candidates
 from .closure import derive_recompute_closure, validate_closure
@@ -22,14 +27,97 @@ from .pareto import select_pareto_topk
 from .plan import build_recompute_plan
 
 
-def evaluate_plan(
+@dataclass(frozen=True)
+class _CachedPlanEvaluation:
+    simulation: SimulationResult
+    closure_valid: bool
+    closure_reason: str | None
+
+
+@dataclass
+class PlanEvaluationCache:
+    """Reusable exact plan simulations for one IR/timeline/provider triple.
+
+    The cache key is the normalized saved-value set. Budget, safety margin and
+    human-readable plan labels do not affect the simulated peak/time, so a
+    cached simulation can be safely retargeted to plans from later searches.
+    Traced and summary-only simulations are kept separately to preserve lazy
+    event materialization.
+    """
+
+    ir: JointTrainingIR
+    fixed_timeline: FixedTimeline
+    cost_provider: CostProvider | None
+    simulation_cost_cache: SimulationCostCache
+    summary_entries: dict[frozenset[int], _CachedPlanEvaluation] = field(
+        default_factory=dict
+    )
+    traced_entries: dict[frozenset[int], _CachedPlanEvaluation] = field(
+        default_factory=dict
+    )
+    hit_count: int = 0
+    miss_count: int = 0
+
+    def validate_for(
+        self,
+        ir: JointTrainingIR,
+        fixed_timeline: FixedTimeline,
+        cost_provider: CostProvider | None,
+    ) -> None:
+        if self.ir is not ir:
+            raise ValueError("plan evaluation cache belongs to a different IR instance")
+        if self.fixed_timeline is not fixed_timeline:
+            raise ValueError(
+                "plan evaluation cache belongs to a different fixed timeline"
+            )
+        if self.cost_provider is not cost_provider:
+            raise ValueError(
+                "plan evaluation cache belongs to a different cost provider"
+            )
+
+
+def build_plan_evaluation_cache(
     ir: JointTrainingIR,
-    plan: RecomputePlan,
     fixed_timeline: FixedTimeline,
+    cost_provider: CostProvider | None = None,
+    *,
+    simulation_cost_cache: SimulationCostCache | None = None,
+) -> PlanEvaluationCache:
+    if not provider_cache_safe(cost_provider):
+        raise ValueError(
+            "cross-plan evaluation caching requires an explicitly cache-safe "
+            "cost provider"
+        )
+    if simulation_cost_cache is None:
+        simulation_cost_cache = build_simulation_cost_cache(
+            ir, fixed_timeline, cost_provider
+        )
+    else:
+        simulation_cost_cache.validate_for(ir, fixed_timeline, cost_provider)
+    return PlanEvaluationCache(
+        ir=ir,
+        fixed_timeline=fixed_timeline,
+        cost_provider=cost_provider,
+        simulation_cost_cache=simulation_cost_cache,
+    )
+
+
+def _complete_evaluated_plan(
+    plan: RecomputePlan,
+    simulation: SimulationResult,
+    *,
+    closure_valid: bool,
+    closure_reason: str | None,
+    cost_provider: CostProvider | None,
 ) -> EvaluatedPlan:
-    closure = derive_recompute_closure(ir, plan.saved_value_ids)
-    closure_valid, reason = validate_closure(closure)
-    simulation = simulate_plan(ir, plan, fixed_timeline)
+    if simulation.plan_id != plan.plan_id:
+        simulation = replace(simulation, plan_id=plan.plan_id)
+    cost_sources = plan.cost_sources
+    if cost_provider is not None:
+        provider_source = str(
+            getattr(cost_provider, "source", cost_provider.__class__.__name__)
+        )
+        cost_sources = tuple(dict.fromkeys((*cost_sources, provider_source)))
     completed = replace(
         plan,
         estimated_peak_bytes=simulation.estimated_peak_bytes,
@@ -39,16 +127,108 @@ def evaluate_plan(
         recompute_before_first_bw_op_bytes=simulation.recompute_before_first_bw_op_bytes,
         risk_score=simulation.risk_score,
         confidence=simulation.confidence,
+        cost_sources=cost_sources,
     )
-    feasible = closure_valid and simulation.estimated_peak_bytes <= (plan.budget_bytes - plan.safety_margin_bytes)
-    rejection_reason = reason
+    feasible = closure_valid and simulation.estimated_peak_bytes <= (
+        plan.budget_bytes - plan.safety_margin_bytes
+    )
+    rejection_reason = closure_reason
     if closure_valid and not feasible:
         rejection_reason = "estimated peak exceeds search budget"
-    return EvaluatedPlan(plan=completed, simulation=simulation, feasible=feasible, rejection_reason=rejection_reason)
+    return EvaluatedPlan(
+        plan=completed,
+        simulation=simulation,
+        feasible=feasible,
+        rejection_reason=rejection_reason,
+    )
 
 
-def _all_forward_value_ids(ir: JointTrainingIR) -> frozenset[int]:
-    return frozenset(v.id for v in ir.values if v.phase == "fw")
+def evaluate_plan(
+    ir: JointTrainingIR,
+    plan: RecomputePlan,
+    fixed_timeline: FixedTimeline,
+    *,
+    cost_provider: CostProvider | None = None,
+    simulation_cost_cache: SimulationCostCache | None = None,
+    evaluation_cache: PlanEvaluationCache | None = None,
+    materialize_event_trace: bool = True,
+) -> EvaluatedPlan:
+    if evaluation_cache is not None:
+        evaluation_cache.validate_for(ir, fixed_timeline, cost_provider)
+        if (
+            simulation_cost_cache is not None
+            and simulation_cost_cache is not evaluation_cache.simulation_cost_cache
+        ):
+            raise ValueError(
+                "simulation cost cache differs from the plan evaluation cache"
+            )
+        simulation_cost_cache = evaluation_cache.simulation_cost_cache
+        normalized_saved = plan.saved_value_ids | plan.mandatory_value_ids
+        entries = (
+            evaluation_cache.traced_entries
+            if materialize_event_trace
+            else evaluation_cache.summary_entries
+        )
+        cached = entries.get(normalized_saved)
+        if cached is not None:
+            evaluation_cache.hit_count += 1
+            return _complete_evaluated_plan(
+                plan,
+                cached.simulation,
+                closure_valid=cached.closure_valid,
+                closure_reason=cached.closure_reason,
+                cost_provider=cost_provider,
+            )
+        evaluation_cache.miss_count += 1
+    closure = derive_recompute_closure(
+        ir,
+        plan.saved_value_ids,
+        graph_cache=(
+            None
+            if simulation_cost_cache is None
+            else simulation_cost_cache.recompute_graph_cache
+        ),
+    )
+    closure_valid, reason = validate_closure(closure)
+    simulation = simulate_plan(
+        ir,
+        plan,
+        fixed_timeline,
+        cost_provider=cost_provider,
+        cost_cache=simulation_cost_cache,
+        materialize_event_trace=materialize_event_trace,
+        recompute_closure=closure,
+    )
+    if evaluation_cache is not None:
+        cached = _CachedPlanEvaluation(
+            simulation=simulation,
+            closure_valid=closure_valid,
+            closure_reason=reason,
+        )
+        entries[normalized_saved] = cached
+        if materialize_event_trace:
+            evaluation_cache.summary_entries.setdefault(
+                normalized_saved,
+                _CachedPlanEvaluation(
+                    simulation=replace(
+                        simulation,
+                        simulated_memory_event_trace=(),
+                    ),
+                    closure_valid=closure_valid,
+                    closure_reason=reason,
+                ),
+            )
+    return _complete_evaluated_plan(
+        plan,
+        simulation,
+        closure_valid=closure_valid,
+        closure_reason=reason,
+        cost_provider=cost_provider,
+    )
+
+
+def _residual_forward_value_ids(ir: JointTrainingIR) -> frozenset[int]:
+    return frozenset(v.id for v in ir.values if v.phase == "fw" and v.crosses_fw_bw)
 
 
 def _mandatory_value_ids(ir: JointTrainingIR) -> frozenset[int]:
@@ -56,25 +236,27 @@ def _mandatory_value_ids(ir: JointTrainingIR) -> frozenset[int]:
 
 
 def _manual_default_plans(ir: JointTrainingIR, budget_bytes: int, safety_margin_bytes: int) -> tuple[RecomputePlan, ...]:
+    residual_values = _residual_forward_value_ids(ir)
+    mandatory_values = _mandatory_value_ids(ir)
     all_save = build_recompute_plan(
         ir,
         budget_bytes=budget_bytes,
-        saved_value_ids=_all_forward_value_ids(ir),
+        saved_value_ids=residual_values | mandatory_values,
         safety_margin_bytes=safety_margin_bytes,
         label="all_save",
         strategy_expectation_source="all_save_baseline",
     )
-    mandatory_only = build_recompute_plan(
+    min_cut = build_recompute_plan(
         ir,
         budget_bytes=budget_bytes,
-        saved_value_ids=_mandatory_value_ids(ir),
+        saved_value_ids=mandatory_values,
         safety_margin_bytes=safety_margin_bytes,
         label="torch_min_cut",
         strategy_expectation_source="pytorch_min_cut_proxy",
     )
-    middle_values = tuple(sorted(_all_forward_value_ids(ir) - _mandatory_value_ids(ir)))
+    middle_values = tuple(sorted(residual_values - mandatory_values))
     checkpoint_boundary = max(1, len(middle_values) // 2)
-    checkpoint_values = frozenset(middle_values[:checkpoint_boundary]) | _mandatory_value_ids(ir)
+    checkpoint_values = frozenset(middle_values[:checkpoint_boundary]) | mandatory_values
     block_checkpoint = build_recompute_plan(
         ir,
         budget_bytes=budget_bytes,
@@ -83,7 +265,7 @@ def _manual_default_plans(ir: JointTrainingIR, budget_bytes: int, safety_margin_
         label="block_checkpoint",
         strategy_expectation_source="block_checkpoint_proxy",
     )
-    return (all_save, mandatory_only, block_checkpoint)
+    return (all_save, min_cut, block_checkpoint)
 
 
 def _greedy_seed_plans(
@@ -92,8 +274,9 @@ def _greedy_seed_plans(
     safety_margin_bytes: int,
     cost_provider: CostProvider | None,
     hints: tuple[RepairHint, ...] = (),
+    max_candidates: int = 4,
 ) -> tuple[RecomputePlan, ...]:
-    all_fw = _all_forward_value_ids(ir)
+    all_fw = _residual_forward_value_ids(ir)
     mandatory = _mandatory_value_ids(ir)
     candidates = select_save_candidates(ir, cost_provider=cost_provider, hints=hints)
     saved = set(all_fw)
@@ -110,7 +293,7 @@ def _greedy_seed_plans(
                 strategy_expectation_source="greedy_bytes_per_cost",
             )
         )
-        if len(plans) >= 4:
+        if len(plans) >= max_candidates:
             break
     return tuple(plans)
 
@@ -139,6 +322,7 @@ def search_plans(
     repair_hints: tuple[RepairHint, ...] = (),
     enable_diagnostic_hints: bool = True,
     top_k: int = 3,
+    max_greedy_candidates: int = 4,
 ) -> tuple[EvaluatedPlan, ...]:
     evaluated, _ = search_plans_with_diagnostics(
         ir,
@@ -150,6 +334,7 @@ def search_plans(
         repair_hints=repair_hints,
         enable_diagnostic_hints=enable_diagnostic_hints,
         top_k=top_k,
+        max_greedy_candidates=max_greedy_candidates,
     )
     return evaluated
 
@@ -165,7 +350,34 @@ def search_plans_with_diagnostics(
     repair_hints: tuple[RepairHint, ...] = (),
     enable_diagnostic_hints: bool = True,
     top_k: int = 3,
+    max_greedy_candidates: int = 4,
 ) -> tuple[tuple[EvaluatedPlan, ...], SearchDiagnostics]:
+    simulation_cost_cache = None
+    evaluation_cache = None
+    if provider_cache_safe(cost_provider):
+        simulation_cost_cache = build_simulation_cost_cache(
+            ir,
+            fixed_timeline,
+            cost_provider,
+        )
+        evaluation_cache = build_plan_evaluation_cache(
+            ir,
+            fixed_timeline,
+            cost_provider,
+            simulation_cost_cache=simulation_cost_cache,
+        )
+
+    def evaluate_summary(plan: RecomputePlan) -> EvaluatedPlan:
+        return evaluate_plan(
+            ir,
+            plan,
+            fixed_timeline,
+            cost_provider=cost_provider,
+            simulation_cost_cache=simulation_cost_cache,
+            evaluation_cache=evaluation_cache,
+            materialize_event_trace=False,
+        )
+
     plans = list(_manual_default_plans(ir, budget_bytes, safety_margin_bytes))
     for index, saved in enumerate(manual_saved_value_ids):
         plans.append(
@@ -178,7 +390,7 @@ def search_plans_with_diagnostics(
                 strategy_expectation_source="manual_saved_value_ids",
             )
         )
-    baseline_evaluated = [evaluate_plan(ir, plan, fixed_timeline) for plan in plans]
+    baseline_evaluated = [evaluate_summary(plan) for plan in plans]
     baseline = next((plan for plan in baseline_evaluated if plan.plan.plan_id == "all_save"), baseline_evaluated[0])
     diagnostic_hints = ()
     if enable_diagnostic_hints:
@@ -194,14 +406,34 @@ def search_plans_with_diagnostics(
     hinted_order = _candidate_order(hinted_candidates)
     diagnostic_hint_targets = {target for hint in diagnostic_hints for target in hint.target_ids}
     candidate_storage_ids = {candidate.storage_id for candidate in base_candidates}
-    plans.extend(_greedy_seed_plans(ir, budget_bytes, safety_margin_bytes, cost_provider, hints))
-    searched = [
-        evaluate_plan(ir, plan, fixed_timeline)
-        for plan in plans[len(baseline_evaluated) :]
-    ]
-    from .repair import repair_to_budget
+    plans.extend(
+        _greedy_seed_plans(
+            ir,
+            budget_bytes,
+            safety_margin_bytes,
+            cost_provider,
+            hints,
+            max_candidates=max_greedy_candidates,
+        )
+    )
+    searched = [evaluate_summary(plan) for plan in plans[len(baseline_evaluated) :]]
+    from .repair import repair_to_budget_with_count
 
-    repaired = [repair_to_budget(ir, fixed_timeline, plan, hints=hints) for plan in searched if not plan.feasible]
+    repair_results = [
+        repair_to_budget_with_count(
+            ir,
+            fixed_timeline,
+            plan,
+            hints=hints,
+            cost_provider=cost_provider,
+            simulation_cost_cache=simulation_cost_cache,
+            evaluation_cache=evaluation_cache,
+            materialize_event_trace=False,
+        )
+        for plan in searched
+        if not plan.feasible
+    ]
+    repaired = [result.evaluated for result in repair_results]
     unique: dict[str, EvaluatedPlan] = {}
     for plan in select_pareto_topk(tuple(searched + repaired), top_k):
         unique.setdefault(plan.plan.plan_id, plan)
@@ -220,6 +452,14 @@ def search_plans_with_diagnostics(
         repair_success_count=sum(1 for plan in repaired if plan.feasible),
         feasible_after_repair_count=sum(1 for plan in searched + repaired if plan.feasible),
         repaired_plan_ids=tuple(plan.plan.plan_id for plan in repaired),
+        repair_evaluation_count=sum(result.evaluation_count for result in repair_results),
+        evaluation_cache_hits=0 if evaluation_cache is None else evaluation_cache.hit_count,
+        evaluation_cache_misses=0 if evaluation_cache is None else evaluation_cache.miss_count,
+        summary_only_evaluation_count=(
+            len(baseline_evaluated)
+            + len(searched)
+            + sum(result.evaluation_count for result in repair_results)
+        ),
     )
     return evaluated, diagnostics
 
@@ -235,6 +475,7 @@ def search_plans_with_report(
     repair_hints: tuple[RepairHint, ...] = (),
     enable_diagnostic_hints: bool = True,
     top_k: int = 3,
+    max_greedy_candidates: int = 4,
 ) -> tuple[tuple[EvaluatedPlan, ...], EarlyStopReport | None]:
     evaluated = search_plans(
         ir,
@@ -246,6 +487,7 @@ def search_plans_with_report(
         repair_hints=repair_hints,
         enable_diagnostic_hints=enable_diagnostic_hints,
         top_k=top_k,
+        max_greedy_candidates=max_greedy_candidates,
     )
     return evaluated, apply_early_stop_policy(evaluated, fixed_timeline=fixed_timeline)
 

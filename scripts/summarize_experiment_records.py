@@ -17,6 +17,7 @@ from peakaware.experiments import (
     write_experiment_cache_reuse_json,
     write_experiment_hint_ablation_json,
     write_experiment_layered_accuracy_json,
+    write_experiment_selected_regret_json,
     write_experiment_simulation_error_json,
     write_experiment_steady_state_json,
     write_experiment_summary_json,
@@ -35,6 +36,7 @@ def main() -> None:
     parser.add_argument("--output-baseline-comparison-json", type=Path, default=None)
     parser.add_argument("--output-layered-accuracy-json", type=Path, default=None)
     parser.add_argument("--output-simulation-error-json", type=Path, default=None)
+    parser.add_argument("--output-selected-regret-json", type=Path, default=None)
     parser.add_argument("--output-steady-state-json", type=Path, default=None)
     args = parser.parse_args()
 
@@ -73,6 +75,9 @@ def main() -> None:
     if args.output_simulation_error_json is not None:
         write_experiment_simulation_error_json(records, args.output_simulation_error_json)
         written_paths.append(str(args.output_simulation_error_json))
+    if args.output_selected_regret_json is not None:
+        write_experiment_selected_regret_json(records, args.output_selected_regret_json)
+        written_paths.append(str(args.output_selected_regret_json))
     if args.output_steady_state_json is not None:
         write_experiment_steady_state_json(records, args.output_steady_state_json)
         written_paths.append(str(args.output_steady_state_json))

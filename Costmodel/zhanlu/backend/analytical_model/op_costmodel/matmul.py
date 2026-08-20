@@ -274,6 +274,20 @@ class ConvPrediction(BaseOp):
         self.add_bias = True if len(self.inputs_shape) >= 3 else False
         self.op_type = "cube"
 
+    @property
+    def cube_flops_dict(self):
+        compute_dtype = self.compute_power_by_inputs_dtype()[self.op_type][0]
+        if self.conv_nd == "2d":
+            output_elements = self.N * self.C_out * self.H_out * self.W_out
+            kernel_mul = self.C_in_g * self.K_h * self.K_w
+        else:
+            output_elements = self.N * self.C_out * self.L_out
+            kernel_mul = self.C_in_g * self.K_l
+        flops = 2 * output_elements * kernel_mul
+        if self.add_bias:
+            flops += output_elements
+        return {compute_dtype: flops}
+
 @op_manager.register("ConvolutionBackward")
 class ConvBackPrediction(BaseOp):
     def __init__(self, op, hardware):

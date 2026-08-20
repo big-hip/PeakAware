@@ -7,7 +7,9 @@ from zhanlu.backend.analytical_model.op_manager import op_manager
                      "ScatterAdd", "ScatterInplace", "Sin", "Cos", "ZerosLike", "Histc", "Gather", "Permute", "Cumsum",
                      "NpuMoeTokenUnpermuteGrad", "NpuMoeTokenPermuteGrad",
                      "Embedding", "EmbeddingDenseBackward", "Transpose", "CopyInplace", "ToCopy",
-                     "NpuMoeTokenUnpermute")
+                     "NpuMoeTokenUnpermute", "View", "UnsafeView", "Reshape", "Clone", "Detach", "Select",
+                     "SelectBackward", "Unsqueeze", "Squeeze", "Getitem", "MaxPool2dWithIndices",
+                     "MaxPool2dWithIndicesBackward")
 class MemoryPrediction(BaseOp):
     def __init__(self, op, hardware):
         super().__init__(op, hardware)

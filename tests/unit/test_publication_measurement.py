@@ -143,6 +143,8 @@ def test_cpu_measurement_has_wall_time_and_explicitly_unavailable_events():
         assert metrics[f"{window}_event_wall_relative_diff"] is None
     assert metrics["fw_us"] == metrics["fw_wall_us"]
     assert metrics["step_us"] == metrics["phase_step_wall_us"]
+    assert metrics["gpu_compute_summary"]["status"] == "unavailable"
+    assert metrics["gpu_compute_summary"]["unavailable_reason"] == "cuda_device_unavailable"
 
 
 @pytest.mark.parametrize(
@@ -457,7 +459,17 @@ def test_phase_samples_record_after_forward_retained_memory(monkeypatch: pytest.
 
     assert metrics["after_fw_allocated_bytes"] == 123
     assert metrics["after_fw_reserved_bytes"] == 456
+    assert metrics["actual_memory_trace_kind"] == "phase_boundary_anchor"
+    assert [point["phase"] for point in metrics["actual_memory_trace"]] == [
+        "start",
+        "fw_peak",
+        "after_fw",
+        "bw_peak",
+        "optimizer_peak",
+        "overall_peak",
+    ]
     assert all(sample["after_fw_allocated_bytes"] == 123 for sample in metrics["phase_samples"])
+    assert all("actual_memory_trace" in sample for sample in metrics["phase_samples"])
     assert all(sample["after_fw_reserved_bytes"] == 456 for sample in metrics["phase_samples"])
 
 

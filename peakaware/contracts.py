@@ -83,6 +83,10 @@ class OpInfo:
     output_value_ids: tuple[int, ...]
     recomputable: bool
     mandatory_save_reason: str | None
+    input_shapes: tuple[tuple[int, ...], ...] = ()
+    output_shapes: tuple[tuple[int, ...], ...] = ()
+    input_dtypes: tuple[str, ...] = ()
+    output_dtypes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,8 @@ class ValueInfo:
     recomputable: bool
     mandatory_save_reason: str | None
     name: str = ""
+    shape: tuple[int, ...] = ()
+    dtype: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,7 @@ class FixedTimeline:
     optimizer_state_bytes: int
     optimizer_temporary_bytes: int
     mandatory_workspace_bytes: int = 0
+    runtime_replica_bytes: int = 0
 
     @property
     def steady_bytes(self) -> int:
@@ -150,8 +157,23 @@ class FixedTimeline:
         )
 
     @property
+    def forward_resident_bytes(self) -> int:
+        """Steady-state forward residency after optimizer state materializes."""
+
+        return (
+            self.parameter_bytes
+            + self.buffer_bytes
+            + self.optimizer_state_bytes
+            + self.runtime_replica_bytes
+        )
+
+    @property
     def peak_lower_bound_bytes(self) -> int:
-        return self.steady_bytes + self.optimizer_temporary_bytes + self.mandatory_workspace_bytes
+        return self.resident_bytes + self.optimizer_temporary_bytes + self.mandatory_workspace_bytes
+
+    @property
+    def resident_bytes(self) -> int:
+        return self.steady_bytes + self.runtime_replica_bytes
 
 
 @dataclass(frozen=True)
@@ -229,6 +251,7 @@ class PeakSnapshot:
     saved_activation_bytes: int
     recomputed_bytes: int
     workspace_bytes: int
+    runtime_replica_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -246,6 +269,8 @@ class SimulationResult:
     recompute_before_first_bw_op_bytes: int
     risk_score: float
     confidence: float
+    cost_breakdown: dict[str, Any] = field(default_factory=dict)
+    simulated_memory_event_trace: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -283,6 +308,10 @@ class SearchDiagnostics:
     repair_success_count: int
     feasible_after_repair_count: int
     repaired_plan_ids: tuple[str, ...]
+    repair_evaluation_count: int = 0
+    evaluation_cache_hits: int = 0
+    evaluation_cache_misses: int = 0
+    summary_only_evaluation_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -337,8 +366,9 @@ class MeasuredExecutable:
     forward_backward: Callable[..., Tensor]
     measured_peak_bytes: int
     measured_step_us: float
-    correctness_passed: bool
-    phase_metrics: dict[str, int | float] = field(default_factory=dict)
+    correctness_passed: bool | None
+    phase_metrics: dict[str, Any] = field(default_factory=dict)
+    evidence_source: str = "measured"
 
 
 @dataclass(frozen=True)
@@ -403,8 +433,9 @@ class OptimizedTrainingResult:
     analysis: AnalysisBundle | None = None
     dry_run: DryRunResult | None = None
     measured_candidates: tuple[MeasuredExecutable, ...] = ()
+    candidate_attempts: tuple[dict[str, Any], ...] = ()
     cache_stats: CacheStats = field(default_factory=CacheStats)
-    optimization_metrics: dict[str, int | float | None] = field(default_factory=dict)
+    optimization_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

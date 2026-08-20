@@ -19,6 +19,24 @@ ratio_curve = {
             'min_ratio': 0.27669700084207
         }
     },
+    # Ascend 910B2C: same Atlast-910B architecture as A3 (cube fp16=376 TF,
+    # HBM 1.6 TB/s, 64 GB). Utilization curves are inherited from A3 until a
+    # dedicated on-chip calibration is collected; infer_*_ratio currently
+    # returns fixed priors (0.1 / 0.8 / 0.1) identical across configs.
+    'Ascend910B': {
+        'cube': {
+            'a': 0.15,
+            'b': -2.82,
+            'max_ratio': 0.75,
+            'min_ratio': 0.1532444728230505
+        },
+        'hbm': {
+            'a': 0.07,
+            'b': -0.68,
+            'max_ratio': 0.6998730030736797,
+            'min_ratio': 0.27669700084207
+        }
+    },
 }
 
 

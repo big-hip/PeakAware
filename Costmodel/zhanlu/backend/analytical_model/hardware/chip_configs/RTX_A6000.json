@@ -1,0 +1,26 @@
+{
+    "head_tail_time": 35,
+    "head_tail_time_for_fused_op": 1,
+    "compute": {
+        "cube": {
+            "float16": 154.8,
+            "bfloat16": 154.8,
+            "float32": 38.7
+        },
+        "vector": {
+            "float16": 19.3,
+            "bfloat16": 19.3,
+            "float32": 19.3
+        }
+    },
+    "memory": {
+        "hbm": {
+            "bandwidth": 0.768,
+            "size": 48
+        },
+        "L2cache": {
+            "bandwidth": 4.0,
+            "size": 6
+        }
+    }
+}

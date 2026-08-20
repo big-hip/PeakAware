@@ -3,7 +3,10 @@ from __future__ import annotations
 import copy
 import functools
 import inspect
+import shutil
 import statistics
+import subprocess
+import threading
 import time
 import types
 from dataclasses import dataclass, fields, is_dataclass
@@ -18,6 +21,9 @@ from .stable_callable import (
     snapshot_registered_callable,
     validate_registered_callable,
 )
+
+DEFAULT_MEMORY_SAMPLER_INTERVAL_US = 500.0
+DEFAULT_GPU_UTIL_SAMPLER_INTERVAL_US = 50_000.0
 
 
 def measure_training_step(fn: Callable[..., Tensor], *args: Any, **kwargs: Any) -> tuple[Tensor, int, float]:
@@ -77,6 +83,233 @@ def _reset_cuda_peak(cuda_device: torch.device | None = None) -> None:
         torch.cuda.reset_peak_memory_stats(cuda_device)
 
 
+class _CudaMemorySampler:
+    def __init__(
+        self,
+        cuda_device: torch.device | None,
+        *,
+        interval_us: float = DEFAULT_MEMORY_SAMPLER_INTERVAL_US,
+    ) -> None:
+        self.cuda_device = cuda_device
+        self.interval_s = max(float(interval_us), 1.0) / 1_000_000.0
+        self._phase = "unknown"
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self._started_at = 0.0
+        self._samples: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._peak_bytes = 0
+
+    def start(self, phase: str = "start") -> None:
+        if self.cuda_device is None:
+            return
+        with torch.cuda.device(self.cuda_device):
+            torch.cuda.synchronize(self.cuda_device)
+        with self._lock:
+            self._phase = phase
+            self._running = True
+            self._started_at = time.perf_counter()
+        self._record_sample(event="sampler_start")
+        self._thread = threading.Thread(target=self._run, name="peakaware-cuda-memory-sampler", daemon=True)
+        self._thread.start()
+
+    def set_phase(self, phase: str) -> None:
+        if self.cuda_device is None:
+            return
+        self._record_sample(event="phase_end")
+        with self._lock:
+            self._phase = phase
+        self._record_sample(event="phase_start")
+
+    def stop(self) -> tuple[dict[str, Any], ...]:
+        if self.cuda_device is None:
+            return ()
+        self._record_sample(event="sampler_stop_request")
+        with self._lock:
+            self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._record_sample(event="sampler_stop")
+        with self._lock:
+            return tuple(self._samples)
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                running = self._running
+            if not running:
+                break
+            self._record_sample()
+            time.sleep(self.interval_s)
+
+    def _record_sample(self, *, event: str = "sample") -> None:
+        if self.cuda_device is None:
+            return
+        try:
+            allocated = int(torch.cuda.memory_allocated(self.cuda_device))
+            reserved = int(torch.cuda.memory_reserved(self.cuda_device))
+            allocator_peak = int(torch.cuda.max_memory_allocated(self.cuda_device))
+            allocator_reserved_peak = int(torch.cuda.max_memory_reserved(self.cuda_device))
+        except Exception:
+            return
+        with self._lock:
+            phase = self._phase
+            started_at = self._started_at
+            self._peak_bytes = max(self._peak_bytes, allocated)
+            sampled_peak = self._peak_bytes
+        row = {
+            "phase": phase,
+            "event": event,
+            "time_us": (time.perf_counter() - self._started_at) * 1_000_000.0,
+            "allocated_bytes": allocated,
+            "reserved_bytes": reserved,
+            "sampled_peak_bytes": sampled_peak,
+            "peak_bytes": allocator_peak,
+            "allocator_peak_bytes": allocator_peak,
+            "allocator_reserved_peak_bytes": allocator_reserved_peak,
+        }
+        with self._lock:
+            if started_at == self._started_at and (not self._samples or row != self._samples[-1]):
+                self._samples.append(row)
+
+
+class _GpuUtilizationSampler:
+    def __init__(
+        self,
+        cuda_device: torch.device | None,
+        *,
+        interval_us: float = DEFAULT_GPU_UTIL_SAMPLER_INTERVAL_US,
+    ) -> None:
+        self.cuda_device = cuda_device
+        self.interval_s = max(float(interval_us), 1_000.0) / 1_000_000.0
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self._started_at = 0.0
+        self._samples: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._unavailable_reason: str | None = None
+        self._binary = shutil.which("nvidia-smi")
+
+    def start(self) -> None:
+        if self.cuda_device is None:
+            self._unavailable_reason = "cuda_device_unavailable"
+            return
+        if self._binary is None:
+            self._unavailable_reason = "nvidia_smi_unavailable"
+            return
+        with self._lock:
+            self._running = True
+            self._started_at = time.perf_counter()
+        self._record_sample(event="sampler_start")
+        self._thread = threading.Thread(target=self._run, name="peakaware-gpu-util-sampler", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> tuple[tuple[dict[str, Any], ...], dict[str, Any]]:
+        self._record_sample(event="sampler_stop_request")
+        with self._lock:
+            self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._record_sample(event="sampler_stop")
+        with self._lock:
+            trace = tuple(self._samples)
+            reason = self._unavailable_reason
+        return trace, _gpu_compute_summary(trace, unavailable_reason=reason)
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                running = self._running
+            if not running:
+                break
+            self._record_sample()
+            time.sleep(self.interval_s)
+
+    def _record_sample(self, *, event: str = "sample") -> None:
+        if self.cuda_device is None or self._binary is None:
+            return
+        device_index = (
+            self.cuda_device.index if self.cuda_device.index is not None else torch.cuda.current_device()
+        )
+        command = [
+            self._binary,
+            f"--id={device_index}",
+            (
+                "--query-gpu=utilization.gpu,utilization.memory,memory.used,"
+                "power.draw,clocks.sm,clocks.mem"
+            ),
+            "--format=csv,noheader,nounits",
+        ]
+        try:
+            completed = subprocess.run(command, check=True, capture_output=True, text=True, timeout=1.0)
+            fields = [item.strip() for item in completed.stdout.strip().split(",")]
+            if len(fields) < 6:
+                raise ValueError("unexpected nvidia-smi output")
+            row = {
+                "event": event,
+                "time_us": (time.perf_counter() - self._started_at) * 1_000_000.0,
+                "device_index": int(device_index),
+                "gpu_util_percent": _parse_float_or_none(fields[0]),
+                "memory_util_percent": _parse_float_or_none(fields[1]),
+                "memory_used_mib": _parse_float_or_none(fields[2]),
+                "power_w": _parse_float_or_none(fields[3]),
+                "sm_clock_mhz": _parse_float_or_none(fields[4]),
+                "mem_clock_mhz": _parse_float_or_none(fields[5]),
+                "source": "nvidia-smi",
+            }
+        except Exception as exc:
+            with self._lock:
+                if self._unavailable_reason is None:
+                    self._unavailable_reason = f"nvidia_smi_query_failed:{type(exc).__name__}"
+            return
+        with self._lock:
+            if not self._samples or row != self._samples[-1]:
+                self._samples.append(row)
+
+
+def _parse_float_or_none(value: str) -> float | None:
+    text = value.strip()
+    if not text or text.upper() in {"N/A", "[N/A]"}:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _mean_or_none(values: list[float | None]) -> float | None:
+    present = [float(value) for value in values if value is not None]
+    return None if not present else sum(present) / len(present)
+
+
+def _max_or_none(values: list[float | None]) -> float | None:
+    present = [float(value) for value in values if value is not None]
+    return None if not present else max(present)
+
+
+def _gpu_compute_summary(
+    trace: tuple[dict[str, Any], ...],
+    *,
+    unavailable_reason: str | None = None,
+) -> dict[str, Any]:
+    util_values = [point.get("gpu_util_percent") for point in trace]
+    memory_values = [point.get("memory_util_percent") for point in trace]
+    power_values = [point.get("power_w") for point in trace]
+    return {
+        "status": "ok" if trace else "unavailable",
+        "source": "nvidia-smi" if trace else None,
+        "sample_count": len(trace),
+        "interval_us": DEFAULT_GPU_UTIL_SAMPLER_INTERVAL_US,
+        "mean_gpu_util_percent": _mean_or_none(util_values),
+        "max_gpu_util_percent": _max_or_none(util_values),
+        "mean_memory_util_percent": _mean_or_none(memory_values),
+        "max_memory_util_percent": _max_or_none(memory_values),
+        "mean_power_w": _mean_or_none(power_values),
+        "max_power_w": _max_or_none(power_values),
+        "unavailable_reason": unavailable_reason if not trace else None,
+    }
+
+
 def _measurement_cuda_device(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -124,16 +357,38 @@ def _clone_pytree(value: Any) -> Any:
 
 
 def _clone_model_state(model: torch.nn.Module) -> dict[str, Tensor]:
-    return {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
+    # Restoration snapshots must not remain resident in the CUDA allocator
+    # during the measured step. Keeping model/optimizer/grad clones on-device
+    # inflates the reported peak by several complete parameter copies.
+    return {
+        name: tensor.detach().to(device="cpu", copy=True)
+        for name, tensor in model.state_dict().items()
+    }
 
 
 def _clone_grads(model: torch.nn.Module) -> tuple[Tensor | None, ...]:
-    return tuple(None if p.grad is None else p.grad.detach().clone() for p in model.parameters())
+    return tuple(
+        None if p.grad is None else p.grad.detach().to(device="cpu", copy=True)
+        for p in model.parameters()
+    )
+
+
+def _clone_optimizer_state(optimizer: torch.optim.Optimizer) -> dict[str, Any]:
+    def clone_leaf(value: Any) -> Any:
+        if isinstance(value, Tensor):
+            return value.detach().to(device="cpu", copy=True)
+        return copy.deepcopy(value)
+
+    return _pytree.tree_map(clone_leaf, optimizer.state_dict())
 
 
 def _restore_grads(model: torch.nn.Module, grads: tuple[Tensor | None, ...]) -> None:
     for param, grad in zip(model.parameters(), grads):
-        param.grad = None if grad is None else grad.detach().clone()
+        param.grad = (
+            None
+            if grad is None
+            else grad.detach().to(device=param.device, dtype=param.dtype, copy=True)
+        )
 
 
 @dataclass(frozen=True)
@@ -187,7 +442,7 @@ def _snapshot_python_value(value: Any, memo: dict[int, Any] | None = None) -> An
     if cached is not None:
         return cached
     if isinstance(value, Tensor):
-        snapshot = value.detach().clone(memory_format=torch.preserve_format)
+        snapshot = value.detach().to(device="cpu", copy=True)
         snapshot.requires_grad_(value.requires_grad)
         memo[id(value)] = snapshot
         return snapshot
@@ -355,7 +610,7 @@ def _capture_training_state(
     )
     return _TrainingState(
         model=_clone_model_state(model),
-        optimizer=copy.deepcopy(optimizer.state_dict()),
+        optimizer=_clone_optimizer_state(optimizer),
         grads=_clone_grads(model),
         training_modes=tuple(module.training for module in model.modules()),
         cpu_rng=torch.get_rng_state().clone(),
@@ -461,6 +716,59 @@ def _strictly_decreasing(values: list[float]) -> bool | None:
     return all(next_value < value for value, next_value in zip(values, values[1:]))
 
 
+def _actual_memory_trace_from_metrics(metrics: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    fw_us = float(metrics.get("fw_us") or metrics.get("fw_wall_us") or 0.0)
+    bw_us = float(metrics.get("bw_us") or metrics.get("bw_wall_us") or 0.0)
+    optimizer_us = float(metrics.get("optimizer_us") or metrics.get("optimizer_wall_us") or 0.0)
+    fw_end = fw_us
+    bw_end = fw_us + bw_us
+    optimizer_end = fw_us + bw_us + optimizer_us
+    return (
+        {
+            "phase": "start",
+            "time_us": 0.0,
+            "allocated_bytes": 0,
+            "reserved_bytes": 0,
+            "peak_bytes": 0,
+        },
+        {
+            "phase": "fw_peak",
+            "time_us": fw_end,
+            "allocated_bytes": int(metrics.get("after_fw_allocated_bytes", 0)),
+            "reserved_bytes": int(metrics.get("after_fw_reserved_bytes", 0)),
+            "peak_bytes": int(metrics.get("fw_peak_bytes", 0)),
+        },
+        {
+            "phase": "after_fw",
+            "time_us": fw_end,
+            "allocated_bytes": int(metrics.get("after_fw_allocated_bytes", 0)),
+            "reserved_bytes": int(metrics.get("after_fw_reserved_bytes", 0)),
+            "peak_bytes": int(metrics.get("after_fw_allocated_bytes", 0)),
+        },
+        {
+            "phase": "bw_peak",
+            "time_us": bw_end,
+            "allocated_bytes": 0,
+            "reserved_bytes": 0,
+            "peak_bytes": int(metrics.get("bw_peak_bytes", 0)),
+        },
+        {
+            "phase": "optimizer_peak",
+            "time_us": optimizer_end,
+            "allocated_bytes": 0,
+            "reserved_bytes": 0,
+            "peak_bytes": int(metrics.get("optimizer_peak_bytes", 0)),
+        },
+        {
+            "phase": "overall_peak",
+            "time_us": optimizer_end,
+            "allocated_bytes": 0,
+            "reserved_bytes": 0,
+            "peak_bytes": int(metrics.get("overall_peak_bytes", 0)),
+        },
+    )
+
+
 def _measure_window(
     fn: Callable[[], Any],
     cuda_device: torch.device | None,
@@ -563,47 +871,56 @@ def _measure_phase_sample(
         "trajectory_order": 2,
     }
     optimizer.zero_grad(set_to_none=zero_grad_set_to_none)
+    sampler = _CudaMemorySampler(cuda_device)
+    sampler.start("fw")
 
-    _reset_cuda_peak(cuda_device)
+    try:
+        _reset_cuda_peak(cuda_device)
 
-    def forward() -> Tensor:
-        output = executable(*args, **kwargs)
-        loss = loss_fn(output)
-        if loss.ndim != 0:
-            raise ValueError("loss_fn must return a scalar tensor")
-        return loss
+        def forward() -> Tensor:
+            output = executable(*args, **kwargs)
+            loss = loss_fn(output)
+            if loss.ndim != 0:
+                raise ValueError("loss_fn must return a scalar tensor")
+            return loss
 
-    loss, wall_us, event_us = _measure_window(forward, cuda_device)
-    sample.update(_timing_sample("fw", wall_us, event_us, max_event_wall_relative_gap, max_event_wall_absolute_gap_us))
-    sample["fw_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
-    sample["fw_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
-    sample["after_fw_allocated_bytes"] = _cuda_allocated_or_zero(cuda_device)
-    sample["after_fw_reserved_bytes"] = _cuda_reserved_or_zero(cuda_device)
+        loss, wall_us, event_us = _measure_window(forward, cuda_device)
+        sampler.set_phase("after_fw")
+        sample.update(_timing_sample("fw", wall_us, event_us, max_event_wall_relative_gap, max_event_wall_absolute_gap_us))
+        sample["fw_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
+        sample["fw_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
+        sample["after_fw_allocated_bytes"] = _cuda_allocated_or_zero(cuda_device)
+        sample["after_fw_reserved_bytes"] = _cuda_reserved_or_zero(cuda_device)
 
-    _reset_cuda_peak(cuda_device)
-    _, wall_us, event_us = _measure_window(loss.backward, cuda_device)
-    sample.update(_timing_sample("bw", wall_us, event_us, max_event_wall_relative_gap, max_event_wall_absolute_gap_us))
-    sample["bw_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
-    sample["bw_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
+        sampler.set_phase("bw")
+        _reset_cuda_peak(cuda_device)
+        _, wall_us, event_us = _measure_window(loss.backward, cuda_device)
+        sample.update(_timing_sample("bw", wall_us, event_us, max_event_wall_relative_gap, max_event_wall_absolute_gap_us))
+        sample["bw_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
+        sample["bw_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
 
-    _reset_cuda_peak(cuda_device)
-    _, wall_us, event_us = _measure_window(optimizer.step, cuda_device)
-    sample.update(
-        _timing_sample(
-            "optimizer",
-            wall_us,
-            event_us,
-            max_event_wall_relative_gap,
-            max_event_wall_absolute_gap_us,
+        sampler.set_phase("optimizer")
+        _reset_cuda_peak(cuda_device)
+        _, wall_us, event_us = _measure_window(optimizer.step, cuda_device)
+        sample.update(
+            _timing_sample(
+                "optimizer",
+                wall_us,
+                event_us,
+                max_event_wall_relative_gap,
+                max_event_wall_absolute_gap_us,
+            )
         )
-    )
-    sample["optimizer_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
-    sample["optimizer_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
+        sample["optimizer_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
+        sample["optimizer_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
+    finally:
+        sample["actual_sampled_memory_trace"] = sampler.stop()
     sample["phase_step_wall_us"] = sum(float(sample[f"{phase}_wall_us"]) for phase in ("fw", "bw", "optimizer"))
     phase_events = [sample[f"{phase}_event_us"] for phase in ("fw", "bw", "optimizer")]
     sample["phase_step_event_us"] = (
         sum(float(value) for value in phase_events) if all(value is not None for value in phase_events) else None
     )
+    sample["actual_memory_trace"] = _actual_memory_trace_from_metrics(sample)
     return sample
 
 
@@ -623,17 +940,25 @@ def _measure_overall_sample(
     # This is deliberately a separate full-step allocation window. No phase
     # reset occurs between forward, backward, and optimizer execution.
     _reset_cuda_peak(cuda_device)
-    _, wall_us, event_us = _measure_window(
-        lambda: _run_training_step(
-            optimizer,
-            executable,
-            loss_fn,
-            args,
-            kwargs,
-            zero_grad_set_to_none=zero_grad_set_to_none,
-        ),
-        cuda_device,
-    )
+    sampler = _CudaMemorySampler(cuda_device)
+    gpu_sampler = _GpuUtilizationSampler(cuda_device)
+    sampler.start("overall")
+    gpu_sampler.start()
+    try:
+        _, wall_us, event_us = _measure_window(
+            lambda: _run_training_step(
+                optimizer,
+                executable,
+                loss_fn,
+                args,
+                kwargs,
+                zero_grad_set_to_none=zero_grad_set_to_none,
+            ),
+            cuda_device,
+        )
+    finally:
+        sampled_trace = sampler.stop()
+        gpu_util_trace, gpu_compute_summary = gpu_sampler.stop()
     sample: dict[str, Any] = {
         "repeat_index": repeat_index,
         "trajectory": "overall",
@@ -642,6 +967,11 @@ def _measure_overall_sample(
     sample.update(_timing_sample("overall", wall_us, event_us, max_event_wall_relative_gap, max_event_wall_absolute_gap_us))
     sample["overall_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
     sample["overall_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
+    if sampled_trace:
+        sample["actual_overall_sampled_memory_trace"] = sampled_trace
+    if gpu_util_trace:
+        sample["gpu_util_trace"] = gpu_util_trace
+    sample["gpu_compute_summary"] = gpu_compute_summary
     return sample
 
 
@@ -746,6 +1076,53 @@ def _aggregate_measurements(
     aggregated["warmup_samples"] = warmup_samples
     aggregated["phase_samples"] = phase_samples
     aggregated["overall_samples"] = overall_samples
+    aggregated["actual_memory_trace"] = _actual_memory_trace_from_metrics(aggregated)
+    overall_sampled_traces = [
+        tuple(sample.get("actual_overall_sampled_memory_trace") or ())
+        for sample in overall_samples
+        if sample.get("actual_overall_sampled_memory_trace")
+    ]
+    if overall_sampled_traces:
+        overall_sampled_trace = max(
+            overall_sampled_traces,
+            key=lambda trace: max((int(point.get("allocator_peak_bytes", point.get("peak_bytes", 0))) for point in trace), default=0),
+        )
+        aggregated["actual_overall_sampled_memory_trace"] = overall_sampled_trace
+        aggregated["actual_overall_sampled_memory_trace_kind"] = "sampled_cuda_memory_overall"
+        aggregated["actual_overall_sampled_memory_trace_interval_us"] = DEFAULT_MEMORY_SAMPLER_INTERVAL_US
+    gpu_util_traces = [
+        tuple(sample.get("gpu_util_trace") or ())
+        for sample in overall_samples
+        if sample.get("gpu_util_trace")
+    ]
+    if gpu_util_traces:
+        gpu_util_trace = max(gpu_util_traces, key=len)
+        aggregated["gpu_util_trace"] = gpu_util_trace
+        aggregated["gpu_util_trace_kind"] = "nvidia_smi_overall_step"
+    gpu_summaries = [dict(sample.get("gpu_compute_summary") or {}) for sample in overall_samples]
+    ok_gpu_summaries = [summary for summary in gpu_summaries if summary.get("status") == "ok"]
+    if ok_gpu_summaries:
+        aggregated["gpu_compute_summary"] = max(
+            ok_gpu_summaries,
+            key=lambda summary: int(summary.get("sample_count") or 0),
+        )
+    elif gpu_summaries:
+        aggregated["gpu_compute_summary"] = gpu_summaries[-1]
+    sampled_traces = [
+        tuple(sample.get("actual_sampled_memory_trace") or ())
+        for sample in phase_samples
+        if sample.get("actual_sampled_memory_trace")
+    ]
+    if sampled_traces:
+        sampled_trace = max(
+            sampled_traces,
+            key=lambda trace: max((int(point.get("allocator_peak_bytes", point.get("peak_bytes", 0))) for point in trace), default=0),
+        )
+        aggregated["actual_sampled_memory_trace"] = sampled_trace
+        aggregated["actual_sampled_memory_trace_kind"] = "sampled_cuda_memory_phase"
+        aggregated["actual_sampled_memory_trace_interval_us"] = DEFAULT_MEMORY_SAMPLER_INTERVAL_US
+    aggregated["actual_memory_trace_kind"] = "phase_boundary_anchor"
+    aggregated["actual_memory_trace_sampled"] = int(aggregated["overall_peak_bytes"]) > 0
     aggregated["raw_samples"] = [
         {
             "repeat_index": index,
@@ -767,12 +1144,14 @@ def _aggregate_measurements(
 
 
 def _aggregate_legacy_phase_metrics(
-    samples: list[dict[str, int | float]],
+    samples: list[dict[str, Any]],
     warmup_steps: int,
-) -> dict[str, int | float]:
+) -> dict[str, Any]:
     keys = set().union(*(sample.keys() for sample in samples))
-    aggregated: dict[str, int | float] = {}
+    aggregated: dict[str, Any] = {}
     for key in keys:
+        if not all(isinstance(sample.get(key), (int, float)) for sample in samples):
+            continue
         values = [float(sample[key]) for sample in samples]
         if key.endswith("_peak_bytes") or key == "overall_peak_bytes":
             aggregated[key] = int(max(values))
@@ -784,6 +1163,22 @@ def _aggregate_legacy_phase_metrics(
     aggregated["step_us_p90"] = _percentile(step_values, 0.90)
     aggregated["measurement_repeats"] = len(samples)
     aggregated["measurement_warmup_steps"] = warmup_steps
+    aggregated["actual_memory_trace"] = _actual_memory_trace_from_metrics(aggregated)
+    sampled_traces = [
+        tuple(sample.get("actual_sampled_memory_trace") or ())
+        for sample in samples
+        if sample.get("actual_sampled_memory_trace")
+    ]
+    if sampled_traces:
+        sampled_trace = max(
+            sampled_traces,
+            key=lambda trace: max((int(point.get("allocated_bytes", 0)) for point in trace), default=0),
+        )
+        aggregated["actual_sampled_memory_trace"] = sampled_trace
+        aggregated["actual_sampled_memory_trace_kind"] = "sampled_cuda_memory"
+        aggregated["actual_sampled_memory_trace_interval_us"] = DEFAULT_MEMORY_SAMPLER_INTERVAL_US
+    aggregated["actual_memory_trace_kind"] = "phase_boundary_anchor"
+    aggregated["actual_memory_trace_sampled"] = bool(max(int(sample.get("overall_peak_bytes", 0)) for sample in samples))
     return aggregated
 
 
@@ -798,7 +1193,7 @@ def measure_training_step_phases(
     zero_grad_set_to_none: bool,
     warmup_steps: int = 0,
     repeat_count: int = 1,
-) -> dict[str, int | float]:
+) -> dict[str, Any]:
     if warmup_steps < 0:
         raise ValueError("warmup_steps must be non-negative")
     if repeat_count < 1:
@@ -806,7 +1201,7 @@ def measure_training_step_phases(
     warmup_steps = int(warmup_steps)
     repeat_count = int(repeat_count)
     model_state = _clone_model_state(model)
-    optimizer_state = copy.deepcopy(optimizer.state_dict())
+    optimizer_state = _clone_optimizer_state(optimizer)
     grad_state = _clone_grads(model)
     cpu_rng = torch.get_rng_state()
     cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
@@ -820,40 +1215,50 @@ def measure_training_step_phases(
         if cuda_rng is not None:
             torch.cuda.set_rng_state_all(cuda_rng)
 
-    def measure_once() -> dict[str, int | float]:
-        metrics: dict[str, int | float] = {}
+    def measure_once() -> dict[str, Any]:
+        metrics: dict[str, Any] = {}
         restore_state()
         optimizer.zero_grad(set_to_none=zero_grad_set_to_none)
+        sampler = _CudaMemorySampler(cuda_device)
+        sampler.start("fw")
 
-        _reset_cuda_peak(cuda_device)
-        start = time.perf_counter()
-        output = executable(*args, **kwargs)
-        loss = loss_fn(output)
-        if loss.ndim != 0:
-            raise ValueError("loss_fn must return a scalar tensor")
-        if cuda_device is not None:
-            torch.cuda.synchronize(cuda_device)
-        metrics["fw_us"] = (time.perf_counter() - start) * 1_000_000.0
-        metrics["fw_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
-        metrics["fw_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
+        try:
+            _reset_cuda_peak(cuda_device)
+            start = time.perf_counter()
+            output = executable(*args, **kwargs)
+            loss = loss_fn(output)
+            if loss.ndim != 0:
+                raise ValueError("loss_fn must return a scalar tensor")
+            if cuda_device is not None:
+                torch.cuda.synchronize(cuda_device)
+            sampler.set_phase("after_fw")
+            metrics["fw_us"] = (time.perf_counter() - start) * 1_000_000.0
+            metrics["fw_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
+            metrics["fw_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
+            metrics["after_fw_allocated_bytes"] = _cuda_allocated_or_zero(cuda_device)
+            metrics["after_fw_reserved_bytes"] = _cuda_reserved_or_zero(cuda_device)
 
-        _reset_cuda_peak(cuda_device)
-        start = time.perf_counter()
-        loss.backward()
-        if cuda_device is not None:
-            torch.cuda.synchronize(cuda_device)
-        metrics["bw_us"] = (time.perf_counter() - start) * 1_000_000.0
-        metrics["bw_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
-        metrics["bw_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
+            sampler.set_phase("bw")
+            _reset_cuda_peak(cuda_device)
+            start = time.perf_counter()
+            loss.backward()
+            if cuda_device is not None:
+                torch.cuda.synchronize(cuda_device)
+            metrics["bw_us"] = (time.perf_counter() - start) * 1_000_000.0
+            metrics["bw_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
+            metrics["bw_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
 
-        _reset_cuda_peak(cuda_device)
-        start = time.perf_counter()
-        optimizer.step()
-        if cuda_device is not None:
-            torch.cuda.synchronize(cuda_device)
-        metrics["optimizer_us"] = (time.perf_counter() - start) * 1_000_000.0
-        metrics["optimizer_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
-        metrics["optimizer_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
+            sampler.set_phase("optimizer")
+            _reset_cuda_peak(cuda_device)
+            start = time.perf_counter()
+            optimizer.step()
+            if cuda_device is not None:
+                torch.cuda.synchronize(cuda_device)
+            metrics["optimizer_us"] = (time.perf_counter() - start) * 1_000_000.0
+            metrics["optimizer_peak_bytes"] = _cuda_allocated_peak_or_zero(cuda_device)
+            metrics["optimizer_reserved_peak_bytes"] = _cuda_reserved_peak_or_zero(cuda_device)
+        finally:
+            metrics["actual_sampled_memory_trace"] = sampler.stop()
         metrics["step_us"] = metrics["fw_us"] + metrics["bw_us"] + metrics["optimizer_us"]
         metrics["overall_peak_bytes"] = max(
             int(metrics["fw_peak_bytes"]),
@@ -865,6 +1270,7 @@ def measure_training_step_phases(
             int(metrics["bw_reserved_peak_bytes"]),
             int(metrics["optimizer_reserved_peak_bytes"]),
         )
+        metrics["actual_memory_trace"] = _actual_memory_trace_from_metrics(metrics)
         return metrics
 
     try:

@@ -25,12 +25,23 @@ partition 下发、Top-K dry-run/实测校正、compiled FW/BW + eager optimizer
 
 ## 验证
 
-在项目约定环境中运行：
+在项目约定环境中运行（依赖见 `requirements.txt`，论文基线为 NVIDIA A6000 / PyTorch 2.13.0+cu130）：
 
 ```bash
-conda run -n torch2.13-gpu python -m pytest tests/unit tests/integration tests/correctness -q
+pip install -r requirements.txt
+python -m pytest tests/unit tests/integration tests/correctness -q
 ```
 
 最小端到端入口为 `scripts/run_mvp.py`，批量实验入口为 `scripts/run_experiments.py`。当前效果、
 仿真误差、根因准确率、cache 复用和计划下发证据统一记录在
 [最终验收矩阵](docs/10_最终验收矩阵.md)，该文档同时给出可复现实验命令和结果解释边界。
+
+## 论文复现
+
+- **论文四模型**定义在 `peakaware/models/registry.py`
+  （`build_bert_base_task` / `build_gpt2_task` / `build_resnet50_task` / `build_vit_b16_task`）。
+- **仿真预测**入口：`scripts/run_publication_matrix.py`；表格/图片生成：
+  `scripts/generate_publication_tables.py`、`scripts/generate_publication_figures.py`。
+- **冻结证据**（论文表格对应的 artifact）在 `artifacts/`。
+- **跨硬件（昇腾 910B）通用性实验**：`scripts/cross_hardware/`，见其
+  `README.md`——用论文自身 4 模型、同一套冻结规则预测昇腾峰值显存（3/4 模型 APE ≤ 6.4%）。

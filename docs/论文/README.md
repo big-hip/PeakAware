@@ -18,6 +18,7 @@
 3. [术语与口径](02_术语与口径.md)：术语、baseline 名称、指标和统计规则。
 4. [章节写作蓝图](chapters/00_章节写作蓝图.md)：逐章目标、段落和验收条件。
    - [论文初稿（无结果数字版）](chapters/01_论文初稿_无结果数字.md)：可先写的背景、方法、实现和实验设计骨架。
+   - [论文初稿（EV-20 结果版）](chapters/02_论文初稿_EV20结果版.md)：基于冻结主矩阵的中文正文初稿，可作为后续排版和导师修改的起点。
 5. [实验补强与测量协议](experiments/00_实验补强与测量协议.md)：正式实验矩阵和执行 gate。
 6. [图表与输出规范](figures/00_图表与输出规范.md)：F/T 清单、数据字段和出版格式。
    - [F-1 系统闭环草图](figures/drafts/F1_system_loop.svg)：不依赖冻结结果的架构图草稿。
@@ -153,6 +154,22 @@ conda run -n torch2.13-gpu env PYTHONPATH=. python scripts/evaluate_publication_
 四个 workload 上的 `all_save/pytorch_min_cut/block_ac/sac` AOT eager qualification，`G-1` baseline
 identity 已 provisional 通过。该 canary 使用显式 `activation_memory_budget=1.0` 证明真实 PyTorch
 min-cut runtime marker；物理预算到 activation ratio 的正式预算选择仍不得由该 canary 推出。
+
+2026-08-02 更新：已补跑严格配对的官方 PyTorch min-cut 三档 canary：
+
+```text
+artifacts/paper_qualification_pytorch_min_cut_paired_ratio0_r1/
+artifacts/paper_qualification_pytorch_min_cut_paired_ratio0p5_r1/
+artifacts/paper_qualification_pytorch_min_cut_paired_ratio1_r1/
+artifacts/official_pytorch_min_cut_pareto_4w_3ratio_paired_r1_20260802/
+```
+
+三档固定同一 seed、GPU UUID、execution fingerprint 和模型初始化摘要，4/4 workload 通过配对协议审计，
+12/12 记录通过真实 min-cut API 身份、正确性和 publication 测量资格。保存 residual 数在 8/8 个相邻
+ratio 转换中非减，但完整物理峰值仅 7/8 单调、full-step 时间仅 5/8 单调，说明
+`activation_memory_budget` 不能替代完整训练峰值约束。每点目前仍只有 1 个独立 replicate，且没有同一
+AOT-eager publication 协议的 PeakAware 曲线，因此该产物属于 paired canary，不能直接支持
+“PeakAware 优于官方 min-cut”的结论。
 
 当前已有 GPT2-like 单 workload qualification smoke：
 

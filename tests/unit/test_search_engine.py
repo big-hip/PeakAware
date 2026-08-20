@@ -120,6 +120,7 @@ def test_search_reports_diagnostic_hint_trace():
     assert diagnostics.diagnostic_hints_enabled is True
     assert diagnostics.greedy_plan_count >= 1
     assert diagnostics.feasible_after_repair_count >= diagnostics.feasible_before_repair_count
+    assert diagnostics.repair_evaluation_count >= diagnostics.repaired_candidate_count
     assert diagnostics.diagnostic_hint_candidate_match_count >= 0
     assert isinstance(diagnostics.diagnostic_hint_order_changed, bool)
     assert diagnostics.diagnostic_hint_order_delta_count >= 0

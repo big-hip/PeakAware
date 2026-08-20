@@ -87,6 +87,8 @@ def select_save_candidates(
         if storage.physical_nbytes < min_bytes:
             continue
         values = [value for value in ir.values if value.id in value_ids]
+        if not any(value.phase == "fw" and value.crosses_fw_bw for value in values):
+            continue
         if any(value.mandatory_save_reason for value in values):
             continue
         if not any(value.recomputable for value in values):

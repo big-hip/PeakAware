@@ -25,6 +25,8 @@ def solve_exact_small_graph(
     safety_margin_bytes: int = 0,
     max_candidate_count: int = 12,
 ) -> EvaluatedPlan:
+    if max_candidate_count <= 0:
+        raise PlanValidationError("max_candidate_count must be positive")
     candidates = select_save_candidates(ir)
     if len(candidates) > max_candidate_count:
         raise PlanValidationError(

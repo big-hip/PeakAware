@@ -714,9 +714,10 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert records[0].config_fingerprint["compile_backend"] == "eager"
     assert records[0].config_fingerprint["capture_backend"] == "auto"
     assert records[0].config_fingerprint["selection_objective"] == "min_peak_then_time"
+    assert records[0].config_fingerprint["validation_selection_policy"] == "ranked"
     assert records[0].selected_plan_key is not None
     assert records[0].graph_key is not None
-    assert records[0].selected_saved_value_ids
+    assert records[0].selected_saved_value_ids is not None
     assert set(records[0].selected_saved_value_ids).issubset(records[0].selected_effective_saved_value_ids)
     assert records[0].selected_estimated_peak_bytes is not None
     assert records[0].baseline_plan_id == "all_save"
@@ -788,6 +789,35 @@ def test_experiment_matrix_writes_json_and_csv(tmp_path):
     assert "mean_optimization_total_us" in summary_payload
     assert "cache_layer_hit_rates" in summary_payload
     assert summary_payload["total_actual_joint_capture_count"] == 1
+
+
+def test_experiment_matrix_records_simulation_only_as_unmeasured_execution():
+    records = run_experiment_matrix(
+        task_names=("tiny_residual_w8",),
+        microbatch_sizes=(1,),
+        budget_bytes=(1 << 28,),
+        config=PeakAwareConfig(
+            safety_margin_bytes=0,
+            safety_margin_ratio=0.0,
+            top_k=4,
+            validation_top_k=0,
+            selection_objective="min_time_then_peak",
+        ),
+    )
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.status == "ok"
+    assert record.selected_execution_evidence_source == "simulated"
+    assert record.simulation_only_selection is True
+    assert record.optimization_candidate_validation_measurement_us == 0.0
+    assert record.optimization_candidate_realization_us is not None
+    assert record.optimization_candidate_realization_us > 0.0
+    assert record.measured_candidate_count == 0
+    assert record.measured_plan_results == ()
+    assert record.candidate_attempts == ()
+    assert record.measurement_repeats == 0
+    assert record.measurement_warmup_steps == 0
 
 
 def test_experiment_records_round_trip_from_json_dicts():
@@ -1257,11 +1287,11 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert stdout_payload[0]["config_fingerprint"]["compile_backend"] == "eager"
     assert stdout_payload[0]["config_fingerprint"]["measurement_repeats"] == 2
     assert stdout_payload[0]["config_fingerprint"]["measurement_warmup_steps"] == 1
-    assert stdout_payload[0]["exact_plan_key"] is None
-    assert stdout_payload[0]["exact_error_type"] == "PlanValidationError"
+    assert stdout_payload[0]["exact_plan_key"]
+    assert stdout_payload[0]["exact_error_type"] is None
     assert stdout_payload[0]["graph_key"]
-    assert stdout_payload[0]["selected_saved_value_ids"]
-    assert stdout_payload[0]["selected_effective_saved_value_ids"]
+    assert stdout_payload[0]["selected_saved_value_ids"] is not None
+    assert stdout_payload[0]["selected_effective_saved_value_ids"] is not None
     assert stdout_payload[0]["measured_plan_results"]
     assert any(
         row["plan_id"] != "all_save"
@@ -1288,7 +1318,7 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert "cache_layer_hits" in stdout_payload[0]
     assert "cache_layer_misses" in stdout_payload[0]
     assert file_payload[0]["task_name"] == "tiny_mlp_w8_d3"
-    assert file_payload[0]["exact_error_type"] == "PlanValidationError"
+    assert file_payload[0]["exact_error_type"] is None
     assert summary_payload["total_records"] == 4
     assert summary_payload["ok_records"] == 4
     assert "python_version" in summary_payload["environment_fingerprint"]
@@ -1334,7 +1364,8 @@ def test_run_experiments_script_writes_requested_artifacts(tmp_path):
     assert summary_payload["p50_simulation_accuracy_absolute_error_bytes"] is not None
     assert summary_payload["p90_simulation_accuracy_absolute_error_bytes"] is not None
     assert "diagnostic_hint_kind_counts" in summary_payload
-    assert summary_payload["exact_failure_count"] == 4
+    assert summary_payload["exact_success_count"] == 4
+    assert summary_payload["exact_failure_count"] == 0
     assert "mean_optimization_amortization_steps" in summary_payload
     assert set(summary_payload["cache_layer_hit_rates"]).issubset({"analysis", "executable"})
     assert summary_payload["total_actual_joint_capture_count"] >= 2

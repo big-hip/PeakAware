@@ -19,8 +19,10 @@ def main() -> None:
     parser.add_argument("--diagnostic-hints", choices=("on", "off", "both"), default="both")
     parser.add_argument("--matrix-passes", type=int, default=1)
     parser.add_argument("--top-k", type=int, default=3)
-    parser.add_argument("--measurement-warmup-steps", type=int, default=1)
-    parser.add_argument("--measurement-repeats", type=int, default=3)
+    parser.add_argument("--max-greedy-candidates", type=int, default=4)
+    parser.add_argument("--validation-top-k", type=int, default=None)
+    parser.add_argument("--measurement-warmup-steps", type=int, default=5)
+    parser.add_argument("--measurement-repeats", type=int, default=20)
     parser.add_argument(
         "--selection-objective",
         choices=("min_peak_then_time", "min_time_then_peak"),
@@ -41,6 +43,8 @@ def main() -> None:
         diagnostic_hints=args.diagnostic_hints,
         matrix_passes=args.matrix_passes,
         top_k=args.top_k,
+        max_greedy_candidates=args.max_greedy_candidates,
+        validation_top_k=args.validation_top_k,
         measurement_warmup_steps=args.measurement_warmup_steps,
         measurement_repeats=args.measurement_repeats,
         selection_objective=args.selection_objective,

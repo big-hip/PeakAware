@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from peakaware.contracts import EvaluatedPlan, FixedTimeline, JointTrainingIR, RepairHint
+from peakaware.cost.base import CostProvider
+from peakaware.memory.simulator import SimulationCostCache
 from peakaware.search.candidates import SaveCandidate, select_save_candidates
-from peakaware.search.engine import evaluate_plan
+from peakaware.search.engine import PlanEvaluationCache, evaluate_plan
 from peakaware.search.plan import build_recompute_plan
+
+
+@dataclass(frozen=True)
+class RepairResult:
+    evaluated: EvaluatedPlan
+    evaluation_count: int
 
 
 def estimate_move_delta(candidate: SaveCandidate) -> tuple[int, float]:
@@ -27,13 +37,41 @@ def repair_to_budget(
     evaluated: EvaluatedPlan,
     *,
     hints: tuple[RepairHint, ...] = (),
+    cost_provider: CostProvider | None = None,
+    simulation_cost_cache: SimulationCostCache | None = None,
+    evaluation_cache: PlanEvaluationCache | None = None,
+    materialize_event_trace: bool = True,
 ) -> EvaluatedPlan:
+    return repair_to_budget_with_count(
+        ir,
+        fixed_timeline,
+        evaluated,
+        hints=hints,
+        cost_provider=cost_provider,
+        simulation_cost_cache=simulation_cost_cache,
+        evaluation_cache=evaluation_cache,
+        materialize_event_trace=materialize_event_trace,
+    ).evaluated
+
+
+def repair_to_budget_with_count(
+    ir: JointTrainingIR,
+    fixed_timeline: FixedTimeline,
+    evaluated: EvaluatedPlan,
+    *,
+    hints: tuple[RepairHint, ...] = (),
+    cost_provider: CostProvider | None = None,
+    simulation_cost_cache: SimulationCostCache | None = None,
+    evaluation_cache: PlanEvaluationCache | None = None,
+    materialize_event_trace: bool = True,
+) -> RepairResult:
     if evaluated.feasible:
-        return evaluated
-    candidates = select_save_candidates(ir, hints=hints)
+        return RepairResult(evaluated=evaluated, evaluation_count=0)
+    candidates = select_save_candidates(ir, hints=hints, cost_provider=cost_provider)
     ranked = rank_peak_live_moves(candidates, evaluated.simulation.peak_snapshot.live_storage_ids)
     saved = set(evaluated.plan.saved_value_ids)
     best = evaluated
+    evaluation_count = 0
     for candidate in ranked:
         saved = set(apply_move(frozenset(saved), candidate, "DROP"))
         repaired_plan = build_recompute_plan(
@@ -43,7 +81,16 @@ def repair_to_budget(
             safety_margin_bytes=evaluated.plan.safety_margin_bytes,
             label=f"{evaluated.plan.plan_id}_repair",
         )
-        best = evaluate_plan(ir, repaired_plan, fixed_timeline)
+        best = evaluate_plan(
+            ir,
+            repaired_plan,
+            fixed_timeline,
+            cost_provider=cost_provider,
+            simulation_cost_cache=simulation_cost_cache,
+            evaluation_cache=evaluation_cache,
+            materialize_event_trace=materialize_event_trace,
+        )
+        evaluation_count += 1
         if best.feasible:
-            return best
-    return best
+            return RepairResult(evaluated=best, evaluation_count=evaluation_count)
+    return RepairResult(evaluated=best, evaluation_count=evaluation_count)

@@ -134,7 +134,8 @@ class Element12Prediction(BaseOp):
 
 @op_manager.register(
     "Mul", "Add", "Sub", "AddInplace", "Div", "Sum", "Relu", "ReluBackward", "DivInplace", "MulInplace", "Topk",
-    "NllLossForward", "Mean", "Neg", "Exp", "DtypeCast", "FormatCast",
+    "NllLossForward", "Mean", "Neg", "Exp", "DtypeCast", "FormatCast", "Tanh", "TanhBackward",
+    "ThresholdBackward",
 )
 class ElementPrediction(BaseOp):
     def __init__(self, op, hardware, chip_name="A3", topo_name="A6_2d_fullmesh"):

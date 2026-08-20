@@ -1,0 +1,71 @@
+{
+  "schema": "cross_hardware_results_v1",
+  "date": "2026-08-19",
+  "protocol": {
+    "models": ["bert_base", "gpt2", "resnet50", "vit_b_16"],
+    "batch": 4,
+    "measure": "eager full FW-BW-OPT step, max_memory_allocated, 5 warmup + 3 measured steps (per-step reset)",
+    "simulation": "PeakAware optimize_training(simulation_only, validation_top_k=0), PEAKAWARE_COSTMODEL_HARDWARE=Ascend910B, all-save plan peak, generous budget"
+  },
+  "hardware": {
+    "a6000": {"gpu": "NVIDIA RTX A6000", "torch": "2.13.0+cu130"},
+    "ascend": {"gpu": "Ascend910B2C", "torch": "2.9.0+cpu", "torch_npu": "2.9.0rc1"}
+  },
+  "models": {
+    "bert_base": {
+      "desc": "BertForSequenceClassification hidden=64 L=2 heads=4 inter=256 vocab=30522 seq=32 AdamW",
+      "param_MB": 8.363,
+      "measured_a6000_MB": 58.892,
+      "measured_ascend_MB": 66.403,
+      "predicted_MB": 66.910,
+      "ape_ascend_pct": 0.76,
+      "ape_a6000_pct": 13.6,
+      "composition": {"phase": "optimizer", "parameter_MB": 8.363, "gradient_MB": 8.363, "optimizer_MB": 50.177, "saved_activation_MB": 0.0, "workspace_MB": 0.0}
+    },
+    "gpt2": {
+      "desc": "GPT2Like vocab=50257 seq=32 width=64 L=2 heads=4 AdamW",
+      "param_MB": 26.14,
+      "measured_a6000_MB": 225.386,
+      "measured_ascend_MB": 208.383,
+      "predicted_MB": 209.124,
+      "ape_ascend_pct": 0.35,
+      "ape_a6000_pct": 7.2,
+      "composition": {"phase": "optimizer", "parameter_MB": 26.14, "gradient_MB": 26.14, "optimizer_MB": 156.841, "saved_activation_MB": 0.0, "workspace_MB": 0.0}
+    },
+    "resnet50": {
+      "desc": "torchvision.resnet50(num_classes=10) 224x224 SGD",
+      "param_MB": 94.114,
+      "measured_a6000_MB": 520.818,
+      "measured_ascend_MB": 508.175,
+      "predicted_MB": 647.536,
+      "ape_ascend_pct": 27.4,
+      "ape_a6000_pct": 24.3,
+      "composition": {"phase": "bw", "parameter_MB": 94.114, "gradient_MB": 94.114, "optimizer_MB": 0.0, "saved_activation_MB": 341.655, "workspace_MB": 117.441},
+      "core_without_workspace_MB": 530.095,
+      "ape_ascend_core_pct": 4.3,
+      "ape_a6000_core_pct": 1.8
+    },
+    "vit_b_16": {
+      "desc": "torchvision.vit_b_16(num_classes=10, image_size=224) 224x224 AdamW",
+      "param_MB": 343.225,
+      "measured_a6000_MB": 1741.373,
+      "measured_ascend_MB": 1732.529,
+      "predicted_MB": 1843.136,
+      "ape_ascend_pct": 6.38,
+      "ape_a6000_pct": 5.85,
+      "composition": {"phase": "bw", "parameter_MB": 343.225, "gradient_MB": 343.225, "optimizer_MB": 686.451, "saved_activation_MB": 470.234, "workspace_MB": 0.0}
+    }
+  },
+  "takeaways": {
+    "3_of_4_ascend_ape_le_6.38": true,
+    "bert_gpt2_ape_lt_1pct": true,
+    "resnet50_gap_is_workspace_heuristic_not_cross_hardware": "117.44MB conv-backward workspace add-on (A6000-calibrated) over-counts BOTH platforms (A6000 24%, Ascend 27%); storage-lifecycle core alone predicts both within 4.3%",
+    "activation_dominant_models_cross_platform_consistent": "vit platform diff 0.5%, resnet50 2.5%",
+    "small_models_allocator_sensitive": "bert 12.8%, gpt2 8.2% platform diff"
+  },
+  "scripts": {
+    "predict": "/tmp/predict_paper_models.py",
+    "ascend_measure": "/tmp/ascend_paper_models.py",
+    "a6000_measure": "/tmp/a6000_paper_models.py"
+  }
+}

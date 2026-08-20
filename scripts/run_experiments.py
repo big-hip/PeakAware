@@ -22,6 +22,7 @@ from peakaware.experiments import (
     write_experiment_hint_ablation_json,
     write_experiment_json,
     write_experiment_layered_accuracy_json,
+    write_experiment_selected_regret_json,
     write_experiment_simulation_error_json,
     write_experiment_steady_state_json,
     write_experiment_summary_json,
@@ -43,6 +44,9 @@ def main() -> None:
     parser.add_argument("--budget-mib", default="256")
     parser.add_argument("--microbatches", default="1")
     parser.add_argument("--top-k", type=int, default=3)
+    parser.add_argument("--max-greedy-candidates", type=int, default=4)
+    parser.add_argument("--compiler-refinement-top-k", type=int, default=0)
+    parser.add_argument("--validation-top-k", type=int, default=None)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--enable-compile", action="store_true")
     parser.add_argument("--enable-inductor", action="store_true")
@@ -52,6 +56,11 @@ def main() -> None:
     parser.add_argument("--selection-objective", choices=("min_peak_then_time", "min_time_then_peak"), default="min_peak_then_time")
     parser.add_argument("--measurement-warmup-steps", type=int, default=0)
     parser.add_argument("--measurement-repeats", type=int, default=1)
+    parser.add_argument(
+        "--candidate-measurement-protocol",
+        choices=("legacy_phase", "publication_overall"),
+        default="legacy_phase",
+    )
     parser.add_argument("--matrix-passes", type=int, default=1)
     parser.add_argument("--exact-small-graph", action="store_true")
     parser.add_argument("--exact-max-candidates", type=int, default=12)
@@ -68,6 +77,7 @@ def main() -> None:
     parser.add_argument("--sac-baseline-json", type=Path, default=None)
     parser.add_argument("--output-layered-accuracy-json", type=Path, default=None)
     parser.add_argument("--output-simulation-error-json", type=Path, default=None)
+    parser.add_argument("--output-selected-regret-json", type=Path, default=None)
     parser.add_argument("--output-steady-state-json", type=Path, default=None)
     args = parser.parse_args()
     if args.matrix_passes <= 0:
@@ -77,6 +87,9 @@ def main() -> None:
         safety_margin_bytes=0,
         safety_margin_ratio=0.0,
         top_k=args.top_k,
+        max_greedy_candidates=args.max_greedy_candidates,
+        compiler_refinement_top_k=args.compiler_refinement_top_k,
+        validation_top_k=args.validation_top_k,
         enable_compile=args.enable_compile or args.enable_inductor,
         enable_inductor=args.enable_inductor,
         capture_backend=args.capture_backend,
@@ -85,6 +98,7 @@ def main() -> None:
         cache_root=args.cache_root,
         measurement_warmup_steps=args.measurement_warmup_steps,
         measurement_repeats=args.measurement_repeats,
+        candidate_measurement_protocol=args.candidate_measurement_protocol,
         selection_objective=args.selection_objective,
     )
     if args.diagnostic_hints == "both":
@@ -139,6 +153,8 @@ def main() -> None:
         write_experiment_layered_accuracy_json(records, args.output_layered_accuracy_json)
     if args.output_simulation_error_json is not None:
         write_experiment_simulation_error_json(records, args.output_simulation_error_json)
+    if args.output_selected_regret_json is not None:
+        write_experiment_selected_regret_json(records, args.output_selected_regret_json)
     if args.output_steady_state_json is not None:
         write_experiment_steady_state_json(records, args.output_steady_state_json)
     print(json.dumps(experiment_records_to_dicts(records), indent=2, sort_keys=True))

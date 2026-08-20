@@ -174,6 +174,7 @@ def _snapshot_with_bytes(source: PeakSnapshot, total_bytes: int, confidence: flo
         saved_activation_bytes=source.saved_activation_bytes,
         recomputed_bytes=source.recomputed_bytes,
         workspace_bytes=source.workspace_bytes,
+        runtime_replica_bytes=source.runtime_replica_bytes,
     )
 
 

@@ -28,8 +28,12 @@ AOTAutograd FW/BW 联合图，自动选择前向值的 `SAVE/RECOMPUTE`，并在
    将 PyTorch min-cut/budget 的语义边界、反向峰值反升现象和 PeakAware 研究动机整理为论文背景。
 11. [10_最终验收矩阵.md](10_最终验收矩阵.md)
    汇总最终验收项、当前证据、剩余缺口和推荐验收命令。
+12. [11_costmodel_calibration.md](11_costmodel_calibration.md)
+   记录当前硬件 Costmodel 校准、legacy zhanlu adapter 语义和离线残差校准边界。
+13. [12_costmodel_liveness_timeline_plan.md](12_costmodel_liveness_timeline_plan.md)
+   规定 Costmodel 时间、IR/saved-tensor 生命周期内存、L2/L2.5 曲线和 Chakra/ASTRA-sim 导出路线。
 
-实现者推荐阅读顺序：`00 -> 09 -> 05 -> 01 -> 02 -> 03 -> 04 -> 06 -> 08 -> 07 -> 10`。
+实现者推荐阅读顺序：`00 -> 09 -> 05 -> 01 -> 02 -> 03 -> 04 -> 06 -> 11 -> 12 -> 08 -> 07 -> 10`。
 
 ## 核心口径
 

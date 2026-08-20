@@ -39,7 +39,12 @@ def estimate_optimizer_memory(optimizer: torch.optim.Optimizer, parameter_bytes:
     if state_bytes == 0 and "adam" in name:
         state_bytes = 2 * parameter_bytes
     if "adam" in name:
-        temporary_bytes = parameter_bytes
+        # A6000/Torch2.13 measurements with observer snapshots kept on CPU put
+        # full-size AdamW at about 5x parameter bytes during optimizer.step:
+        # params + grads + m/v + one parameter-size transient. Tiny workloads
+        # remain dominated by tensor-list/scalar and allocator granularity.
+        temporary_factor = 4 if parameter_bytes <= (32 << 20) else 1
+        temporary_bytes = temporary_factor * parameter_bytes
     elif "sgd" not in name:
         temporary_bytes = parameter_bytes
     return state_bytes, temporary_bytes
@@ -129,7 +134,8 @@ def analyze_refined_feasibility(
     mandatory_bytes = sum(
         storage.physical_nbytes
         for storage in ir.storages
-        if any(
+        if not storage.is_external
+        and any(
             value.id in storage.value_ids and value.mandatory_save_reason
             for value in ir.values
         )

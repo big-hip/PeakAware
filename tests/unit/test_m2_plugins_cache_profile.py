@@ -13,13 +13,22 @@ from peakaware.cache.executable import (
 from peakaware.cache.keys import build_compiled_artifact_key, build_plan_evaluation_key
 from peakaware.cache.store import CacheEntry, invalidate_downstream, load_cache_entry, store_cache_entry
 from peakaware.contracts import MeasuredExecutable
-from peakaware.cost.base import OpCost, OpSignature, RooflineFallbackProvider, StaticCostProvider
+from peakaware.cost.attention import AttentionHardwareSpec, ScaledDotProductAttentionCostProvider
+from peakaware.cost.base import (
+    MetadataViewCostProvider,
+    OpCost,
+    OpSignature,
+    RooflineFallbackProvider,
+    StaticCostProvider,
+    StructuralZeroCostProvider,
+)
 from peakaware.cost.collector import (
     collect_microbenchmark,
     collect_model_trace,
     measure_cuda_events,
     summarize_samples,
 )
+from peakaware.cost.calibration import build_residual_calibration_report
 from peakaware.cost.composite import CompositeCostProvider, build_composite_provider
 from peakaware.cost.legacy_adapter import LegacyCostmodelAdapter
 from peakaware.cost.profile_db import ExactProfileProvider, InterpolatedProfileProvider, ProfileDB, ProfileRecord
@@ -264,6 +273,134 @@ def test_profile_db_exact_lookup_round_trip(tmp_path):
     assert cost.software_version.startswith("torch:")
 
 
+def test_profile_db_signature_reuses_profiles_across_fx_node_names(tmp_path):
+    db = ProfileDB(tmp_path / "profiles.sqlite")
+    profiled = OpSignature(
+        "mm_17",
+        "aten.mm.default",
+        96,
+        48,
+        "torch.float32",
+        input_shapes=((4, 3), (3, 4)),
+        output_shapes=((4, 4),),
+        input_dtypes=("torch.float32", "torch.float32"),
+        output_dtypes=("torch.float32",),
+    )
+    repeated_node = OpSignature(
+        "mm_203",
+        "aten.mm.default",
+        96,
+        48,
+        "torch.float32",
+        input_shapes=profiled.input_shapes,
+        output_shapes=profiled.output_shapes,
+        input_dtypes=profiled.input_dtypes,
+        output_dtypes=profiled.output_dtypes,
+    )
+    db.upsert_profile(profiled, ProfileRecord("ignored", 20, 7.0, 8.0, 7.5, 0))
+
+    cost = db.lookup_exact(repeated_node)
+
+    assert cost is not None
+    assert cost.estimated_us == 7.0
+
+
+def test_profile_db_exact_signature_distinguishes_shapes_and_dtypes(tmp_path):
+    db = ProfileDB(tmp_path / "profiles.sqlite")
+    source = OpSignature(
+        "mm",
+        "aten.mm.default",
+        96,
+        48,
+        "torch.float32",
+        input_shapes=((4, 3), (3, 4)),
+        output_shapes=((4, 4),),
+        input_dtypes=("torch.float32", "torch.float32"),
+        output_dtypes=("torch.float32",),
+    )
+    different_shape = OpSignature(
+        "mm_1",
+        "aten.mm.default",
+        192,
+        96,
+        "torch.float32",
+        input_shapes=((8, 3), (3, 4)),
+        output_shapes=((8, 4),),
+        input_dtypes=source.input_dtypes,
+        output_dtypes=source.output_dtypes,
+    )
+    different_dtype = OpSignature(
+        "mm_2",
+        "aten.mm.default",
+        48,
+        24,
+        "torch.float16",
+        input_shapes=source.input_shapes,
+        output_shapes=source.output_shapes,
+        input_dtypes=("torch.float16", "torch.float16"),
+        output_dtypes=("torch.float16",),
+    )
+    db.upsert_profile(source, ProfileRecord("ignored", 20, 7.0, 8.0, 7.5, 0))
+
+    assert db.lookup_exact(different_shape) is None
+    assert db.lookup_exact(different_dtype) is None
+
+
+def test_profile_db_isolates_rows_by_hardware_and_software_environment(tmp_path):
+    path = tmp_path / "profiles.sqlite"
+    signature = OpSignature("add", "aten.add.Tensor", 16, 8, "torch.float32")
+    record = ProfileRecord("ignored", 20, 3.0, 4.0, 3.5, 0)
+    first = ProfileDB(path, hardware_version="gpu:a", software_version="torch:a")
+    first.upsert_profile(signature, record)
+
+    other_hardware = ProfileDB(path, hardware_version="gpu:b", software_version="torch:a")
+    other_software = ProfileDB(path, hardware_version="gpu:a", software_version="torch:b")
+
+    assert first.lookup_exact(signature) is not None
+    assert other_hardware.lookup_exact(signature) is None
+    assert other_software.lookup_exact(signature) is None
+    other_hardware.upsert_profile(signature, ProfileRecord("ignored", 20, 9.0, 10.0, 9.5, 0))
+    other_hardware.invalidate_by_environment()
+    assert first.lookup_exact(signature) is not None
+    assert other_hardware.lookup_exact(signature) is None
+
+
+def test_profile_db_migrates_legacy_rows_as_environment_unscoped(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "legacy.sqlite"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE op_profile (
+                signature_hash TEXT PRIMARY KEY,
+                target TEXT NOT NULL DEFAULT '',
+                dtype TEXT NOT NULL DEFAULT '',
+                total_bytes INTEGER NOT NULL DEFAULT 0,
+                sample_count INTEGER NOT NULL,
+                p50_us REAL NOT NULL,
+                p90_us REAL NOT NULL,
+                mean_us REAL NOT NULL,
+                workspace_bytes INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO op_profile VALUES ('old', 'aten.add.Tensor', 'float32', 16, 20, 1, 2, 1.5, 0)"
+        )
+
+    db = ProfileDB(path, hardware_version="gpu:a", software_version="torch:a")
+
+    assert db.lookup_exact(OpSignature("add", "aten.add.Tensor", 8, 8, "float32")) is None
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(op_profile)")}
+        environments = conn.execute(
+            "SELECT hardware_version, software_version FROM op_profile"
+        ).fetchall()
+    assert {"hardware_version", "software_version", "input_shapes_json"} <= columns
+    assert environments == [("legacy:unscoped", "legacy:unscoped")]
+
+
 def test_profile_collector_summarizes_samples_and_writes_db(tmp_path):
     db = ProfileDB(tmp_path / "profiles.sqlite")
     signature = OpSignature("mul", "aten.mul", 8, 8, "float32")
@@ -320,10 +457,79 @@ def test_profile_db_nearest_interpolates_same_target_and_dtype(tmp_path):
     assert db.lookup_nearest(other_dtype) is None
 
 
+def test_profile_db_matmul_interpolation_uses_flops_not_total_bytes(tmp_path):
+    db = ProfileDB(tmp_path / "profiles.sqlite")
+    source = OpSignature(
+        "mm",
+        "aten.mm.default",
+        96,
+        64,
+        "torch.float32",
+        input_shapes=((4, 3), (3, 4)),
+        output_shapes=((4, 4),),
+    )
+    target = OpSignature(
+        "mm_1",
+        "aten.mm.default",
+        160,
+        128,
+        "torch.float32",
+        input_shapes=((8, 3), (3, 4)),
+        output_shapes=((8, 4),),
+    )
+    db.upsert_profile(source, ProfileRecord("ignored", 20, 10.0, 12.0, 11.0, 0))
+
+    interpolated = db.lookup_nearest(target)
+
+    assert interpolated is not None
+    assert interpolated.estimated_us == 20.0
+
+
+def test_profile_db_refuses_unsafe_generic_convolution_interpolation(tmp_path):
+    db = ProfileDB(tmp_path / "profiles.sqlite")
+    source = OpSignature(
+        "convolution",
+        "aten.convolution.default",
+        1024,
+        2048,
+        "torch.float32",
+        input_shapes=((1, 16, 8, 8), (32, 16, 3, 3)),
+        output_shapes=((1, 32, 6, 6),),
+    )
+    target = OpSignature(
+        "convolution_1",
+        "aten.convolution.default",
+        4096,
+        8192,
+        "torch.float32",
+        input_shapes=((1, 16, 16, 16), (32, 16, 3, 3)),
+        output_shapes=((1, 32, 14, 14),),
+    )
+    db.upsert_profile(source, ProfileRecord("ignored", 20, 10.0, 12.0, 11.0, 0))
+
+    assert db.lookup_nearest(target) is None
+
+
 def test_composite_cost_provider_uses_exact_then_interpolation_then_fallback(tmp_path):
     db = ProfileDB(tmp_path / "profiles.sqlite")
-    exact = OpSignature("mm", "aten.mm", 128, 64, "float32")
-    nearby = OpSignature("mm", "aten.mm", 256, 128, "float32")
+    exact = OpSignature(
+        "mm",
+        "aten.mm",
+        128,
+        64,
+        "float32",
+        input_shapes=((4, 4), (4, 4)),
+        output_shapes=((4, 4),),
+    )
+    nearby = OpSignature(
+        "mm_1",
+        "aten.mm",
+        256,
+        128,
+        "float32",
+        input_shapes=((8, 4), (4, 4)),
+        output_shapes=((8, 4),),
+    )
     missing = OpSignature("relu", "aten.relu", 16, 16, "float32")
     db.upsert_profile(exact, ProfileRecord("ignored", 20, 4.0, 5.0, 4.5, 32))
     provider = CompositeCostProvider(
@@ -356,10 +562,135 @@ def test_builtin_cost_providers_attach_hardware_and_software_provenance():
     assert static.hardware_version == "generic"
     assert static.software_version.startswith("torch:")
     assert legacy is not None
-    assert legacy.hardware_version == static.hardware_version
+    assert legacy.hardware_version in {
+        static.hardware_version,
+        "zhanlu:A3,A3",
+        "zhanlu:RTX_A6000,RTX_A6000",
+    }
     assert legacy.software_version == static.software_version
     assert roofline.hardware_version != "unknown"
     assert roofline.software_version.startswith("torch:")
+
+
+def _test_attention_hardware():
+    return AttentionHardwareSpec(
+        hardware_id="RTX_A6000",
+        compute_tflops={"float16": 154.8, "bfloat16": 154.8, "float32": 38.7},
+        vector_tflops={"float16": 19.3, "bfloat16": 19.3, "float32": 19.3},
+        hbm_tbps=0.768,
+        fused_launch_us=1.0,
+    )
+
+
+def test_sdpa_provider_models_fused_forward_and_backward_without_global_workspace():
+    provider = ScaledDotProductAttentionCostProvider(_test_attention_hardware())
+    qkv = ((1, 12, 128, 64),) * 3
+    forward = OpSignature(
+        "_scaled_dot_product_efficient_attention",
+        "aten._scaled_dot_product_efficient_attention.default",
+        3 * 1 * 12 * 128 * 64 * 4,
+        0,
+        "torch.float32",
+        input_shapes=qkv,
+        input_dtypes=("torch.float32",) * 3,
+    )
+    backward = OpSignature(
+        "_scaled_dot_product_efficient_attention_backward",
+        "aten._scaled_dot_product_efficient_attention_backward.default",
+        6 * 1 * 12 * 128 * 64 * 4,
+        0,
+        "torch.float32",
+        input_shapes=((1, 12, 128, 64),) * 5 + ((1, 12, 128), (), ()),
+        input_dtypes=("torch.float32",) * 8,
+    )
+
+    forward_cost = provider.estimate(forward)
+    backward_cost = provider.estimate(backward)
+
+    assert forward_cost is not None
+    assert backward_cost is not None
+    assert forward_cost.estimated_us > 1.0
+    assert backward_cost.estimated_us > forward_cost.estimated_us
+    assert forward_cost.memory_bytes == 0
+    assert backward_cost.memory_bytes == 0
+    assert forward_cost.source == "analytical:sdpa_fused"
+    assert forward_cost.hardware_version == "zhanlu:RTX_A6000"
+
+
+def test_sdpa_provider_rejects_unfused_attention_and_invalid_shapes():
+    provider = ScaledDotProductAttentionCostProvider(_test_attention_hardware())
+
+    assert provider.estimate(OpSignature("bmm", "aten.bmm.default", 1, 1)) is None
+    assert provider.estimate(
+        OpSignature(
+            "sdpa",
+            "aten._scaled_dot_product_efficient_attention.default",
+            1,
+            1,
+            input_shapes=((1, 12, 128),) * 3,
+        )
+    ) is None
+
+
+def test_legacy_costmodel_adapter_uses_analytical_model_when_supported():
+    signature = OpSignature("add", "aten.add", 1024, 1024, "float32")
+    cost = LegacyCostmodelAdapter().estimate(signature)
+
+    assert cost is not None
+    assert cost.estimated_us > 0
+    assert cost.source == "legacy_adapter:static_fallback" or cost.source.startswith(
+        "legacy_adapter:zhanlu_analytical"
+    )
+
+
+def test_residual_calibration_report_improves_biased_predictions():
+    records = [
+        {
+            "status": "ok",
+            "task_name": "task_a",
+            "measured_plan_results": [
+                {"estimated_peak_bytes": 100, "measured_peak_bytes": 150},
+                {"estimated_peak_bytes": 200, "measured_peak_bytes": 250},
+            ],
+        },
+        {
+            "status": "ok",
+            "task_name": "task_b",
+            "measured_plan_results": [
+                {"estimated_peak_bytes": 1000, "measured_peak_bytes": 900},
+                {"estimated_peak_bytes": 1100, "measured_peak_bytes": 1000},
+            ],
+        },
+    ]
+
+    report = build_residual_calibration_report(records)
+
+    assert report["rule_count"] == 2
+    assert report["evaluation"]["mean_calibrated_ape"] < report["evaluation"]["mean_raw_ape"]
+    assert report["evaluation"]["covered_row_count"] == 4
+
+
+def test_residual_calibration_supports_holdout_split():
+    records = [
+        {
+            "status": "ok",
+            "task_name": "task_a",
+            "matrix_pass_index": 0,
+            "measured_plan_results": [{"estimated_peak_bytes": 100, "measured_peak_bytes": 150}],
+        },
+        {
+            "status": "ok",
+            "task_name": "task_a",
+            "matrix_pass_index": 1,
+            "measured_plan_results": [{"estimated_peak_bytes": 200, "measured_peak_bytes": 250}],
+        },
+    ]
+
+    report = build_residual_calibration_report(records, holdout_field="matrix_pass_index", holdout_value="1")
+
+    assert report["split"]["train_record_count"] == 1
+    assert report["split"]["eval_record_count"] == 1
+    assert report["evaluation"]["mean_calibrated_ape"] == 0.0
 
 
 def test_build_composite_provider_adds_roofline_tail():
@@ -379,6 +710,93 @@ def test_build_composite_provider_adds_roofline_tail():
     assert cost.source == "roofline_fallback"
 
 
+@pytest.mark.parametrize(
+    ("op_name", "target"),
+    (
+        ("primals_1", "primals_1"),
+        ("tangents_2", "tangents_2"),
+        ("output", "output"),
+        ("arg0", "arg0"),
+        ("arg_1", "arg_1"),
+        ("placeholder_3", "placeholder_3"),
+        ("lifted_tensor_0", "lifted_tensor_0"),
+    ),
+)
+def test_structural_zero_cost_provider_models_graph_interface_nodes(op_name, target):
+    provider = StructuralZeroCostProvider()
+    signature = OpSignature(op_name, target, 1024, 2048, "float32")
+
+    cost = provider.estimate(signature)
+
+    assert cost is not None
+    assert cost.estimated_us == 0.0
+    assert cost.memory_bytes == 0
+    assert cost.source == "structural_zero"
+    assert cost.confidence == 1.0
+
+
+@pytest.mark.parametrize(
+    ("op_name", "target"),
+    (
+        ("argmax", "aten.argmax.default"),
+        ("argmin_1", "aten.argmin.default"),
+        ("argument", "custom.argument"),
+    ),
+)
+def test_structural_zero_cost_provider_does_not_hide_real_arg_ops(op_name, target):
+    provider = StructuralZeroCostProvider()
+    signature = OpSignature(op_name, target, 1024, 2048, "float32")
+
+    assert not provider.supports(signature)
+    assert provider.estimate(signature) is None
+
+
+@pytest.mark.parametrize(
+    "target",
+    (
+        "<built-in function getitem>",
+        "aten._unsafe_view.default",
+        "aten.detach.default",
+        "aten.expand.default",
+        "aten.permute.default",
+        "aten.select.int",
+        "aten.slice.Tensor",
+        "aten.squeeze.dim",
+        "aten.t.default",
+        "aten.transpose.int",
+        "aten.unsqueeze.default",
+        "aten.view.default",
+    ),
+)
+def test_metadata_view_provider_models_alias_only_cuda_nodes_as_zero(target):
+    provider = MetadataViewCostProvider()
+    cost = provider.estimate(OpSignature("node", target, 4096, 4096, "torch.float32"))
+
+    assert cost is not None
+    assert cost.estimated_us == 0.0
+    assert cost.memory_bytes == 0
+    assert cost.source == "metadata_view_zero"
+    assert cost.confidence == 1.0
+
+
+@pytest.mark.parametrize(
+    "target",
+    (
+        "aten.clone.default",
+        "aten.contiguous.default",
+        "aten.reshape.default",
+        "aten.select_backward.default",
+        "aten.slice_backward.default",
+    ),
+)
+def test_metadata_view_provider_does_not_hide_copy_or_backward_kernels(target):
+    provider = MetadataViewCostProvider()
+    signature = OpSignature("node", target, 4096, 4096, "torch.float32")
+
+    assert not provider.supports(signature)
+    assert provider.estimate(signature) is None
+
+
 def test_default_builtin_registry_exposes_core_m2_services(tmp_path):
     snapshot = build_default_registry(profile_db_path=tmp_path / "profiles.sqlite")
 
@@ -390,7 +808,14 @@ def test_default_builtin_registry_exposes_core_m2_services(tmp_path):
 
     assert correction.status == "unavailable"
     assert "Top-K measurement" in correction.reason
-    assert cost_names[:3] == ("profile_db_exact", "profile_db_interpolated", "static_fallback")
+    assert cost_names[:6] == (
+        "structural_zero",
+        "metadata_view_zero",
+        "profile_db_exact",
+        "profile_db_interpolated",
+        "sdpa_fused_analytical",
+        "legacy_costmodel",
+    )
     assert snapshot.resolve("profile_db", "default") is not None
 
 
@@ -407,3 +832,17 @@ def test_default_registry_cost_providers_feed_composite_provider(tmp_path):
     assert cost is not None
     assert cost.source == "profile_db_exact"
     assert cost.estimated_us == 2.0
+
+
+def test_default_registry_composite_prefers_structural_zero_for_interface_nodes(tmp_path):
+    snapshot = build_default_registry(profile_db_path=tmp_path / "profiles.sqlite")
+    provider = build_composite_provider(
+        tuple(record.service for record in snapshot.services_for(ServiceKind.COST_PROVIDER))
+    )
+
+    for name in ("primals_1", "tangents_1", "output"):
+        cost = provider.estimate(OpSignature(name, name, 4096, 4096, "float32"))
+        assert cost is not None
+        assert cost.source == "structural_zero"
+        assert cost.estimated_us == 0.0
+        assert cost.memory_bytes == 0

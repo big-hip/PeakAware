@@ -8,7 +8,9 @@ from peakaware.contracts import HardwareSpec, OptimizerSpec, TrainingRequest
 from peakaware.ir import build_joint_ir
 from peakaware.models import (
     TrainingTaskRegistry,
+    build_bert_base_full_task,
     build_bert_base_task,
+    build_gpt2_small_full_task,
     build_gpt2_task,
     build_resnet50_task,
     build_vit_b16_task,
@@ -42,7 +44,9 @@ def test_default_registry_includes_explanatory_models():
 
     assert registry.names() == (
         "bert_base",
+        "bert_base_full_s128",
         "gpt2",
+        "gpt2_small_full_s128",
         "resnet50",
         "tiny_attention_w8_s4",
         "tiny_mlp_w8_d3",
@@ -88,6 +92,34 @@ def test_main_model_display_names_match_actual_default_configurations():
     assert registry.get("bert_base").workload.model_config["hidden_dropout_prob"] == 0.0
     assert registry.get("bert_base").workload.model_config["attention_probs_dropout_prob"] == 0.0
     assert registry.get("bert_base").workload.model_config["classifier_dropout"] == 0.0
+
+
+def test_full_scale_transformer_tasks_are_explicit_and_picklable():
+    tasks = (
+        build_bert_base_full_task(),
+        build_gpt2_small_full_task(),
+    )
+
+    for task in tasks:
+        restored = pickle.loads(pickle.dumps(task))
+        args, kwargs = restored.build_batch(1)
+
+        assert restored.workload is not None
+        assert restored.workload.registry_key in {"bert_base", "gpt2"}
+        assert "S128" in restored.workload.display_name
+        assert args[0].shape == (1, 128)
+        assert kwargs == {}
+
+    bert = tasks[0]
+    gpt2 = tasks[1]
+    assert bert.name == "bert_base_full_s128"
+    assert bert.workload.display_name == "BERT-base-S128"
+    assert bert.workload.model_config["hidden_size"] == 768
+    assert bert.workload.model_config["num_hidden_layers"] == 12
+    assert gpt2.name == "gpt2_small_full_s128"
+    assert gpt2.workload.display_name == "GPT-2-small-S128"
+    assert gpt2.workload.model_config["width"] == 768
+    assert gpt2.workload.model_config["num_layers"] == 12
 
 
 def test_main_model_tasks_build_fixed_shape_training_losses():

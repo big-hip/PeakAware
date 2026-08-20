@@ -2136,12 +2136,38 @@ def _validate_measurement_samples(
             "overall_peak_bytes",
             "overall_reserved_peak_bytes",
         } | _timing_field_names("overall")
-        if set(sample) != expected_fields:
-            raise ValueError("overall sample fields are invalid")
+        optional_fields = {
+            "actual_overall_sampled_memory_trace",
+            "gpu_util_trace",
+            "gpu_compute_summary",
+        }
+        if not expected_fields <= set(sample) or set(sample) - expected_fields - optional_fields:
+            raise ValueError(
+                "overall sample fields are invalid: "
+                f"missing={sorted(expected_fields - set(sample))}, "
+                f"extra={sorted(set(sample) - expected_fields - optional_fields)}"
+            )
         _validate_timing_fields(sample, "overall", max_gap, max_abs_gap)
         for key in ("overall_peak_bytes", "overall_reserved_peak_bytes"):
             if not _non_negative_int(sample.get(key)):
                 raise ValueError(f"overall sample byte field {key} must be an integer")
+        for trace_key in (
+            "actual_overall_sampled_memory_trace",
+            "gpu_util_trace",
+        ):
+            trace = sample.get(trace_key)
+            if trace is not None and (
+                not isinstance(trace, list)
+                or any(not isinstance(point, Mapping) for point in trace)
+            ):
+                raise ValueError(f"overall sample field {trace_key} must be a list of objects")
+        gpu_summary = sample.get("gpu_compute_summary")
+        if gpu_summary is not None and (
+            not isinstance(gpu_summary, Mapping)
+            or gpu_summary.get("status") not in {"ok", "unavailable"}
+            or not _non_negative_int(gpu_summary.get("sample_count"))
+        ):
+            raise ValueError("overall sample gpu_compute_summary is invalid")
     for index, sample in enumerate(phase):
         if not isinstance(sample, Mapping) or sample.get("repeat_index") != index:
             raise ValueError("phase repeat indexes are incomplete")
@@ -2159,8 +2185,16 @@ def _validate_measurement_samples(
         for phase_name in ("fw", "bw", "optimizer"):
             expected_fields |= _timing_field_names(phase_name)
             expected_fields |= {f"{phase_name}_peak_bytes", f"{phase_name}_reserved_peak_bytes"}
-        if set(sample) != expected_fields:
-            raise ValueError("phase sample fields are invalid")
+        optional_fields = {
+            "actual_memory_trace",
+            "actual_sampled_memory_trace",
+        }
+        if not expected_fields <= set(sample) or set(sample) - expected_fields - optional_fields:
+            raise ValueError(
+                "phase sample fields are invalid: "
+                f"missing={sorted(expected_fields - set(sample))}, "
+                f"extra={sorted(set(sample) - expected_fields - optional_fields)}"
+            )
         for phase_name in ("fw", "bw", "optimizer"):
             _validate_timing_fields(sample, phase_name, max_gap, max_abs_gap)
             for suffix in ("peak_bytes", "reserved_peak_bytes"):
@@ -2177,6 +2211,13 @@ def _validate_measurement_samples(
         expected_event = sum(events) if all(value is not None for value in events) else None
         if sample.get("phase_step_event_us") != expected_event:
             raise ValueError("phase step event aggregate is inconsistent")
+        for trace_key in ("actual_memory_trace", "actual_sampled_memory_trace"):
+            trace = sample.get(trace_key)
+            if trace is not None and (
+                not isinstance(trace, list)
+                or any(not isinstance(point, Mapping) for point in trace)
+            ):
+                raise ValueError(f"phase sample field {trace_key} must be a list of objects")
     expected_combined = [
         {
             "repeat_index": index,

@@ -9,7 +9,10 @@ from torch.utils import _pytree
 from peakaware.config import PeakAwareConfig
 from peakaware.contracts import GuardSpec, LoweredPartition, MeasuredExecutable, StepResult
 from peakaware.guards import static_guard_value
-from peakaware.runtime.measure import measure_training_step_phases
+from peakaware.runtime.measure import (
+    measure_publication_training_step_phases,
+    measure_training_step_phases,
+)
 
 
 def _runtime_guard_value(name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
@@ -363,22 +366,50 @@ def make_measured_executable(
     kwargs: dict[str, Any],
     simulated_peak_bytes: int,
 ) -> MeasuredExecutable:
-    phase_metrics = measure_training_step_phases(
-        executor.model,
-        executor.optimizer,
-        executor.executable,
-        executor.loss_fn,
-        args,
-        kwargs,
-        zero_grad_set_to_none=executor.config.zero_grad_set_to_none,
-        warmup_steps=executor.config.measurement_warmup_steps,
-        repeat_count=executor.config.measurement_repeats,
-    )
+    if executor.config.candidate_measurement_protocol == "publication_overall":
+        backend = "inductor" if executor.config.enable_inductor else "aot_eager"
+        phase_metrics = measure_publication_training_step_phases(
+            executor.model,
+            executor.optimizer,
+            executor.executable,
+            executor.loss_fn,
+            args,
+            kwargs,
+            backend=backend,
+            zero_grad_set_to_none=executor.config.zero_grad_set_to_none,
+            warmup_steps=executor.config.measurement_warmup_steps,
+            repeat_count=executor.config.measurement_repeats,
+        )
+        overall_event_us = phase_metrics.get("overall_event_us")
+        if overall_event_us is not None:
+            measured_us = float(overall_event_us)
+            runtime_step_source = "overall_cuda_event_median"
+        else:
+            measured_us = float(phase_metrics["overall_wall_us"])
+            runtime_step_source = "overall_wall_median"
+    else:
+        phase_metrics = measure_training_step_phases(
+            executor.model,
+            executor.optimizer,
+            executor.executable,
+            executor.loss_fn,
+            args,
+            kwargs,
+            zero_grad_set_to_none=executor.config.zero_grad_set_to_none,
+            warmup_steps=executor.config.measurement_warmup_steps,
+            repeat_count=executor.config.measurement_repeats,
+        )
+        measured_us = float(phase_metrics["step_us"])
+        runtime_step_source = "legacy_phase_wall_sum"
     phase_metrics = dict(phase_metrics)
     phase_metrics["activation_checkpoint"] = int(executor.activation_checkpoint)
     phase_metrics["aot_partition_runtime"] = int(executor.aot_partition_runtime)
+    phase_metrics["candidate_measurement_protocol"] = (
+        executor.config.candidate_measurement_protocol
+    )
+    phase_metrics["runtime_step_us"] = measured_us
+    phase_metrics["runtime_step_source"] = runtime_step_source
     measured_peak = int(phase_metrics["overall_peak_bytes"])
-    measured_us = float(phase_metrics["step_us"])
     if measured_peak == 0:
         measured_peak = simulated_peak_bytes
         phase_metrics = dict(phase_metrics)

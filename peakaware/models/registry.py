@@ -491,10 +491,23 @@ def build_bert_base_task(
     hidden_dropout_prob: float = 0.0,
     attention_probs_dropout_prob: float = 0.0,
     classifier_dropout: float | None = 0.0,
+    task_name: str = "bert_base",
+    registry_key: str = "bert_base",
 ) -> TrainingTaskSpec:
-    display_name = f"BERT-like-{num_hidden_layers}L-{hidden_size}H"
+    is_bert_base = (
+        vocab_size == 30522
+        and hidden_size == 768
+        and num_hidden_layers == 12
+        and num_attention_heads == 12
+        and intermediate_size == 3072
+    )
+    display_name = (
+        f"BERT-base-S{sequence_length}"
+        if is_bert_base
+        else f"BERT-like-{num_hidden_layers}L-{hidden_size}H"
+    )
     return TrainingTaskSpec(
-        name="bert_base",
+        name=task_name,
         build_model=partial(
             build_bert_base_model,
             num_labels=2,
@@ -512,7 +525,7 @@ def build_bert_base_task(
         build_optimizer=build_adamw_optimizer,
         dynamic_shapes=None,
         workload=_workload_spec(
-            registry_key="bert_base",
+            registry_key=registry_key,
             display_name=display_name,
             model_family="transformer_encoder",
             implementation="transformers.BertForSequenceClassification",
@@ -567,10 +580,22 @@ def build_gpt2_task(
     n_embd: int = 64,
     n_layer: int = 2,
     n_head: int = 4,
+    task_name: str = "gpt2",
+    registry_key: str = "gpt2",
 ) -> TrainingTaskSpec:
-    display_name = f"GPT2-like-{n_layer}L-{n_embd}H"
+    is_gpt2_small = (
+        vocab_size == 50257
+        and n_embd == 768
+        and n_layer == 12
+        and n_head == 12
+    )
+    display_name = (
+        f"GPT-2-small-S{sequence_length}"
+        if is_gpt2_small
+        else f"GPT2-like-{n_layer}L-{n_embd}H"
+    )
     return TrainingTaskSpec(
-        name="gpt2",
+        name=task_name,
         build_model=partial(
             build_gpt2_model,
             vocab_size=vocab_size,
@@ -584,7 +609,7 @@ def build_gpt2_task(
         build_optimizer=build_adamw_optimizer,
         dynamic_shapes=None,
         workload=_workload_spec(
-            registry_key="gpt2",
+            registry_key=registry_key,
             display_name=display_name,
             model_family="causal_transformer_decoder",
             implementation="peakaware.models.registry.GPT2Like",
@@ -627,6 +652,29 @@ def build_gpt2_task(
     )
 
 
+def build_bert_base_full_task(sequence_length: int = 128) -> TrainingTaskSpec:
+    return build_bert_base_task(
+        sequence_length=sequence_length,
+        hidden_size=768,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        intermediate_size=3072,
+        task_name=f"bert_base_full_s{sequence_length}",
+        registry_key="bert_base",
+    )
+
+
+def build_gpt2_small_full_task(sequence_length: int = 128) -> TrainingTaskSpec:
+    return build_gpt2_task(
+        sequence_length=sequence_length,
+        n_embd=768,
+        n_layer=12,
+        n_head=12,
+        task_name=f"gpt2_small_full_s{sequence_length}",
+        registry_key="gpt2",
+    )
+
+
 class TrainingTaskRegistry:
     def __init__(self) -> None:
         self._tasks: dict[str, TrainingTaskSpec] = {}
@@ -652,4 +700,6 @@ class TrainingTaskRegistry:
         registry.register(build_vit_b16_task())
         registry.register(build_bert_base_task())
         registry.register(build_gpt2_task())
+        registry.register(build_bert_base_full_task())
+        registry.register(build_gpt2_small_full_task())
         return registry

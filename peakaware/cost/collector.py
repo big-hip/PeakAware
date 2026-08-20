@@ -64,6 +64,7 @@ def measure_cuda_events(
         elapsed_us = (time.perf_counter() - start) * 1_000_000.0
         return elapsed_us, 0
     torch.cuda.synchronize()
+    baseline_allocated = int(torch.cuda.memory_allocated())
     torch.cuda.reset_peak_memory_stats()
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
@@ -71,7 +72,11 @@ def measure_cuda_events(
     fn(*args, **kwargs)
     end_event.record()
     torch.cuda.synchronize()
-    return float(start_event.elapsed_time(end_event) * 1000.0), int(torch.cuda.max_memory_allocated())
+    peak_allocated = int(torch.cuda.max_memory_allocated())
+    return (
+        float(start_event.elapsed_time(end_event) * 1000.0),
+        max(0, peak_allocated - baseline_allocated),
+    )
 
 
 def collect_microbenchmark(
@@ -83,6 +88,7 @@ def collect_microbenchmark(
     warmup: int = 1,
     repeats: int = 10,
     db: ProfileDB | None = None,
+    output_allocation_bytes: int | None = None,
 ) -> MicrobenchmarkResult:
     if warmup < 0:
         raise ValueError("warmup must be non-negative")
@@ -93,10 +99,15 @@ def collect_microbenchmark(
         fn(*args, **kwargs)
     samples: list[float] = []
     workspace = 0
+    expected_output_bytes = (
+        max(int(signature.output_bytes), 0)
+        if output_allocation_bytes is None
+        else max(int(output_allocation_bytes), 0)
+    )
     for _ in range(repeats):
-        elapsed_us, peak_bytes = measure_cuda_events(fn, args, kwargs)
+        elapsed_us, peak_increment_bytes = measure_cuda_events(fn, args, kwargs)
         samples.append(elapsed_us)
-        workspace = max(workspace, peak_bytes)
+        workspace = max(workspace, max(0, peak_increment_bytes - expected_output_bytes))
     record = summarize_samples(tuple(samples), workspace_bytes=workspace)
     if db is not None:
         db.upsert_profile(signature, record)

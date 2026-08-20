@@ -1,0 +1,23 @@
+{
+    "utilization": 0.5,
+    "rtt_ratio": 0.5,
+    "level1": {
+        "device_num": 2,
+        "bandwidth_per_port": 25,
+        "topo": "pcie_node",
+        "port_num": 1,
+        "latency": 0,
+        "dynamic_latency": 8
+    },
+    "level2": {
+        "device_num": 2,
+        "bandwidth_per_port": 25,
+        "topo": "single_node",
+        "port_num": 1,
+        "latency": 0,
+        "dynamic_latency": 8
+    },
+    "level3": {
+        "dynamic_latency": 8
+    }
+}

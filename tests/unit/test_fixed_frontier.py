@@ -1,7 +1,11 @@
 import torch
 from torch import nn
 
-from peakaware.memory.fixed_frontier import analyze_coarse_feasibility, build_optimizer_spec
+from peakaware.memory.fixed_frontier import (
+    analyze_coarse_feasibility,
+    build_optimizer_spec,
+    estimate_optimizer_memory,
+)
 
 
 def test_adamw_fixed_memory_estimate_before_state_materialization():
@@ -14,7 +18,7 @@ def test_adamw_fixed_memory_estimate_before_state_materialization():
     parameter_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
     assert spec.name == "AdamW"
     assert spec.state_bytes == 2 * parameter_bytes
-    assert fixed.optimizer_temporary_bytes == parameter_bytes
+    assert fixed.optimizer_temporary_bytes == 4 * parameter_bytes
     assert report.status == "FEASIBLE"
 
 
@@ -43,8 +47,8 @@ def test_fused_adamw_mode_is_part_of_optimizer_spec_and_memory_estimate():
 
     assert spec.name == "AdamW[fused]"
     assert spec.state_bytes == 2 * parameter_bytes
-    assert spec.temporary_bytes == parameter_bytes
-    assert fixed.optimizer_temporary_bytes == parameter_bytes
+    assert spec.temporary_bytes == 4 * parameter_bytes
+    assert fixed.optimizer_temporary_bytes == 4 * parameter_bytes
     assert report.status == "FEASIBLE"
 
 
@@ -66,7 +70,20 @@ def test_materialized_optimizer_state_is_counted_exactly():
 
     assert spec.name == "AdamW"
     assert spec.state_bytes == state_bytes
-    assert spec.temporary_bytes == sum(p.numel() * p.element_size() for p in model.parameters())
+    assert spec.temporary_bytes == 4 * sum(
+        p.numel() * p.element_size() for p in model.parameters()
+    )
+
+
+def test_large_adamw_uses_a6000_one_parameter_transient_calibration():
+    model = nn.Linear(4, 3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    parameter_bytes = 64 << 20
+
+    state_bytes, temporary_bytes = estimate_optimizer_memory(optimizer, parameter_bytes)
+
+    assert state_bytes == 2 * parameter_bytes
+    assert temporary_bytes == parameter_bytes
 
 
 def test_unknown_optimizer_without_state_uses_nonzero_temporary_estimate():

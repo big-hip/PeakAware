@@ -1,0 +1,11 @@
+# PeakAware paper environment (NVIDIA A6000, the paper's baseline machine)
+# Cross-hardware (Ascend 910B) extra requirements are documented in
+# scripts/cross_hardware/README.md (torch 2.9.0+cpu + torch_npu 2.9.0rc1 +
+# transformers 4.57.6 + torchvision 0.24.0+cpu).
+torch==2.13.0+cu130
+torchvision==0.28.0+cu130
+transformers==5.15.0
+numpy==2.5.2
+scipy==1.18.0
+networkx==3.6.1
+tqdm==4.70.0

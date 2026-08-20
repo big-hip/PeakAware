@@ -13,6 +13,11 @@ from peakaware.contracts import (
     PeakSnapshot,
 )
 from peakaware.diagnostics import PlanDiagnosticReport, diagnose_plan, render_diagnostic_text
+from peakaware.memory.timeline import (
+    build_actual_memory_timeline,
+    build_simulated_memory_timeline,
+    fit_memory_timelines,
+)
 from peakaware.search.plan import plan_identity_key
 
 
@@ -74,10 +79,18 @@ def _peak_snapshot_row(snapshot: PeakSnapshot | None) -> dict[str, Any] | None:
         "saved_activation_bytes": snapshot.saved_activation_bytes,
         "recomputed_bytes": snapshot.recomputed_bytes,
         "workspace_bytes": snapshot.workspace_bytes,
+        "runtime_replica_bytes": snapshot.runtime_replica_bytes,
     }
 
 
 def _plan_row(plan: EvaluatedPlan) -> dict[str, Any]:
+    simulated_timeline = build_simulated_memory_timeline(
+        fw_peak_bytes=plan.simulation.fw_peak_bytes,
+        after_fw_retained_bytes=plan.simulation.after_fw_retained_bytes,
+        bw_peak_bytes=plan.simulation.bw_peak_bytes,
+        optimizer_peak_bytes=plan.simulation.optimizer_peak_bytes,
+        estimated_peak_bytes=plan.simulation.estimated_peak_bytes,
+    )
     return {
         "plan_id": plan.plan.plan_id,
         "plan_key": plan_identity_key(plan.plan.graph_key, _effective_saved_value_ids(plan), plan.plan.budget_bytes),
@@ -87,8 +100,13 @@ def _plan_row(plan: EvaluatedPlan) -> dict[str, Any]:
         "estimated_peak_bytes": plan.simulation.estimated_peak_bytes,
         "estimated_step_us": plan.simulation.estimated_step_us,
         "after_fw_retained_bytes": plan.simulation.after_fw_retained_bytes,
+        "fw_peak_bytes": plan.simulation.fw_peak_bytes,
         "bw_peak_bytes": plan.simulation.bw_peak_bytes,
+        "optimizer_peak_bytes": plan.simulation.optimizer_peak_bytes,
         "max_recompute_live_bytes": plan.simulation.max_recompute_live_bytes,
+        "simulated_memory_timeline": simulated_timeline,
+        "simulated_memory_event_trace": tuple(plan.simulation.simulated_memory_event_trace),
+        "cost_breakdown": dict(plan.simulation.cost_breakdown),
         "risk_score": plan.plan.risk_score,
         "confidence": plan.plan.confidence,
         "strategy_provenance": dict(plan.plan.strategy_expectation_provenance),
@@ -262,6 +280,10 @@ def _search_diagnostics_row(result: OptimizedTrainingResult) -> dict[str, Any] |
         "repair_success_count": diagnostics.repair_success_count,
         "feasible_after_repair_count": diagnostics.feasible_after_repair_count,
         "repaired_plan_ids": diagnostics.repaired_plan_ids,
+        "repair_evaluation_count": diagnostics.repair_evaluation_count,
+        "evaluation_cache_hits": diagnostics.evaluation_cache_hits,
+        "evaluation_cache_misses": diagnostics.evaluation_cache_misses,
+        "summary_only_evaluation_count": diagnostics.summary_only_evaluation_count,
     }
 
 
@@ -355,14 +377,19 @@ def _diagnostic_row(report: PlanDiagnosticReport) -> dict[str, Any]:
 def _plan_diagnostic_rows(
     plans: tuple[EvaluatedPlan, ...],
     baseline: EvaluatedPlan | None,
-    selected_measurement: MeasuredExecutable,
+    selected_measurement: MeasuredExecutable | None,
     feasibility: FeasibilityReport,
 ) -> list[dict[str, Any]]:
     if baseline is None:
         return []
     rows = []
     for plan in plans:
-        measured = selected_measurement if plan.plan.plan_id == selected_measurement.plan_id else None
+        measured = (
+            selected_measurement
+            if selected_measurement is not None
+            and plan.plan.plan_id == selected_measurement.plan_id
+            else None
+        )
         rows.append(
             _diagnostic_row(
                 diagnose_plan(
@@ -383,12 +410,17 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
     selected_evaluated = plans_by_id.get(result.selected_plan.plan_id)
     diagnostic = None
     diagnostic_text = None
+    selected_measurement = (
+        result.executable
+        if result.executable.evidence_source == "measured"
+        else None
+    )
     if baseline is not None and selected_evaluated is not None:
         diagnostic = diagnose_plan(
             baseline,
             selected_evaluated,
             feasibility=result.feasibility,
-            measured=result.executable,
+            measured=selected_measurement,
         )
         diagnostic_text = render_diagnostic_text(diagnostic)
     measured_candidate_rows = [
@@ -399,6 +431,17 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "step_us": candidate.measured_step_us,
             "correctness_passed": candidate.correctness_passed,
             "phase_metrics": candidate.phase_metrics,
+            "actual_memory_timeline": build_actual_memory_timeline(
+                candidate.phase_metrics,
+                measured_peak_bytes=candidate.measured_peak_bytes,
+            ),
+            "actual_memory_trace": tuple(candidate.phase_metrics.get("actual_memory_trace") or ()),
+            "actual_sampled_memory_trace": tuple(candidate.phase_metrics.get("actual_sampled_memory_trace") or ()),
+            "actual_overall_sampled_memory_trace": tuple(
+                candidate.phase_metrics.get("actual_overall_sampled_memory_trace") or ()
+            ),
+            "gpu_util_trace": tuple(candidate.phase_metrics.get("gpu_util_trace") or ()),
+            "gpu_compute_summary": dict(candidate.phase_metrics.get("gpu_compute_summary") or {}),
             "prediction_error": _prediction_error_row(
                 plans_by_id.get(candidate.plan_id),
                 candidate.measured_peak_bytes,
@@ -419,6 +462,25 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
         )
         if row is not None
     ]
+    selected_actual_timeline = (
+        build_actual_memory_timeline(
+            result.executable.phase_metrics,
+            measured_peak_bytes=result.executable.measured_peak_bytes,
+        )
+        if result.executable.evidence_source == "measured"
+        else ()
+    )
+    selected_simulated_timeline = (
+        ()
+        if selected_evaluated is None
+        else build_simulated_memory_timeline(
+            fw_peak_bytes=selected_evaluated.simulation.fw_peak_bytes,
+            after_fw_retained_bytes=selected_evaluated.simulation.after_fw_retained_bytes,
+            bw_peak_bytes=selected_evaluated.simulation.bw_peak_bytes,
+            optimizer_peak_bytes=selected_evaluated.simulation.optimizer_peak_bytes,
+            estimated_peak_bytes=selected_evaluated.simulation.estimated_peak_bytes,
+        )
+    )
     return {
         "selected_plan_id": result.selected_plan.plan_id,
         "selected_plan_key": plan_identity_key(
@@ -441,16 +503,36 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
             "explanations": result.feasibility.explanations,
         },
         "measured": {
+            "evidence_source": result.executable.evidence_source,
+            "is_measured": result.executable.evidence_source == "measured",
             "peak_bytes": result.executable.measured_peak_bytes,
             "peak_phase": _measured_peak_phase(result.executable.phase_metrics),
             "reserved_peak_bytes": int(result.executable.phase_metrics.get("overall_reserved_peak_bytes", 0)),
             "step_us": result.executable.measured_step_us,
             "correctness_passed": result.executable.correctness_passed,
             "phase_metrics": result.executable.phase_metrics,
+            "actual_memory_timeline": selected_actual_timeline,
+            "actual_memory_trace": tuple(result.executable.phase_metrics.get("actual_memory_trace") or ()),
+            "actual_sampled_memory_trace": tuple(
+                result.executable.phase_metrics.get("actual_sampled_memory_trace") or ()
+            ),
+            "actual_overall_sampled_memory_trace": tuple(
+                result.executable.phase_metrics.get("actual_overall_sampled_memory_trace") or ()
+            ),
+            "gpu_util_trace": tuple(result.executable.phase_metrics.get("gpu_util_trace") or ()),
+            "gpu_compute_summary": dict(result.executable.phase_metrics.get("gpu_compute_summary") or {}),
         },
+        "selected_simulated_memory_timeline": selected_simulated_timeline,
+        "selected_memory_timeline_fit": fit_memory_timelines(
+            selected_actual_timeline,
+            selected_simulated_timeline,
+        ),
         "measured_candidates": measured_candidate_rows,
+        "candidate_attempts": [dict(attempt) for attempt in result.candidate_attempts],
         "topk_correction": {
-            "selected": _prediction_error_row(
+            "selected": None
+            if result.executable.evidence_source != "measured"
+            else _prediction_error_row(
                 selected_evaluated,
                 result.executable.measured_peak_bytes,
                 _measured_peak_phase(result.executable.phase_metrics),
@@ -480,7 +562,12 @@ def summarize_result(result: OptimizedTrainingResult) -> dict[str, Any]:
         "capture_failures": []
         if result.analysis is None
         else [_failure_row(record) for record in result.analysis.capture_failures],
-        "plan_diagnostics": _plan_diagnostic_rows(plans, baseline, result.executable, result.feasibility),
+        "plan_diagnostics": _plan_diagnostic_rows(
+            plans,
+            baseline,
+            selected_measurement,
+            result.feasibility,
+        ),
         "search_diagnostics": _search_diagnostics_row(result),
         "early_stop": _early_stop_row(result),
         "diagnostic": None
@@ -524,8 +611,13 @@ def summarize_plan_artifact(result: OptimizedTrainingResult) -> dict[str, Any]:
         "peak_snapshot": None
         if selected_evaluated is None
         else _peak_snapshot_row(selected_evaluated.simulation.peak_snapshot),
-        "measured_peak_bytes": result.executable.measured_peak_bytes,
-        "measured_step_us": result.executable.measured_step_us,
+        "execution_evidence_source": result.executable.evidence_source,
+        "measured_peak_bytes": None
+        if result.executable.evidence_source != "measured"
+        else result.executable.measured_peak_bytes,
+        "measured_step_us": None
+        if result.executable.evidence_source != "measured"
+        else result.executable.measured_step_us,
         "correctness": None
         if dry_run is None
         else {
@@ -586,11 +678,13 @@ def validate_plan_artifact_identity(artifact: dict[str, Any]) -> dict[str, Any]:
 
 def render_text_report(result: OptimizedTrainingResult) -> str:
     summary = summarize_result(result)
+    evidence_source = summary["measured"].get("evidence_source", "measured")
+    metric_label = "Measured" if evidence_source == "measured" else "Simulated"
     lines = [
         f"Selected plan: {summary['selected_plan_id']}",
         f"Feasibility: {summary['feasibility']['status']} ({summary['feasibility']['dominant_phase']})",
-        f"Measured peak: {summary['measured']['peak_bytes']} bytes",
-        f"Measured step: {summary['measured']['step_us']:.3f} us",
+        f"{metric_label} peak: {summary['measured']['peak_bytes']} bytes",
+        f"{metric_label} step: {summary['measured']['step_us']:.3f} us",
     ]
     if summary["diagnostic"] is not None:
         lines.append(f"Diagnostic: {summary['diagnostic']['text']}")

@@ -4,6 +4,7 @@ from typing import Any
 
 import torch
 from torch import fx
+from torch.utils import _pytree
 
 from peakaware.contracts import (
     CapturedJointGraph,
@@ -15,7 +16,12 @@ from peakaware.contracts import (
     ValueInfo,
 )
 
-from .alias import build_storage_groups, validate_alias_invariants
+from .alias import (
+    build_storage_groups,
+    is_alias_preserving_target,
+    merge_alias_storage_groups,
+    validate_alias_invariants,
+)
 from .legality import classify_recompute_legality, mark_mandatory_saves
 
 
@@ -44,6 +50,17 @@ def _logical_nbytes(value: Any) -> int:
     return 0
 
 
+def _shape_dtype(value: Any) -> tuple[tuple[int, ...], str]:
+    shape = getattr(value, "shape", None)
+    dtype = getattr(value, "dtype", None)
+    if shape is None or dtype is None:
+        return (), "unknown"
+    try:
+        return tuple(int(dim) for dim in tuple(shape)), str(dtype)
+    except Exception:
+        return (), str(dtype)
+
+
 def _is_tensor_like(value: Any) -> bool:
     return isinstance(value, torch.Tensor) or hasattr(value, "shape")
 
@@ -66,11 +83,55 @@ def _input_nodes(node: fx.Node) -> tuple[fx.Node, ...]:
     return tuple(found)
 
 
-def _classify_phase(node: fx.Node) -> str:
+def _output_leaves(node: fx.Node) -> tuple[Any, ...]:
+    if node.op != "output":
+        return ()
+    try:
+        from torch.utils import _pytree
+
+        return tuple(_pytree.tree_leaves(node.args[0]))
+    except Exception:
+        return _input_nodes(node)
+
+
+def _module_compute_node_names(module: fx.GraphModule | None) -> frozenset[str]:
+    if module is None:
+        return frozenset()
+    return frozenset(
+        node.name
+        for node in module.graph.nodes
+        if node.op not in {"placeholder", "get_attr", "output"}
+    )
+
+
+def _partition_residual_names(capture: CapturedJointGraph) -> frozenset[str]:
+    if capture.fw_module is None:
+        return frozenset()
+    output_nodes = tuple(capture.fw_module.graph.find_nodes(op="output"))
+    if not output_nodes:
+        return frozenset()
+    leaves = tuple(_pytree.tree_leaves(output_nodes[0].args[0]))
+    return frozenset(
+        leaf.name
+        for leaf in leaves[capture.num_fwd_outputs :]
+        if isinstance(leaf, fx.Node)
+    )
+
+
+def _classify_phase(
+    node: fx.Node,
+    *,
+    fw_compute_names: frozenset[str] = frozenset(),
+    bw_compute_names: frozenset[str] = frozenset(),
+) -> str:
     if node.op in {"placeholder", "get_attr"}:
         return "input"
     if node.op == "output":
         return "output"
+    if node.name in bw_compute_names and node.name not in fw_compute_names:
+        return "bw"
+    if node.name in fw_compute_names:
+        return "fw"
     text = f"{node.name} {node.target}".lower()
     if "backward" in text or "grad" in text:
         return "bw"
@@ -98,6 +159,22 @@ def build_joint_ir(capture: CapturedJointGraph, passes: tuple[Any, ...] = ()) ->
         if node.op in {"placeholder", "get_attr"}
     )
     storage_groups = build_storage_groups(raw_values, external_value_ids)
+    alias_edges: list[tuple[int, int]] = []
+    for node in nodes:
+        output_value_id = node_to_value_id.get(node)
+        if output_value_id is None or not is_alias_preserving_target(node.target):
+            continue
+        input_value_id = next(
+            (
+                node_to_value_id[input_node]
+                for input_node in _input_nodes(node)
+                if input_node in node_to_value_id
+            ),
+            None,
+        )
+        if input_value_id is not None:
+            alias_edges.append((output_value_id, input_value_id))
+    storage_groups = merge_alias_storage_groups(storage_groups, tuple(alias_edges))
     value_to_storage: dict[int, int] = {}
     for storage_id, (value_ids, _, _) in storage_groups.items():
         for value_id in value_ids:
@@ -111,10 +188,20 @@ def build_joint_ir(capture: CapturedJointGraph, passes: tuple[Any, ...] = ()) ->
             if value_id is not None:
                 consumers.setdefault(value_id, []).append(op_id)
 
-    output_input_nodes = set()
-    for node in nodes:
-        if node.op == "output":
-            output_input_nodes.update(_input_nodes(node))
+    fw_compute_names = _module_compute_node_names(capture.fw_module)
+    bw_compute_names = _module_compute_node_names(capture.bw_module)
+    residual_names = _partition_residual_names(capture)
+    uses_partition_residuals = capture.fw_module is not None
+    residual_output_nodes = set()
+    if not uses_partition_residuals:
+        for node in nodes:
+            if node.op == "output":
+                leaves = _output_leaves(node)
+                residual_output_nodes.update(
+                    leaf
+                    for leaf in leaves[capture.num_fwd_outputs :]
+                    if isinstance(leaf, fx.Node)
+                )
 
     value_infos: list[ValueInfo] = []
     op_infos: list[OpInfo] = []
@@ -127,21 +214,35 @@ def build_joint_ir(capture: CapturedJointGraph, passes: tuple[Any, ...] = ()) ->
             if input_node in node_to_value_id
         )
         recomputable, illegal_reason = classify_recompute_legality(node)
-        crosses_fw_bw = node in output_input_nodes or bool(output_ids and consumers.get(output_ids[0]))
+        phase = _classify_phase(
+            node,
+            fw_compute_names=fw_compute_names,
+            bw_compute_names=bw_compute_names,
+        )
+        crosses_fw_bw = (
+            node.name in residual_names
+            if uses_partition_residuals
+            else node in residual_output_nodes
+        )
         mandatory_reason = mark_mandatory_saves(node, crosses_fw_bw)
         op_infos.append(
             OpInfo(
                 id=op_id,
                 name=node.name,
                 target=str(node.target),
-                phase=_classify_phase(node),
+                phase=phase,
                 input_value_ids=input_ids,
                 output_value_ids=output_ids,
                 recomputable=recomputable,
                 mandatory_save_reason=mandatory_reason or illegal_reason,
+                input_shapes=tuple(_shape_dtype(raw_values[value_id])[0] for value_id in input_ids),
+                output_shapes=tuple(_shape_dtype(raw_values[value_id])[0] for value_id in output_ids),
+                input_dtypes=tuple(_shape_dtype(raw_values[value_id])[1] for value_id in input_ids),
+                output_dtypes=tuple(_shape_dtype(raw_values[value_id])[1] for value_id in output_ids),
             )
         )
         for value_id in output_ids:
+            shape, dtype = _shape_dtype(raw_values[value_id])
             value_infos.append(
                 ValueInfo(
                     id=value_id,
@@ -149,11 +250,13 @@ def build_joint_ir(capture: CapturedJointGraph, passes: tuple[Any, ...] = ()) ->
                     consumer_ids=tuple(sorted(set(consumers.get(value_id, [])))),
                     storage_id=value_to_storage.get(value_id),
                     logical_nbytes=_logical_nbytes(raw_values[value_id]),
-                    phase=_classify_phase(node),
+                    phase=phase,
                     crosses_fw_bw=crosses_fw_bw,
                     recomputable=recomputable,
                     mandatory_save_reason=mandatory_reason,
                     name=node.name,
+                    shape=shape,
+                    dtype=dtype,
                 )
             )
 
