@@ -5,10 +5,10 @@ import torch
 
 # noinspection PyUnresolvedReferences
 from custom import op_costmodel
-from zhanlu.backend.analytical_model import AnalyticalModel
-from zhanlu.backend.perf_result import ZhanluPerfResult
-from zhanlu.frontend.utils.op_record import OpRecord
-from zhanlu.frontend.utils.tensor_record import TensorRecord
+from atencost.backend.analytical_model import AnalyticalModel
+from atencost.backend.perf_result import OpPerfResult
+from atencost.frontend.utils.op_record import OpRecord
+from atencost.frontend.utils.tensor_record import TensorRecord
 
 
 def get_dummy_tensor(shape, dtype):
@@ -31,11 +31,11 @@ def get_dummy_op(name, inputs):
 
 class SingleOpPredictor:
     def __init__(self):
-        self.hardware = 'A3,A3'
+        self.hardware = 'Ascend910B,Ascend910B'
 
     def predict(self, op: OpRecord):
         self.perf_model = AnalyticalModel(op, self.hardware)
-        perf: ZhanluPerfResult = self.perf_model()
+        perf: OpPerfResult = self.perf_model()
 
         print(f'{perf.op_time}')
         pprint(asdict(perf), sort_dicts=False)

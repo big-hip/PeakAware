@@ -1,9 +1,9 @@
 from math import prod
 from custom.op_costmodel.compute_op.group_matmul import get_prediction_by_gmm
 
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_costmodel.element_op import Element3Prediction
-from zhanlu.backend.analytical_model.op_manager import op_manager
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_costmodel.element_op import Element3Prediction
+from atencost.backend.analytical_model.op_manager import op_manager
 
 dynamic_workload_ratio = {
     1: 1.0,

@@ -5,22 +5,8 @@ from .datatype import get_dtype_size
 import warnings
 
 ratio_curve = {
-    'A3': {
-        'cube': {
-            'a': 0.15,
-            'b': -2.82,
-            'max_ratio': 0.75,
-            'min_ratio': 0.1532444728230505
-        },
-        'hbm': {
-            'a': 0.07,
-            'b': -0.68,
-            'max_ratio': 0.6998730030736797,
-            'min_ratio': 0.27669700084207
-        }
-    },
-    # Ascend 910B2C: same Atlast-910B architecture as A3 (cube fp16=376 TF,
-    # HBM 1.6 TB/s, 64 GB). Utilization curves are inherited from A3 until a
+    # Ascend 910B2C: same Atlast-910B architecture (cube fp16=376 TF,
+    # HBM 1.6 TB/s, 64 GB). Utilization curves below until a
     # dedicated on-chip calibration is collected; infer_*_ratio currently
     # returns fixed priors (0.1 / 0.8 / 0.1) identical across configs.
     'Ascend910B': {
@@ -51,7 +37,7 @@ def get_ratio_log_linear(a, b, max_ratio, min_ratio, flops):
     return ratio_predicted
 
 
-def get_cube_ratio_log_linear(flops, hardware='A3'):
+def get_cube_ratio_log_linear(flops, hardware='Ascend910B'):
     weight = ratio_curve[hardware]['cube']
     a = weight['a']  # 0.15
     b = weight['b']  # -2.82
@@ -60,7 +46,7 @@ def get_cube_ratio_log_linear(flops, hardware='A3'):
     return get_ratio_log_linear(a, b, max_ratio, min_ratio, flops)
 
 
-def get_hbm_ratio_log_linear(flops, hardware='A3'):
+def get_hbm_ratio_log_linear(flops, hardware='Ascend910B'):
     weight = ratio_curve[hardware]['hbm']
     a = weight['a']  # 0.07
     b = weight['b']  # -0.68
@@ -72,9 +58,9 @@ def get_hbm_ratio_log_linear(flops, hardware='A3'):
 
 class UtilizationLoader:
     _instances = {}  # 类变量存储不同硬件配置的单例实例
-    DEFAULT_HARDWARE = 'A3'  # 默认硬件配置
+    DEFAULT_HARDWARE = 'Ascend910B'  # 默认硬件配置
 
-    def __new__(cls, hardware='A3'):
+    def __new__(cls, hardware='Ascend910B'):
         # 1. 验证硬件配置
         validated_hardware = hardware
         if hardware not in ratio_curve:

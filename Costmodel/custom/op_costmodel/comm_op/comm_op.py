@@ -1,17 +1,17 @@
 from math import prod
-from zhanlu.frontend.utils.tensor_record import CustomDType
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_manager import op_manager
-from zhanlu.backend.perf_result import ZhanluPerfResult
-from zhanlu.backend.analytical_model.utils.model_utils import calculate_total_bytes
-from zhanlu.backend.analytical_model.hardware.communication_tools import registry
+from atencost.frontend.utils.tensor_record import CustomDType
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_manager import op_manager
+from atencost.backend.perf_result import OpPerfResult
+from atencost.backend.analytical_model.utils.model_utils import calculate_total_bytes
+from atencost.backend.analytical_model.hardware.communication_tools import registry
 from enum import Enum
 import math, os
 
 
 @op_manager.register("AllGatherKernel", "AllgatherInplace", "Py-fake-allgather")
 class AllGatherKernel(BaseOp):
-    def __init__(self, op, hardware, chip_name="dv121", topo_name="A6_2d_fullmesh"):
+    def __init__(self, op, hardware, chip_name="Ascend910B", topo_name="Ascend910B"):
         super().__init__(op, hardware, chip_name, topo_name)
         self.hardware_spec = registry.get_by_config(topo_config=self.hardware_config["topo_config"], chip_config=self.hardware_config["chip_config"])
         # self.global_rank_list = [1, 2, 8, 9, 16, 17, 24, 25] # 测试使用
@@ -63,7 +63,7 @@ class AllGatherKernel(BaseOp):
 
 @op_manager.register("ReduceScatterKernel", "ReduceScatterInplace", "Py-fake-reduceScatter")
 class ReduceScatterKernel(BaseOp):
-    def __init__(self, op, hardware, chip_name="dv121", topo_name="A6_2d_fullmesh"):
+    def __init__(self, op, hardware, chip_name="Ascend910B", topo_name="Ascend910B"):
         """
         :param world_size: communication world size
         :param name: kernel name
@@ -130,7 +130,7 @@ EP_BL = {16: 1.04, 32: 1.05, 64: 1.06, 128: 1.08, 384: 1.1}
 # TODO Allredue; All2All; All2All Dispatch; All2All Combine
 @op_manager.register("AllToAllKernel", "AlltoallInplace", "Py-fake-alltoall", "Py-fake-alltoallv")
 class AllToAllKernel(BaseOp):
-    def __init__(self, op, hardware, chip_name="dv121", topo_name="A6_2d_fullmesh"):
+    def __init__(self, op, hardware, chip_name="Ascend910B", topo_name="Ascend910B"):
         """
         Pad1D clos all2all通信建模
         :param all_to_all_type: type of all-to-all
@@ -235,7 +235,7 @@ class AllReduceType(Enum):
 
 @op_manager.register("AllReduceKernel", "AllreduceInplace", "Py-fake-allreduce")
 class AllReduceKernel(BaseOp):
-    def __init__(self, op, hardware, chip_name="dv121", topo_name="A6_2d_fullmesh"):
+    def __init__(self, op, hardware, chip_name="Ascend910B", topo_name="Ascend910B"):
         super().__init__(op, hardware, chip_name, topo_name)
         self.hardware_spec = registry.get_by_config(topo_config=self.hardware_config["topo_config"], chip_config=self.hardware_config["chip_config"])
         if hasattr(op.instance, "global_rank_list"):
@@ -292,7 +292,7 @@ class AllReduceKernel(BaseOp):
 
 @op_manager.register("SendKernel", "Send", "Py-fake-send")
 class SendKernel(BaseOp):
-    def __init__(self, op, hardware, chip_name='dv121', topo_name='A6_2d_fullmesh'):
+    def __init__(self, op, hardware, chip_name='Ascend910B', topo_name='Ascend910B'):
         super().__init__(op, hardware, chip_name, topo_name)
         self.hardware_spec = registry.get_by_config(topo_config=self.hardware_config["topo_config"], chip_config=self.hardware_config["chip_config"])
         if hasattr(op.instance, "global_rank_list"):
@@ -347,7 +347,7 @@ class SendKernel(BaseOp):
 
 @op_manager.register("RecvKernel", "RecvInplace", "Py-fake-recv")
 class RecvKernel(BaseOp):
-    def __init__(self, op, hardware, chip_name='dv121', topo_name='A6_2d_fullmesh'):
+    def __init__(self, op, hardware, chip_name='Ascend910B', topo_name='Ascend910B'):
         super().__init__(op, hardware, chip_name, topo_name)
         self.hardware_spec = registry.get_by_config(topo_config=self.hardware_config["topo_config"], chip_config=self.hardware_config["chip_config"])
         if hasattr(op.instance, "global_rank_list"):
@@ -403,7 +403,7 @@ class RecvKernel(BaseOp):
 
 @op_manager.register("M2NComKernel")
 class M2NComKernel(BaseOp):
-    def __init__(self, op, hardware, chip_name='dv121', topo_name='A6_1d_fullmesh'):
+    def __init__(self, op, hardware, chip_name='Ascend910B', topo_name='Ascend910B'):
         super().__init__(op, hardware, chip_name, topo_name)
         self.hardware = registry.get_by_config(topo_config=self.hardware_config["topo_config"], chip_config=self.hardware_config["chip_config"])
         # self.world_size = op.instance.world_size
@@ -443,7 +443,7 @@ class M2NComKernel(BaseOp):
 
 @op_manager.register("N2MComKernel")
 class N2MComKernel(BaseOp):
-    def __init__(self, op, hardware, chip_name='dv121', topo_name='A6_1d_fullmesh'):
+    def __init__(self, op, hardware, chip_name='Ascend910B', topo_name='Ascend910B'):
         super().__init__(op, hardware, chip_name, topo_name)
         self.hardware = registry.get_by_config(topo_config=self.hardware_config["topo_config"], chip_config=self.hardware_config["chip_config"])
         # self.world_size = op.instance.world_size

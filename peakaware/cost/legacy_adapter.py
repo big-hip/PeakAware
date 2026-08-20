@@ -22,7 +22,7 @@ class LegacyCostmodelAdapter:
     cannot support the op.
     """
 
-    source = "legacy_adapter:zhanlu_analytical"
+    source = "legacy_adapter:atencost_analytical"
     cache_safe = True
 
     def __init__(self, fallback: StaticCostProvider | None = None, *, hardware: str | None = None) -> None:
@@ -44,9 +44,9 @@ class LegacyCostmodelAdapter:
             sys.path.insert(0, str(root))
         try:
             import custom.op_costmodel  # noqa: F401
-            from zhanlu.backend.analytical_model import AnalyticalModel
-            from zhanlu.frontend.utils.op_record import OpRecord, simplify_op_name
-            from zhanlu.frontend.utils.tensor_record import TensorRecord
+            from atencost.backend.analytical_model import AnalyticalModel
+            from atencost.frontend.utils.op_record import OpRecord, simplify_op_name
+            from atencost.frontend.utils.tensor_record import TensorRecord
         except Exception:
             self._imports = False
             return None
@@ -226,7 +226,7 @@ class LegacyCostmodelAdapter:
                     memory_bytes=self._workspace_bytes_for_op("AdamOptimizerStep", signature),
                     source=f"{self.source}:AdamOptimizerStep",
                     confidence=0.65,
-                    hardware_version=f"zhanlu:{self.hardware}",
+                    hardware_version=f"atencost:{self.hardware}",
                     software_version=current_software_version(),
                 )
         input_shapes = self._legacy_shapes(signature.input_shapes, signature.input_bytes, dtype)
@@ -303,7 +303,7 @@ class LegacyCostmodelAdapter:
             memory_bytes=self._workspace_bytes_for_op(op_name, signature),
             source=f"{self.source}:{op_name}",
             confidence=0.65,
-            hardware_version=f"zhanlu:{self.hardware}",
+            hardware_version=f"atencost:{self.hardware}",
             software_version=current_software_version(),
         )
 
@@ -340,7 +340,7 @@ def from_legacy_result(result: object) -> OpCost | None:
         return result
     op_time = getattr(result, "op_time", None)
     if op_time is not None and float(op_time) > 0:
-        return OpCost(float(op_time), 0, "legacy_adapter:zhanlu_analytical", 0.65)
+        return OpCost(float(op_time), 0, "legacy_adapter:atencost_analytical", 0.65)
     return None
 
 
@@ -350,7 +350,7 @@ def default_legacy_hardware() -> str:
         return override
     # Ascend NPU: torch_npu exposes torch.npu.is_available(); device name is
     # Ascend910B* which maps to the 910B architecture (cube fp16=376 TFLOPS,
-    # HBM 1.6 TB/s, 64 GB) -- the same chip profile as the A3 config.
+    # HBM 1.6 TB/s, 64 GB) -- the same chip profile as the Ascend910B config.
     if getattr(torch, "npu", None) is not None:
         try:
             if torch.npu.is_available():
@@ -362,7 +362,7 @@ def default_legacy_hardware() -> str:
     device_name = _current_gpu_name()
     if "rtx a6000" in device_name:
         return "RTX_A6000,RTX_A6000"
-    return "A3,A3"
+    return "Ascend910B,Ascend910B"
 
 
 def _current_gpu_name() -> str:

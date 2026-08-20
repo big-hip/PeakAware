@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 
 @dataclass
-class ZhanluPerfResult:
+class OpPerfResult:
     inputs_shape: list = field(default_factory=list)
     inputs_dtype: list = field(default_factory=list)
     parameters_input: list = field(default_factory=list)

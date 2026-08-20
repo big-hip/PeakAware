@@ -68,8 +68,8 @@ def load_vector_config(chip_model, chip_dir="chip_configs"):
             config_dict["vector"] = chip_config["vector"]
             config_dict["vector"]["compute"] = chip_config["compute"]["vector"]
     except KeyError:
-        DEFAULT_FILE = "A3"
-        warnings.warn("instruction detail use A3 config", DeprecationWarning, stacklevel=2)
+        DEFAULT_FILE = "Ascend910B"
+        warnings.warn("instruction detail use Ascend910B config", DeprecationWarning, stacklevel=2)
         return load_vector_config(DEFAULT_FILE)
     except json.JSONDecodeError:
         raise ValueError(f"芯片配置文件格式错误: {chip_path}")

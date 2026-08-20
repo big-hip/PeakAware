@@ -107,7 +107,7 @@ class LegacyCostmodelAdapter(CostProvider):
 迁移边界：
 
 - adapter 位于新包，不修改旧 Costmodel 的公共语义；
-- A2/A3 等硬件模型只声明自己支持的设备；
+- Ascend910B 等硬件模型只声明自己支持的设备；
 - GPU 不强行复用 NPU 参数，缺失时走 GPU profile/roofline provider；
 - 解析模型异常返回 `None` 或显式 error，不吞掉错误；
 - adapter 的转换规则有独立 golden tests。

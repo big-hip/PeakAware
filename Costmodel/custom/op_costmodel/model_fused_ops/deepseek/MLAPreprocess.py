@@ -2,7 +2,7 @@ from numpy import dtype
 
 from custom.op_costmodel.compute_op.matmul_einsum import MatmulEinsumPrediction
 
-from zhanlu.backend.analytical_model.op_costmodel.element_op import (
+from atencost.backend.analytical_model.op_costmodel.element_op import (
     Element3Prediction,
     Element4Prediction,
 )
@@ -10,14 +10,14 @@ from custom.op_costmodel.compute_op.RmsNormQuant import (
     RmsNormQuantPrediction,
     QuantPrediction
 )
-from zhanlu.backend.analytical_model.op_costmodel.matmul import (
+from atencost.backend.analytical_model.op_costmodel.matmul import (
     MatmulPrediction,
     get_prediction_by_linear,
 )
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_manager import op_manager
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_manager import op_manager
 
-from zhanlu.backend.analytical_model.utils.helper import (
+from atencost.backend.analytical_model.utils.helper import (
     broadcast_shapes,
     create_op_info,
     merge_flops_dicts,
@@ -41,7 +41,7 @@ class MLAPreprocessPrediction(BaseOp):
             self.head_tail_time = self.hardware_config["chip_config"]["head_tail_time_for_fused_op"] * 10
         chip_name, _ = hardware.split(',')
         self.quant_flag = hasattr(self.instance, "weight_dtype_fp4")
-        if chip_name == 'A2' or chip_name == 'A3':
+        if chip_name == 'Ascend910B':
             self.quant_flag = self.quant_flag or self.instance.weight_dtype == torch.float8_e4m3fn or self.instance.weight_dtype == torch.float8_e5m2
 
     def _get_op_size(self):

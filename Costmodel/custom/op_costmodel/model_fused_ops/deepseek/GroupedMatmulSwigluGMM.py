@@ -4,11 +4,11 @@ from math import prod
 
 from custom.op_costmodel.compute_op.group_matmul import get_prediction_by_gmm
 
-from zhanlu.backend.analytical_model.op_costmodel.element_op import Element5Prediction, SwigluPrediction
-from zhanlu.backend.analytical_model.op_costmodel.matmul import get_prediction_by_linear
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_manager import op_manager
-from zhanlu.backend.analytical_model.utils.helper import broadcast_shapes, create_op_info, merge_flops_dicts
+from atencost.backend.analytical_model.op_costmodel.element_op import Element5Prediction, SwigluPrediction
+from atencost.backend.analytical_model.op_costmodel.matmul import get_prediction_by_linear
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_manager import op_manager
+from atencost.backend.analytical_model.utils.helper import broadcast_shapes, create_op_info, merge_flops_dicts
 
 
 @op_manager.register("GroupedMatmulSwigluGMM")

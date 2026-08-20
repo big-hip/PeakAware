@@ -1,6 +1,6 @@
 from math import prod
-from zhanlu.frontend.utils.tensor_record import CustomDType
-from zhanlu.backend.analytical_model.utils.datatype import get_dtype_size
+from atencost.frontend.utils.tensor_record import CustomDType
+from atencost.backend.analytical_model.utils.datatype import get_dtype_size
 
 dtype_to_bytes = {
     'torch.int4': 0.5,

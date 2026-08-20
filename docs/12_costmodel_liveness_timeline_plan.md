@@ -27,7 +27,7 @@ logical graph lifetime to allocator-visible CUDA memory over time.
 
 ## Why Costmodel Alone Is Not Enough
 
-The bundled zhanlu Costmodel estimates operator time and memory traffic.  In the
+The bundled atencost Costmodel estimates operator time and memory traffic.  In the
 current adapter, `OpCost.memory_bytes` is interpreted as transient workspace,
 not as live allocation.  Therefore:
 

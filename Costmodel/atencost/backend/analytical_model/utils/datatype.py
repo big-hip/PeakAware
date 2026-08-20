@@ -2,7 +2,7 @@ import re
 
 import torch
 
-from zhanlu.frontend.utils.tensor_record import CustomDType
+from atencost.frontend.utils.tensor_record import CustomDType
 
 
 def get_dtype_size(dtype) -> float:

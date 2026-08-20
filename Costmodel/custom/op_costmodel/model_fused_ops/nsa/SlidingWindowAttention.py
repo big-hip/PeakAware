@@ -3,12 +3,12 @@ from time import gmtime
 from xmlrpc.server import DocXMLRPCRequestHandler
 
 import torch
-from zhanlu.backend.analytical_model.op_costmodel.element_op import Element5Prediction
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_costmodel.matmul import MatmulPrediction
-from zhanlu.backend.analytical_model.op_manager import op_manager
-from zhanlu.backend.perf_result import ZhanluPerfResult
-from zhanlu.backend.analytical_model.utils.helper import create_op_info, merge_flops_dicts
+from atencost.backend.analytical_model.op_costmodel.element_op import Element5Prediction
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_costmodel.matmul import MatmulPrediction
+from atencost.backend.analytical_model.op_manager import op_manager
+from atencost.backend.perf_result import OpPerfResult
+from atencost.backend.analytical_model.utils.helper import create_op_info, merge_flops_dicts
 
 # 访存只计算了输入输出
 # 算力利用率按照两个matmul之和来计算的

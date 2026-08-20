@@ -158,7 +158,7 @@ def build_pipeline(name: str, budget_bytes: int, batch: int, registry: TrainingT
     ir, ir_report = build_joint_ir(capture)
     if not ir_report.valid:
         raise ValueError(f"invalid IR: {ir_report.errors}")
-    # composite cost provider (zhanlu analytical + profile_db if any)
+    # composite cost provider (atencost analytical + profile_db if any)
     registry_svc = build_default_registry(profile_db_path=config.profile_db_path)
     provider = build_composite_provider(
         tuple(record.service for record in registry_svc.services_for(ServiceKind.COST_PROVIDER))

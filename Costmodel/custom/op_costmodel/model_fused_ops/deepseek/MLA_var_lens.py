@@ -1,15 +1,15 @@
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_manager import op_manager
-from zhanlu.backend.analytical_model.utils.helper import (
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_manager import op_manager
+from atencost.backend.analytical_model.utils.helper import (
     create_op_info,
     merge_flops_dicts,
 )
-from zhanlu.backend.analytical_model.op_costmodel.matmul import (
+from atencost.backend.analytical_model.op_costmodel.matmul import (
     MatmulPrediction,
     VarLenQKMatmulPrediction,
     VarLenScoreVMatmulPrediction
 )
-from zhanlu.backend.analytical_model.op_costmodel.element_op import VarLenSoftmaxPrediction
+from atencost.backend.analytical_model.op_costmodel.element_op import VarLenSoftmaxPrediction
 import custom.op_costmodel
 
 
@@ -26,7 +26,7 @@ class MLAVarLensPrediction(BaseOp):
         self.op_type = "cube"
         self.instance = op.instance
         # cache_var_lens, shape [batch], value being the past kv cache length of each batch
-        self.cache_var_lens = op.instance.__class__._zhanlu["var_len_list"]
+        self.cache_var_lens = op.instance.__class__._atencost["var_len_list"]
         self.q_mul_wuk_dtype, self.cache_lora_kv_dtype = self.inputs_dtype
         self._get_op_size()
 

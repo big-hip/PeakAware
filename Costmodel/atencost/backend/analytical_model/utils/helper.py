@@ -1,5 +1,5 @@
-from zhanlu.frontend.utils.tensor_record import TensorRecord
-from zhanlu.frontend.utils.op_record import OpRecord
+from atencost.frontend.utils.tensor_record import TensorRecord
+from atencost.frontend.utils.op_record import OpRecord
 
 
 def broadcast_shapes(shape1, shape2):

@@ -1,10 +1,10 @@
 from math import prod
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_costmodel.element_op import Element3Prediction
-from zhanlu.backend.analytical_model.op_manager import op_manager
-from zhanlu.backend.analytical_model.utils.model_utils import TBps2Bpus
-from zhanlu.backend.perf_result import ZhanluPerfResult
-from zhanlu.backend.analytical_model.utils.datatype import get_dtype_size
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_costmodel.element_op import Element3Prediction
+from atencost.backend.analytical_model.op_manager import op_manager
+from atencost.backend.analytical_model.utils.model_utils import TBps2Bpus
+from atencost.backend.perf_result import OpPerfResult
+from atencost.backend.analytical_model.utils.datatype import get_dtype_size
 
 
 @op_manager.register("FusedAddTopkDivKernel")

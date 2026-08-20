@@ -1,8 +1,8 @@
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_manager import op_manager
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_manager import op_manager
 
-from zhanlu.backend.analytical_model.utils.datatype import get_dtype_size
-from zhanlu.backend.analytical_model.utils.helper import broadcast_shapes, create_op_info
+from atencost.backend.analytical_model.utils.datatype import get_dtype_size
+from atencost.backend.analytical_model.utils.helper import broadcast_shapes, create_op_info
 from math import prod
 
 

@@ -2,12 +2,12 @@ import math
 from enum import Enum, IntEnum
 from typing import Dict, List, Tuple, Union, Callable
 import json
-from zhanlu.backend.analytical_model.hardware.hardware_config_loader import load_vector_config, load_vector_OPs
+from atencost.backend.analytical_model.hardware.hardware_config_loader import load_vector_config, load_vector_OPs
 
 
 class InstrPerf:
     def __init__(self,
-                 chip_name: str = "A3"):
+                 chip_name: str = "Ascend910B"):
         self.param_map = load_vector_config(chip_name)
         self.base_OPs = load_vector_OPs(chip_name)
         self.init_core_num()

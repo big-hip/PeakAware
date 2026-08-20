@@ -1,13 +1,13 @@
-from zhanlu.backend.analytical_model.op_costmodel.element_op import (
+from atencost.backend.analytical_model.op_costmodel.element_op import (
     Element5Prediction,
 )
-from zhanlu.backend.analytical_model.op_costmodel.matmul import (
+from atencost.backend.analytical_model.op_costmodel.matmul import (
     get_prediction_by_linear,
 )
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_manager import op_manager
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_manager import op_manager
 
-from zhanlu.backend.analytical_model.utils.helper import (
+from atencost.backend.analytical_model.utils.helper import (
     broadcast_shapes,
     create_op_info,
     merge_flops_dicts,

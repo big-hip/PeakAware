@@ -1,8 +1,8 @@
 from math import prod
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_costmodel.element_op import Element3Prediction, Element5Prediction
-from zhanlu.backend.analytical_model.op_manager import op_manager
-from zhanlu.backend.analytical_model.utils.helper import broadcast_shapes, create_op_info, merge_flops_dicts
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_costmodel.element_op import Element3Prediction, Element5Prediction
+from atencost.backend.analytical_model.op_manager import op_manager
+from atencost.backend.analytical_model.utils.helper import broadcast_shapes, create_op_info, merge_flops_dicts
 
 from custom.op_costmodel.compute_op.group_matmul import get_prediction_by_gmm
 

@@ -1,15 +1,15 @@
 import torch
 from math import prod
 
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_costmodel.matmul import MatmulPrediction
-from zhanlu.backend.analytical_model.op_manager import op_manager
-from zhanlu.backend.analytical_model.utils.helper import (
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_costmodel.matmul import MatmulPrediction
+from atencost.backend.analytical_model.op_manager import op_manager
+from atencost.backend.analytical_model.utils.helper import (
     create_op_info,
     merge_flops_dicts,
 )
-from zhanlu.backend.analytical_model.utils.datatype import get_dtype_size
-from zhanlu.backend.analytical_model.utils.model_utils import (
+from atencost.backend.analytical_model.utils.datatype import get_dtype_size
+from atencost.backend.analytical_model.utils.model_utils import (
     calculate_total_bytes,
     get_tasks_time,
     get_compute_type_flops,

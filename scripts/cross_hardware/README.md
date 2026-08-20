@@ -49,7 +49,7 @@ workspace heuristic, not a cross-hardware modeling failure.
 ## Hardware configs
 
 The Ascend910B chip/topology configs live in
-`Costmodel/zhanlu/backend/analytical_model/hardware/`
+`Costmodel/atencost/backend/analytical_model/hardware/`
 (`chip_configs/Ascend910B.json`, `topo_configs/Ascend910B.json`).
 `peakaware/cost/legacy_adapter.py` auto-selects them when
 `torch.npu.is_available()` is true.

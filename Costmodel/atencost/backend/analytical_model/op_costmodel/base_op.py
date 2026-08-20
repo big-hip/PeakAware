@@ -1,9 +1,9 @@
-from zhanlu.frontend.utils.tensor_record import TensorRecord
-from zhanlu.backend.analytical_model.hardware.hardware_config_loader import (
+from atencost.frontend.utils.tensor_record import TensorRecord
+from atencost.backend.analytical_model.hardware.hardware_config_loader import (
     load_hardware_config,
 )
-from zhanlu.backend.analytical_model.utils.utilization_loader import UtilizationLoader
-from zhanlu.backend.analytical_model.utils.model_utils import (
+from atencost.backend.analytical_model.utils.utilization_loader import UtilizationLoader
+from atencost.backend.analytical_model.utils.model_utils import (
     calculate_total_bytes,
     get_tasks_time,
     get_compute_type_flops,
@@ -11,12 +11,12 @@ from zhanlu.backend.analytical_model.utils.model_utils import (
     TBps2Bpus,
     TFlopS2FlopUs,
 )
-from zhanlu.backend.perf_result import ZhanluPerfResult
-from zhanlu.backend.analytical_model.utils.vector_cycle import InstrPerf
+from atencost.backend.perf_result import OpPerfResult
+from atencost.backend.analytical_model.utils.vector_cycle import InstrPerf
 
 
 class BaseOp:
-    def __init__(self, op, hardware, chip_name="A3", topo_name="A6_2d_fullmesh"):
+    def __init__(self, op, hardware, chip_name="Ascend910B", topo_name="Ascend910B"):
         self.op = op
 
         # 提取所有TensorRecord类型的输入元素
@@ -39,7 +39,7 @@ class BaseOp:
         self.outputs_shape = [out.local_shape for out in self.tensor_outputs]
         self.outputs_dtype = [str(out.dtype) for out in self.tensor_outputs]
 
-        self.result = ZhanluPerfResult(inputs_shape=self.inputs_shape,
+        self.result = OpPerfResult(inputs_shape=self.inputs_shape,
                                        inputs_dtype=self.inputs_dtype,
                                        parameters_input=self.parameter_inputs,
                                        outputs_shape=self.outputs_shape,

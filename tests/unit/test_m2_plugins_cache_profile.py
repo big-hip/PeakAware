@@ -564,8 +564,8 @@ def test_builtin_cost_providers_attach_hardware_and_software_provenance():
     assert legacy is not None
     assert legacy.hardware_version in {
         static.hardware_version,
-        "zhanlu:A3,A3",
-        "zhanlu:RTX_A6000,RTX_A6000",
+        "atencost:Ascend910B,Ascend910B",
+        "atencost:RTX_A6000,RTX_A6000",
     }
     assert legacy.software_version == static.software_version
     assert roofline.hardware_version != "unknown"
@@ -614,7 +614,7 @@ def test_sdpa_provider_models_fused_forward_and_backward_without_global_workspac
     assert forward_cost.memory_bytes == 0
     assert backward_cost.memory_bytes == 0
     assert forward_cost.source == "analytical:sdpa_fused"
-    assert forward_cost.hardware_version == "zhanlu:RTX_A6000"
+    assert forward_cost.hardware_version == "atencost:RTX_A6000"
 
 
 def test_sdpa_provider_rejects_unfused_attention_and_invalid_shapes():
@@ -639,7 +639,7 @@ def test_legacy_costmodel_adapter_uses_analytical_model_when_supported():
     assert cost is not None
     assert cost.estimated_us > 0
     assert cost.source == "legacy_adapter:static_fallback" or cost.source.startswith(
-        "legacy_adapter:zhanlu_analytical"
+        "legacy_adapter:atencost_analytical"
     )
 
 

@@ -463,7 +463,7 @@ def _provider_cost(
 
 def _is_real_cost_source(source: str) -> bool:
     return (
-        source.startswith("legacy_adapter:zhanlu_analytical")
+        source.startswith("legacy_adapter:atencost_analytical")
         or source.startswith("profile_db")
     )
 

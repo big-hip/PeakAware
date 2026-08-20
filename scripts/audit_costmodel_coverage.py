@@ -62,12 +62,12 @@ def _legacy_hardware_payload(hardware: str) -> dict[str, Any]:
     chip_name, _, topo_name = hardware.partition(",")
     chip_path = (
         ROOT
-        / "Costmodel/zhanlu/backend/analytical_model/hardware/chip_configs"
+        / "Costmodel/atencost/backend/analytical_model/hardware/chip_configs"
         / f"{chip_name}.json"
     )
     topo_path = (
         ROOT
-        / "Costmodel/zhanlu/backend/analytical_model/hardware/topo_configs"
+        / "Costmodel/atencost/backend/analytical_model/hardware/topo_configs"
         / f"{(topo_name or chip_name)}.json"
     )
     return {
@@ -92,7 +92,7 @@ def _source_family(source: str) -> str:
         return "analytical"
     if source == "legacy_adapter:static_fallback":
         return "static_fallback"
-    if source.startswith("legacy_adapter:zhanlu_analytical:"):
+    if source.startswith("legacy_adapter:atencost_analytical:"):
         return "analytical"
     if "roofline" in source:
         return "roofline_fallback"

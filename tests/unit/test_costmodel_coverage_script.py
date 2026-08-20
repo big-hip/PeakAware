@@ -18,7 +18,7 @@ def test_source_family_separates_profile_analytical_and_fallback_routes():
     assert MODULE._source_family("metadata_view_zero") == "metadata_zero"
     assert MODULE._source_family("analytical:sdpa_fused") == "analytical"
     assert (
-        MODULE._source_family("legacy_adapter:zhanlu_analytical:Addmm")
+        MODULE._source_family("legacy_adapter:atencost_analytical:Addmm")
         == "analytical"
     )
     assert MODULE._source_family("legacy_adapter:static_fallback") == "static_fallback"

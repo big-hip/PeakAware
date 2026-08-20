@@ -1,5 +1,5 @@
-from zhanlu.backend.perf_result import ZhanluPerfResult
-from zhanlu.frontend.utils.tensor_record import TensorRecord
+from atencost.backend.perf_result import OpPerfResult
+from atencost.frontend.utils.tensor_record import TensorRecord
 
 
 class BaseModel:
@@ -27,7 +27,7 @@ class BaseModel:
         self.outputs_shape = [out.local_shape for out in self.tensor_outputs]
         self.outputs_dtype = [str(out.dtype) for out in self.tensor_outputs]
 
-        self.result = ZhanluPerfResult(inputs_shape=self.inputs_shape,
+        self.result = OpPerfResult(inputs_shape=self.inputs_shape,
                                        inputs_dtype=self.inputs_dtype,
                                        parameters_input=self.parameter_inputs,
                                        outputs_shape=self.outputs_shape,
@@ -35,5 +35,5 @@ class BaseModel:
                                        module_path=self.op.module_path,
                                        global_rank_list=self.op.instance.global_rank_list if hasattr(self.op.instance, 'global_rank_list') else [])
 
-    def __call__(self) -> ZhanluPerfResult:
+    def __call__(self) -> OpPerfResult:
         return self.result

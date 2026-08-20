@@ -25,7 +25,7 @@ class AttentionHardwareSpec:
 def _hardware_root() -> Path:
     return (
         Path(__file__).resolve().parents[2]
-        / "Costmodel/zhanlu/backend/analytical_model/hardware/chip_configs"
+        / "Costmodel/atencost/backend/analytical_model/hardware/chip_configs"
     )
 
 
@@ -166,6 +166,6 @@ class ScaledDotProductAttentionCostProvider:
             memory_bytes=0,
             source=self.source,
             confidence=0.60,
-            hardware_version=f"zhanlu:{self.hardware.hardware_id}",
+            hardware_version=f"atencost:{self.hardware.hardware_id}",
             software_version=current_software_version(),
         )

@@ -1,7 +1,7 @@
 from math import prod
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_manager import op_manager
-from zhanlu.backend.perf_result import ZhanluPerfResult
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_manager import op_manager
+from atencost.backend.perf_result import OpPerfResult
 
 
 @op_manager.register("SigmoidBackward", "LogSoftmax", "RoPE", "Rope", "NpuRotaryPositionEmbedding")
@@ -138,7 +138,7 @@ class Element12Prediction(BaseOp):
     "ThresholdBackward",
 )
 class ElementPrediction(BaseOp):
-    def __init__(self, op, hardware, chip_name="A3", topo_name="A6_2d_fullmesh"):
+    def __init__(self, op, hardware, chip_name="Ascend910B", topo_name="Ascend910B"):
         super().__init__(op, hardware, chip_name, topo_name)
         self.op_type = "vector"
 

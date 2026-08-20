@@ -19,14 +19,14 @@ improve raw simulation accuracy.
 3. `search.engine.evaluate_plan`, greedy search, and repair all pass the same
    `CostProvider`, so search ranking and simulation use one costmodel source.
 4. `LegacyCostmodelAdapter` now attempts to call the bundled
-   `Costmodel/zhanlu` analytical model through a conservative TensorRecord
+   `Costmodel/atencost` analytical model through a conservative TensorRecord
    projection.  Unsupported ops still fall back to the static provider and keep
    explicit provenance.
 5. `scripts/calibrate_costmodel_from_records.py` fits median peak residual rules
    from existing records and reports raw versus calibrated APE.
 6. The default A6000 path loads explicit `RTX_A6000` chip/topology files
    (38.7 TFLOP/s FP32, 768 GB/s HBM, 48 GiB, 6 MiB L2, and PCIe latency/bandwidth)
-   instead of silently using the old A3 hardware.
+   instead of silently using the old Ascend910B config.
 7. `ProfileDB` schema v2 removes unique FX node names from reusable signatures,
    stores complete input/output shapes and dtypes, and isolates every row by
    hardware and Torch/CUDA software fingerprints. Legacy unscoped rows are

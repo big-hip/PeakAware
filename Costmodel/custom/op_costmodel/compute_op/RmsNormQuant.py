@@ -1,7 +1,7 @@
 from math import prod
-from zhanlu.backend.analytical_model.op_costmodel.element_op import Element4Prediction
-from zhanlu.backend.analytical_model.op_costmodel.base_op import BaseOp
-from zhanlu.backend.analytical_model.op_manager import op_manager
+from atencost.backend.analytical_model.op_costmodel.element_op import Element4Prediction
+from atencost.backend.analytical_model.op_costmodel.base_op import BaseOp
+from atencost.backend.analytical_model.op_manager import op_manager
 
 
 @op_manager.register("RmsNormQuant")
